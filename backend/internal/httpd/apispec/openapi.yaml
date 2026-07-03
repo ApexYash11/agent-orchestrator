@@ -885,6 +885,92 @@ paths:
       summary: Mark a session terminated and tear down runtime/workspace resources
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/metrics:
+    get:
+      operationId: getSessionMetrics
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetSessionMetricsResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Fetch the current aggregated metrics for a session
+      tags:
+      - metrics
+  /api/v1/sessions/{sessionId}/metrics/history:
+    get:
+      operationId: getSessionMetricsHistory
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: RFC 3339 timestamp. Return points recorded on or after this time.
+          When omitted, returns all available history.
+        in: query
+        name: since
+        schema:
+          description: RFC 3339 timestamp. Return points recorded on or after this
+            time. When omitted, returns all available history.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetSessionMetricsHistoryResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List historical usage points for a session
+      tags:
+      - metrics
   /api/v1/sessions/{sessionId}/pr:
     get:
       operationId: listSessionPRs
@@ -1569,6 +1655,8 @@ components:
           type: string
         kind:
           type: string
+        metrics:
+          $ref: '#/components/schemas/SessionMetricsSummary'
         previewRevision:
           format: int64
           type: integer
@@ -1648,6 +1736,22 @@ components:
           type: string
       required:
       - harness
+      type: object
+    GetSessionMetricsHistoryResponse:
+      properties:
+        metrics:
+          items:
+            $ref: '#/components/schemas/SessionMetricsPoint'
+          type: array
+      required:
+      - metrics
+      type: object
+    GetSessionMetricsResponse:
+      properties:
+        metrics:
+          $ref: '#/components/schemas/SessionMetricsDetail'
+      required:
+      - metrics
       type: object
     ImportReport:
       properties:
@@ -2145,6 +2249,67 @@ components:
       - sessionId
       - message
       type: object
+    SessionMetricsDetail:
+      properties:
+        contextUtilization:
+          format: double
+          type: number
+        estimatedCost:
+          format: double
+          type: number
+        lastActivityAt:
+          format: date-time
+          type: string
+        model:
+          type: string
+        retryCount:
+          type: integer
+        totalInputTokens:
+          format: int64
+          type: integer
+        totalOutputTokens:
+          format: int64
+          type: integer
+      required:
+      - totalInputTokens
+      - totalOutputTokens
+      - retryCount
+      type: object
+    SessionMetricsPoint:
+      properties:
+        cost:
+          format: double
+          type: number
+        inputTokens:
+          format: int64
+          type: integer
+        outputTokens:
+          format: int64
+          type: integer
+        recordedAt:
+          format: date-time
+          type: string
+      required:
+      - inputTokens
+      - outputTokens
+      - recordedAt
+      type: object
+    SessionMetricsSummary:
+      properties:
+        contextUtilization:
+          format: double
+          type: number
+        estimatedCost:
+          format: double
+          type: number
+        model:
+          type: string
+        retryCount:
+          type: integer
+        totalTokens:
+          format: int64
+          type: integer
+      type: object
     SessionPRCISummary:
       properties:
         failingChecks:
@@ -2586,3 +2751,5 @@ tags:
   name: events
 - description: Legacy AO project import (availability probe and run)
   name: import
+- description: Per-session agent-usage metrics (token counts, cost, context utilization)
+  name: metrics

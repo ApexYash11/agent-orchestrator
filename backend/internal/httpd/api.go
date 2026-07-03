@@ -27,6 +27,7 @@ type APIDeps struct {
 	Notifications      controllers.NotificationService
 	NotificationStream controllers.NotificationStream
 	Import             controllers.ImportService
+	Metrics            controllers.MetricsService
 	CDC                cdc.Source
 	Events             cdcSubscriber
 	Telemetry          ports.EventSink
@@ -42,6 +43,7 @@ type API struct {
 	reviews       *controllers.ReviewsController
 	notifications *controllers.NotificationsController
 	imports       *controllers.ImportController
+	metrics       *controllers.MetricsController
 	events        *EventsController
 }
 
@@ -57,11 +59,13 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		sessions: &controllers.SessionsController{
 			Svc:      deps.Sessions,
 			Activity: deps.Activity,
+			Metrics:  deps.Metrics,
 		},
 		prs:           &controllers.PRsController{Svc: deps.PRs},
 		reviews:       &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		imports:       &controllers.ImportController{Svc: deps.Import},
+		metrics:       &controllers.MetricsController{Svc: deps.Metrics},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
 	}
 }
@@ -86,7 +90,7 @@ func (a *API) Register(root chi.Router) {
 			a.reviews.Register(r)
 			a.notifications.Register(r)
 			a.imports.Register(r)
-			// Sibling REST controllers plug in here.
+			a.metrics.Register(r)
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.
 		a.notifications.RegisterStream(r)

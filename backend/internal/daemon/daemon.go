@@ -18,10 +18,12 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemon/supervisor"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
+	metricscollector "github.com/aoagents/agent-orchestrator/backend/internal/observe/metrics"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/preview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
+	metricssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/metrics"
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
@@ -122,9 +124,20 @@ func Run() error {
 	}
 	previewDone := preview.NewPoller(store, sessionSvc, "http://"+cfg.Addr(), preview.PollerConfig{Logger: log}).Start(ctx)
 
+	metricsSvc := metricssvc.NewService(store)
+	metricsResolved, metricsErr := buildAgentResolver(cfg.Agent, log)
+	if metricsErr != nil {
+		log.Warn("metrics collector: agent resolver unavailable, collector disabled", "err", metricsErr)
+	} else {
+		collector := metricscollector.NewCollector(store, metricsResolved, store, log, 60*time.Second)
+		collectorDone := collector.Start(ctx)
+		_ = collectorDone
+	}
+
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Projects:           projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, Telemetry: telemetrySink}),
 		Sessions:           sessionSvc,
+		Metrics:            metricsSvc,
 		Reviews:            reviewSvc,
 		Notifications:      notifier,
 		NotificationStream: notificationHub,

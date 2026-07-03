@@ -69,6 +69,8 @@ func Build() ([]byte, error) {
 			"Server-sent CDC event stream with durable replay"),
 		*(&openapi31.Tag{Name: "import"}).WithDescription(
 			"Legacy AO project import (availability probe and run)"),
+		*(&openapi31.Tag{Name: "metrics"}).WithDescription(
+			"Per-session agent-usage metrics (token counts, cost, context utilization)"),
 	}
 
 	for _, op := range operations() {
@@ -118,7 +120,7 @@ func schemaName(_ reflect.Type, defaultName string) string {
 }
 
 // schemaNames is the exhaustive default→clean mapping for every type reflected
-// by projectOperations(). Add an entry when a new contract type is introduced;
+// by metricsOperations(). Add an entry when a new contract type is introduced;
 // the drift test fails until the spec is regenerated, which flags the gap.
 var schemaNames = map[string]string{
 	// httpd/envelope
@@ -196,6 +198,13 @@ var schemaNames = map[string]string{
 	"ControllersImportRunResponse":    "ImportRunResponse",
 	// legacyimport report
 	"LegacyimportReport": "ImportReport",
+	// httpd/controllers — metrics wire envelopes
+	"ControllersSessionMetricsSummary":            "SessionMetricsSummary",
+	"ControllersSessionMetricsDetail":             "SessionMetricsDetail",
+	"ControllersSessionMetricsPoint":              "SessionMetricsPoint",
+	"ControllersGetSessionMetricsResponse":        "GetSessionMetricsResponse",
+	"ControllersGetSessionMetricsHistoryResponse": "GetSessionMetricsHistoryResponse",
+	"ControllersGetSessionMetricsHistoryQuery":    "GetSessionMetricsHistoryQuery",
 	// service/project entities + DTOs
 	"ProjectProject":        "Project",
 	"ProjectSummary":        "ProjectSummary",
@@ -284,6 +293,7 @@ func operations() []operation {
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
 	ops = append(ops, importOperations()...)
+	ops = append(ops, metricsOperations()...)
 	return ops
 }
 
@@ -305,6 +315,33 @@ func importOperations() []operation {
 			summary: "Run the legacy AO project import through the daemon store",
 			resps: []respUnit{
 				{http.StatusOK, controllers.ImportRunResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
+}
+
+func metricsOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/metrics", id: "getSessionMetrics", tag: "metrics",
+			summary:    "Fetch the current aggregated metrics for a session",
+			pathParams: []any{controllers.SessionIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.GetSessionMetricsResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/metrics/history", id: "getSessionMetricsHistory", tag: "metrics",
+			summary:    "List historical usage points for a session",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.GetSessionMetricsHistoryQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.GetSessionMetricsHistoryResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},

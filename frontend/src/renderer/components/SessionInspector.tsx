@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
-import { ArrowUpRight, GitPullRequest, Play, Shield, Terminal } from "lucide-react";
+import { ArrowUpRight, BarChart3, GitPullRequest, Play, Shield, Terminal } from "lucide-react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { formatTimeCompact } from "../lib/format-time";
+import { useSessionMetricsQuery, useSessionMetricsHistoryQuery } from "../hooks/useSessionMetricsHistoryQuery";
 import { useSessionScmSummary, type SessionPRSummary } from "../hooks/useSessionScmSummary";
 import { prBrowserUrl, prStatusRows, sessionPRDisplaySummaries, type PRDisplayTone } from "../lib/pr-display";
 import type { SessionStatus, WorkspaceSession } from "../types/workspace";
@@ -21,7 +22,7 @@ type PRReviewState = components["schemas"]["PRReviewState"];
 type ReviewsResponse = components["schemas"]["ListReviewsResponse"];
 type OpenReviewerTerminal = (target: { handleId: string; harness: string }) => void;
 
-export type InspectorView = "summary" | "reviews" | "browser";
+export type InspectorView = "summary" | "reviews" | "browser" | "usage";
 
 const VIEWS: { id: InspectorView; label: string; icon: ReactNode }[] = [
 	{
@@ -57,6 +58,11 @@ const VIEWS: { id: InspectorView; label: string; icon: ReactNode }[] = [
 				<path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18" />
 			</svg>
 		),
+	},
+	{
+		id: "usage",
+		label: "Usage",
+		icon: <BarChart3 className="h-4 w-4" aria-hidden="true" />,
 	},
 ];
 
@@ -128,6 +134,7 @@ export function SessionInspector({
 			<div className="session-inspector__body">
 				{view === "summary" ? <SummaryView session={session} /> : null}
 				{view === "reviews" ? <ReviewsView onOpenReviewerTerminal={onOpenReviewerTerminal} session={session} /> : null}
+				{view === "usage" ? <UsageView session={session} /> : null}
 				{view === "browser" ? (
 					<BrowserView
 						browserPoppedOut={browserPoppedOut}
@@ -618,6 +625,62 @@ function reviewSessionRunAction(reviewStates: PRReviewState[], isTriggering: boo
 		return "Re-run review";
 	}
 	return "Run review";
+}
+
+function UsageView({ session }: { session: WorkspaceSession }) {
+	const metricsQuery = useSessionMetricsQuery(session.id);
+	const historyQuery = useSessionMetricsHistoryQuery(session.id);
+	const metrics = metricsQuery.data;
+	const history = historyQuery.data;
+
+	return (
+		<div role="tabpanel">
+			<Section title="Token usage">
+				{metricsQuery.isLoading ? (
+					<p className="inspector-empty">Loading usage data...</p>
+				) : metricsQuery.error ? (
+					<p className="inspector-empty">Failed to load usage data.</p>
+				) : metrics ? (
+					<div className="flex flex-col gap-3 px-3 py-2">
+						<dl className="inspector-kv">
+							<Row k="Input tokens" v={formatNumber(metrics.totalInputTokens)} mono />
+							<Row k="Output tokens" v={formatNumber(metrics.totalOutputTokens)} mono />
+							<Row k="Total" v={formatNumber(metrics.totalInputTokens + metrics.totalOutputTokens)} mono />
+							{metrics.estimatedCost ? (
+								<Row k="Estimated cost" v={`$${metrics.estimatedCost.toFixed(6)}`} mono />
+							) : null}
+							{metrics.model ? <Row k="Model" v={metrics.model} mono /> : null}
+							{metrics.contextUtilization ? (
+								<Row k="Context %" v={`${(metrics.contextUtilization * 100).toFixed(1)}%`} mono />
+							) : null}
+							<Row k="Retries" v={String(metrics.retryCount)} mono />
+						</dl>
+					</div>
+				) : (
+					<p className="inspector-empty">No usage data yet.</p>
+				)}
+			</Section>
+
+			{history && history.length > 0 ? (
+				<Section className="inspector-section--separated" title="History">
+					<div className="flex flex-col gap-1 px-3 py-2">
+						{history.slice(-10).reverse().map((point, idx) => (
+							<div key={idx} className="flex items-center justify-between font-mono text-[10.5px] text-passive">
+								<span>{formatTimeCompact(point.recordedAt)}</span>
+								<span>{formatNumber(point.inputTokens + point.outputTokens)} tokens{point.cost ? ` · $${point.cost.toFixed(4)}` : ""}</span>
+							</div>
+						))}
+					</div>
+				</Section>
+			) : null}
+		</div>
+	);
+}
+
+function formatNumber(n: number): string {
+	if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+	if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+	return String(n);
 }
 
 function BrowserView({

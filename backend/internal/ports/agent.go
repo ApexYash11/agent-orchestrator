@@ -42,6 +42,14 @@ type Agent interface {
 	SessionInfo(ctx context.Context, session SessionRef) (info SessionInfo, ok bool, err error)
 }
 
+// UsageProvider is an optional interface that agent adapters can implement to
+// report token usage, cost, and model data from locally-stored session state.
+// The metrics collector checks for this via type assertion rather than adding
+// it to Agent directly, since most adapters don't support usage extraction yet.
+type UsageProvider interface {
+	SessionUsage(ctx context.Context, session SessionRef) (usage *domain.AgentUsage, ok bool, err error)
+}
+
 // AgentResolver maps a session's harness onto the Agent adapter that drives it,
 // so the Session Manager can spawn (and restore) a different agent per session
 // without depending on the concrete adapter registry. ok=false means no adapter

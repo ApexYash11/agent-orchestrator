@@ -61,6 +61,7 @@ type ActivityRecorder interface {
 type SessionsController struct {
 	Svc      SessionService
 	Activity ActivityRecorder
+	Metrics  MetricsService
 }
 
 // Register mounts the session routes on the supplied router.
@@ -101,7 +102,7 @@ func (c *SessionsController) list(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, ListSessionsResponse{Sessions: sessionViews(sessions)})
+	envelope.WriteJSON(w, http.StatusOK, ListSessionsResponse{Sessions: sessionViewsWithMetrics(r.Context(), sessions, c.Metrics)})
 }
 
 func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
@@ -487,7 +488,7 @@ func (c *SessionsController) listOrchestrators(w http.ResponseWriter, r *http.Re
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, ListSessionsResponse{Sessions: sessionViews(sessions)})
+	envelope.WriteJSON(w, http.StatusOK, ListSessionsResponse{Sessions: sessionViewsWithMetrics(r.Context(), sessions, c.Metrics)})
 }
 
 func (c *SessionsController) getOrchestrator(w http.ResponseWriter, r *http.Request) {
@@ -673,6 +674,35 @@ func sessionViews(sessions []domain.Session) []SessionView {
 		out = append(out, sessionView(s))
 	}
 	return out
+}
+
+func sessionViewsWithMetrics(ctx context.Context, sessions []domain.Session, metricsSvc MetricsService) []SessionView {
+	views := sessionViews(sessions)
+	if metricsSvc == nil || len(views) == 0 {
+		return views
+	}
+	ids := make([]string, len(views))
+	for i, v := range views {
+		ids[i] = string(v.ID)
+	}
+	metricsByID, _ := metricsSvc.ListSessionMetricsCurrentByIDs(ctx, ids)
+	if metricsByID == nil {
+		return views
+	}
+	for i, v := range views {
+		sm, ok := metricsByID[string(v.ID)]
+		if !ok {
+			continue
+		}
+		views[i].Metrics = &SessionMetricsSummary{
+			EstimatedCost:      sm.EstimatedCost,
+			TotalTokens:        sm.TotalInputTokens + sm.TotalOutputTokens,
+			Model:              sm.Model,
+			ContextUtilization: sm.ContextUtilization,
+			RetryCount:         int(sm.RetryCount),
+		}
+	}
+	return views
 }
 
 func sessionPRFacts(prs []domain.PRFacts) []SessionPRFacts {

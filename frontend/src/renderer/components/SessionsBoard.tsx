@@ -313,6 +313,20 @@ function SessionCard({ session, onOpen }: { session: WorkspaceSession; onOpen: (
 				) : (
 					"no PR yet"
 				)}
+				{session.metrics ? (
+					<div className="mt-2 flex items-center gap-2 border-t border-border pt-2 text-[10px]">
+						{session.metrics.estimatedCost ? (
+							<span className="inline-flex items-center gap-1 rounded bg-raised px-1.5 py-0.5">
+								$ {session.metrics.estimatedCost.toFixed(4)}
+							</span>
+						) : null}
+						{session.metrics.totalTokens ? (
+							<span className="text-passive">
+								{formatTokenCount(session.metrics.totalTokens)} tokens
+							</span>
+						) : null}
+					</div>
+				) : null}
 			</div>
 		</div>
 	);
@@ -330,6 +344,12 @@ function BoardPRSummary({ className, pr }: { className?: string; pr: SessionPRSu
 			<PRAttentionPanel className="mt-1.5 pt-1.5" maxItems={2} pr={pr} />
 		</div>
 	);
+}
+
+function formatTokenCount(count: number): string {
+	if (count >= 1_000_000) return (count / 1_000_000).toFixed(1) + "M";
+	if (count >= 1_000) return (count / 1_000).toFixed(1) + "K";
+	return String(count);
 }
 
 function sameLabel(a: string, b: string): boolean {

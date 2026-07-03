@@ -299,6 +299,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch the current aggregated metrics for a session */
+        get: operations["getSessionMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/metrics/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List historical usage points for a session */
+        get: operations["getSessionMetricsHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/pr": {
         parameters: {
             query?: never;
@@ -543,6 +577,7 @@ export interface components {
             isTerminated: boolean;
             issueId?: string;
             kind: string;
+            metrics?: components["schemas"]["SessionMetricsSummary"];
             /** Format: int64 */
             previewRevision?: number;
             previewUrl?: string;
@@ -568,6 +603,12 @@ export interface components {
         };
         DomainReviewerConfig: {
             harness: string;
+        };
+        GetSessionMetricsHistoryResponse: {
+            metrics: components["schemas"]["SessionMetricsPoint"][];
+        };
+        GetSessionMetricsResponse: {
+            metrics: components["schemas"]["SessionMetricsDetail"];
         };
         ImportReport: {
             dryRun: boolean;
@@ -758,6 +799,40 @@ export interface components {
             message: string;
             ok: boolean;
             sessionId: string;
+        };
+        SessionMetricsDetail: {
+            /** Format: double */
+            contextUtilization?: number;
+            /** Format: double */
+            estimatedCost?: number;
+            /** Format: date-time */
+            lastActivityAt?: string;
+            model?: string;
+            retryCount: number;
+            /** Format: int64 */
+            totalInputTokens: number;
+            /** Format: int64 */
+            totalOutputTokens: number;
+        };
+        SessionMetricsPoint: {
+            /** Format: double */
+            cost?: number;
+            /** Format: int64 */
+            inputTokens: number;
+            /** Format: int64 */
+            outputTokens: number;
+            /** Format: date-time */
+            recordedAt: string;
+        };
+        SessionMetricsSummary: {
+            /** Format: double */
+            contextUtilization?: number;
+            /** Format: double */
+            estimatedCost?: number;
+            model?: string;
+            retryCount?: number;
+            /** Format: int64 */
+            totalTokens?: number;
         };
         SessionPRCISummary: {
             failingChecks: components["schemas"]["SessionPRFailingCheck"][];
@@ -2037,6 +2112,109 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionMetrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetSessionMetricsResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionMetricsHistory: {
+        parameters: {
+            query?: {
+                /** @description RFC 3339 timestamp. Return points recorded on or after this time. When omitted, returns all available history. */
+                since?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetSessionMetricsHistoryResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

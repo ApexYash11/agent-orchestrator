@@ -130,6 +130,17 @@ export type WorkspaceSession = {
 	 * absent it is derived from {@link SessionStatus} via {@link workerDisplayStatus}.
 	 */
 	displayStatus?: WorkerDisplayStatus;
+	/**
+	 * Aggregated token/cost metrics from the daemon, populated on session-list
+	 * reads when the collector has produced a session_metrics_current row.
+	 */
+	metrics?: {
+		estimatedCost?: number;
+		totalTokens?: number;
+		model?: string;
+		contextUtilization?: number;
+		retryCount?: number;
+	};
 };
 
 /** Glanceable worker status. Maps 1:1 to the accent colors in DESIGN.md. */
