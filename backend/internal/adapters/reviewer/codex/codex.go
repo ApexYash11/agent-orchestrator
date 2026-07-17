@@ -29,6 +29,18 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
+var _ ports.ReviewerPreflighter = (*Reviewer)(nil)
+
+// Preflight checks that the codex binary is available on PATH before the
+// engine creates review runs. It uses GetLaunchCommand with a minimal config
+// because binary resolution (p.codexBinary) is the first thing that method
+// does and does not depend on SessionID, Prompt, or SystemPrompt.
+func (r *Reviewer) Preflight(ctx context.Context, inv ports.ReviewInvocation) error {
+	_, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
+		WorkspacePath: inv.WorkspacePath,
+	})
+	return err
+}
 
 // ReviewCommand launches the reviewer with an enforced read-only filesystem
 // sandbox. Auto approval lets the headless session request the narrowly needed

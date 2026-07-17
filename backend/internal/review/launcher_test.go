@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -52,6 +53,17 @@ func (f *fakeCancellableReviewer) ReviewCancel(context.Context) (ports.ReviewCan
 		mode = ports.ReviewCancelInterrupt
 	}
 	return ports.ReviewCancelSpec{Mode: mode, Interrupts: f.interrupts}, nil
+}
+
+type fakePreflightReviewer struct {
+	fakeReviewer
+	preflighted  bool
+	preflightErr error
+}
+
+func (f *fakePreflightReviewer) Preflight(_ context.Context, _ ports.ReviewInvocation) error {
+	f.preflighted = true
+	return f.preflightErr
 }
 
 type fakeReviewerResolver struct {
@@ -194,5 +206,41 @@ func TestLauncherSpawnNoAdapter(t *testing.T) {
 	l := NewLauncher(fakeReviewerResolver{ok: false}, &fakeRuntime{})
 	if _, err := l.Spawn(context.Background(), launchSpec()); err == nil || !strings.Contains(err.Error(), "no reviewer adapter") {
 		t.Fatalf("err = %v, want no-adapter", err)
+	}
+}
+
+func TestLauncherPreflightCallsReviewerPreflight(t *testing.T) {
+	reviewer := &fakePreflightReviewer{}
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{})
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if !reviewer.preflighted {
+		t.Fatal("expected reviewer Preflight to be called")
+	}
+}
+
+func TestLauncherPreflightForwardsError(t *testing.T) {
+	reviewer := &fakePreflightReviewer{preflightErr: fmt.Errorf("codex: %w", ports.ErrAgentBinaryNotFound)}
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{})
+	if err := l.Preflight(context.Background(), domain.ReviewerCodex, "/ws/mer-1"); err == nil {
+		t.Fatal("expected error from preflight, got nil")
+	} else if !strings.Contains(err.Error(), "codex") {
+		t.Fatalf("err = %v, want error containing 'codex'", err)
+	}
+}
+
+func TestLauncherPreflightSkipsUnsupportedReviewer(t *testing.T) {
+	reviewer := &fakeReviewer{} // does NOT implement ReviewerPreflighter
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{})
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err != nil {
+		t.Fatalf("Preflight with unsupported reviewer: %v", err)
+	}
+}
+
+func TestLauncherPreflightNoAdapter(t *testing.T) {
+	l := NewLauncher(fakeReviewerResolver{ok: false}, &fakeRuntime{})
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err == nil || !strings.Contains(err.Error(), "no reviewer adapter") {
+		t.Fatalf("err = %v, want no-adapter error", err)
 	}
 }

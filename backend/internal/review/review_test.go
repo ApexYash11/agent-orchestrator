@@ -164,6 +164,8 @@ type fakeLauncher struct {
 	cancelledHarness domain.ReviewerHarness
 	specs            []LaunchSpec
 	handles          []string
+	preflightErr     error
+	preflighted      bool
 }
 
 func (f *fakeLauncher) Spawn(_ context.Context, spec LaunchSpec) (string, error) {
@@ -192,6 +194,10 @@ func (f *fakeLauncher) Cancel(_ context.Context, handleID string, harness domain
 	f.cancelledHandle = handleID
 	f.cancelledHarness = harness
 	return f.cancelErr
+}
+func (f *fakeLauncher) Preflight(_ context.Context, _ domain.ReviewerHarness, _ string) error {
+	f.preflighted = true
+	return f.preflightErr
 }
 
 func liveWorker() domain.SessionRecord {
@@ -732,5 +738,51 @@ func TestListReturnsHandleAndRuns(t *testing.T) {
 	}
 	if got.ReviewerHandleID != "review-mer-1" || len(got.Runs) != 1 {
 		t.Fatalf("list = %+v", got)
+	}
+}
+
+func TestTriggerPreflightFailureReturnsErrorWithoutCreatingRuns(t *testing.T) {
+	store := &fakeStore{}
+	launcher := &fakeLauncher{preflightErr: fmt.Errorf("codex: %w", ports.ErrAgentBinaryNotFound)}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	_, err := eng.Trigger(context.Background(), "mer-1")
+	if err == nil {
+		t.Fatal("expected error from preflight, got nil")
+	}
+	if !errors.Is(err, ports.ErrAgentBinaryNotFound) {
+		t.Fatalf("err = %v, want wrapped ErrAgentBinaryNotFound", err)
+	}
+	if !launcher.preflighted {
+		t.Fatal("expected Preflight to be called")
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("expected 0 review runs, got %d: %+v", len(store.runs), store.runs)
+	}
+	if launcher.spawned {
+		t.Fatal("expected no spawn attempt when preflight fails")
+	}
+}
+
+func TestTriggerProceedsNormallyAfterSuccessfulPreflight(t *testing.T) {
+	store := &fakeStore{}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	res, err := eng.Trigger(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	if !launcher.preflighted {
+		t.Fatal("expected Preflight to be called")
+	}
+	if !res.Created || res.ReviewerHandleID != "review-mer-1" {
+		t.Fatalf("result = %+v", res)
+	}
+	if !launcher.spawned {
+		t.Fatal("expected spawn after successful preflight")
+	}
+	if len(store.runs) != 1 {
+		t.Fatalf("expected 1 review run, got %d", len(store.runs))
 	}
 }

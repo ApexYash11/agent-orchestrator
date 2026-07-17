@@ -17,6 +17,11 @@ const cancelInterruptDelay = 150 * time.Millisecond
 // It is the side of the engine that talks to the reviewer registry and runtime;
 // the engine owns the orchestration and persistence.
 type Launcher interface {
+	// Preflight checks whether the reviewer for the given harness is available
+	// to run (binary on PATH, etc.) without starting a runtime pane. It is
+	// called before any ReviewRun rows are created so a missing binary fails
+	// fast rather than creating runs that are later retroactively marked failed.
+	Preflight(ctx context.Context, harness domain.ReviewerHarness, workspacePath string) error
 	// Spawn launches a fresh reviewer and returns the runtime handle id of the
 	// live pane (stable per worker, reused across passes).
 	Spawn(ctx context.Context, spec LaunchSpec) (handleID string, err error)
@@ -65,6 +70,23 @@ type preLaunchReviewer interface {
 // NewLauncher builds the production reviewer launcher.
 func NewLauncher(reviewers ports.ReviewerResolver, runtime reviewerRuntime) Launcher {
 	return &agentLauncher{reviewers: reviewers, runtime: runtime}
+}
+
+// Preflight checks whether the reviewer binary for harness is on PATH before
+// the engine commits to creating review runs. Adapters that do not implement
+// ports.ReviewerPreflighter are silently skipped.
+func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHarness, workspacePath string) error {
+	reviewer, ok := l.reviewers.Reviewer(harness)
+	if !ok {
+		return fmt.Errorf("no reviewer adapter for harness %q", harness)
+	}
+	p, ok := reviewer.(ports.ReviewerPreflighter)
+	if !ok {
+		return nil // adapter does not opt into preflight
+	}
+	return p.Preflight(ctx, ports.ReviewInvocation{
+		WorkspacePath: workspacePath,
+	})
 }
 
 // reviewerHandleID is the stable runtime handle for a worker's reviewer pane, so
