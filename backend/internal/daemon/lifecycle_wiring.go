@@ -18,6 +18,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/reaper"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
+	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
@@ -80,7 +81,7 @@ type sessionLifecycle interface {
 // store + LCM, the per-session agent resolver, and the agent messenger. The
 // returned service is mounted at httpd APIDeps.Sessions. It also returns the
 // manager so the caller can wire Reconcile into the boot sequence.
-func startSession(cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
+func startSession(cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, log *slog.Logger, agentSvc *agentsvc.Service) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
 	defaultAgent := cfg.Agent
 	if defaultAgent == "" {
 		defaultAgent = config.DefaultAgent
@@ -151,7 +152,7 @@ func startSession(cfg config.Config, runtime runtimeselect.Runtime, store *sqlit
 		Sessions: store,
 		PRs:      store,
 		Projects: store,
-		Launcher: reviewcore.NewLauncher(reviewers, runtime),
+		Launcher: reviewcore.NewLauncher(reviewers, runtime, reviewcore.WithAgentChecker(agentCheckerAdapter{svc: agentSvc})),
 	})
 	reviewSvc := reviewsvc.New(reviewEngine, store, reviewsvc.WithLifecycleReducer(lcm))
 	return sessionSvc, reviewSvc, mgr, nil
@@ -271,4 +272,33 @@ func (r projectRepoResolver) RepoPath(projectID domain.ProjectID) (string, error
 		return "", fmt.Errorf("project %q has no repo path on record: %w", projectID, sessionmanager.ErrProjectNotResolvable)
 	}
 	return rec.Path, nil
+}
+
+// agentCheckerAdapter wraps agent.Service to implement reviewcore.AgentChecker.
+// It checks the cached authorized-agent list first (fast path), then falls back
+// to a live Probe() so the first preflight after a failed initial catalog
+// refresh still gets a fresh binary check rather than a stale negative.
+type agentCheckerAdapter struct {
+	svc *agentsvc.Service
+}
+
+var _ reviewcore.AgentChecker = agentCheckerAdapter{}
+
+func (a agentCheckerAdapter) IsAgentAuthorized(ctx context.Context, agentID string) (bool, error) {
+	inv, err := a.svc.List(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, info := range inv.Authorized {
+		if info.ID == agentID {
+			return true, nil
+		}
+	}
+	// Not in cache; do a fresh probe so a failed initial Refresh doesn't
+	// produce a false negative for the very first preflight.
+	result, err := a.svc.Probe(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	return result.Installed && result.Agent.AuthStatus == ports.AgentAuthStatusAuthorized, nil
 }

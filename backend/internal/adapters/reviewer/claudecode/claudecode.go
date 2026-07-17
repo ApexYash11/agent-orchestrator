@@ -31,7 +31,6 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
-var _ ports.ReviewerPreflighter = (*Reviewer)(nil)
 
 // reviewerAllowedTools is the read-only tool allowlist the reviewer launches
 // with. The reviewer runs headless (no human to approve prompts) but must stay
@@ -64,17 +63,6 @@ var reviewerDisallowedTools = []string{
 	"NotebookEdit",
 	"Bash(git push:*)",
 	"Bash(git commit:*)",
-}
-
-// Preflight checks that the claude binary is available on PATH before the
-// engine creates review runs. It uses GetLaunchCommand with a minimal config
-// because binary resolution (p.claudeBinary) is the first thing that method
-// does and does not depend on SessionID, Prompt, or SystemPrompt.
-func (r *Reviewer) Preflight(ctx context.Context, inv ports.ReviewInvocation) error {
-	_, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
-		WorkspacePath: inv.WorkspacePath,
-	})
-	return err
 }
 
 // ReviewCommand builds a claude-code invocation that reviews the worker's

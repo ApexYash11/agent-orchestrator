@@ -55,12 +55,32 @@ type reviewerRuntime interface {
 	SendMessage(ctx context.Context, handle ports.RuntimeHandle, message string) error
 }
 
+// AgentChecker tells the review launcher whether a specific agent is
+// installed and ready to run. It wraps the daemon's cached agent-catalog
+// state so the preflight uses existing probe results instead of re-resolving
+// the binary through the reviewer adapter.
+type AgentChecker interface {
+	// IsAgentAuthorized returns true when the agent with the given id is
+	// installed and its latest auth probe returned "authorized".
+	IsAgentAuthorized(ctx context.Context, agentID string) (bool, error)
+}
+
+// LauncherOption configures a Launcher at construction time.
+type LauncherOption func(*agentLauncher)
+
+// WithAgentChecker wires an agent-catalog checker so the launcher can verify
+// the reviewer's underlying agent is installed before creating review runs.
+func WithAgentChecker(c AgentChecker) LauncherOption {
+	return func(l *agentLauncher) { l.agentChecker = c }
+}
+
 // agentLauncher resolves a reviewer adapter from the registry and drives the
 // runtime. The reviewer reuses the worker's worktree (a fresh session worktree
 // would branch off the default branch and so would not contain the PR changes).
 type agentLauncher struct {
-	reviewers ports.ReviewerResolver
-	runtime   reviewerRuntime
+	reviewers    ports.ReviewerResolver
+	runtime      reviewerRuntime
+	agentChecker AgentChecker
 }
 
 type preLaunchReviewer interface {
@@ -68,25 +88,30 @@ type preLaunchReviewer interface {
 }
 
 // NewLauncher builds the production reviewer launcher.
-func NewLauncher(reviewers ports.ReviewerResolver, runtime reviewerRuntime) Launcher {
-	return &agentLauncher{reviewers: reviewers, runtime: runtime}
+func NewLauncher(reviewers ports.ReviewerResolver, runtime reviewerRuntime, opts ...LauncherOption) Launcher {
+	l := &agentLauncher{reviewers: reviewers, runtime: runtime}
+	for _, opt := range opts {
+		opt(l)
+	}
+	return l
 }
 
-// Preflight checks whether the reviewer binary for harness is on PATH before
-// the engine commits to creating review runs. Adapters that do not implement
-// ports.ReviewerPreflighter are silently skipped.
+// Preflight checks whether the reviewer's agent is in the daemon's authorized
+// agent list (binary found on PATH). It uses the cached agent-catalog state
+// rather than re-resolving the binary via the reviewer adapter. When no
+// AgentChecker is configured (testing), the check is silently skipped.
 func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHarness, workspacePath string) error {
-	reviewer, ok := l.reviewers.Reviewer(harness)
-	if !ok {
-		return fmt.Errorf("no reviewer adapter for harness %q", harness)
+	if l.agentChecker == nil {
+		return nil // no checker configured — skip (testing path)
 	}
-	p, ok := reviewer.(ports.ReviewerPreflighter)
-	if !ok {
-		return nil // adapter does not opt into preflight
+	ok, err := l.agentChecker.IsAgentAuthorized(ctx, string(harness))
+	if err != nil {
+		return fmt.Errorf("reviewer preflight: %w", err)
 	}
-	return p.Preflight(ctx, ports.ReviewInvocation{
-		WorkspacePath: workspacePath,
-	})
+	if !ok {
+		return fmt.Errorf("reviewer agent %q is not installed or not authorized", harness)
+	}
+	return nil
 }
 
 // reviewerHandleID is the stable runtime handle for a worker's reviewer pane, so

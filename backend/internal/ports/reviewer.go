@@ -89,14 +89,6 @@ type ReviewCommandSpec struct {
 	Env  map[string]string
 }
 
-// ReviewerPreflighter is implemented by reviewer adapters that can check
-// their runtime prerequisites (e.g. binary on PATH) before AO commits to
-// creating review runs. Unlike PreLaunch (which runs inside Spawn after
-// review runs already exist), Preflight runs before any run is persisted.
-type ReviewerPreflighter interface {
-	Preflight(ctx context.Context, inv ReviewInvocation) error
-}
-
 // ReviewerResolver maps a reviewer harness onto its adapter. ok=false means no
 // adapter is registered for that harness.
 type ReviewerResolver interface {
