@@ -252,3 +252,19 @@ func TestLauncherPreflightBinaryNotFound(t *testing.T) {
 		t.Fatalf("err = %v, want 'not found'", err)
 	}
 }
+
+func TestLauncherPreflightSkipsEnvPrefix(t *testing.T) {
+	reviewer := &fakeReviewerForPreflight{Argv: []string{"env", "OPENCODE_CONFIG_CONTENT=cfg", "go"}}
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{})
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+}
+
+func TestLauncherPreflightEnvPrefixWithMissingBinary(t *testing.T) {
+	reviewer := &fakeReviewerForPreflight{Argv: []string{"env", "KEY=val", "nonexistent-binary-999"}}
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{})
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("err = %v, want 'not found'", err)
+	}
+}

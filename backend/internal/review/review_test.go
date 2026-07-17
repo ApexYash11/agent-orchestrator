@@ -484,6 +484,9 @@ func TestTriggerNotifiesLiveReviewerOnNewCommit(t *testing.T) {
 	if !launcher.notified || launcher.spawned {
 		t.Fatalf("expected notify on live reviewer: %+v", launcher)
 	}
+	if launcher.preflighted {
+		t.Fatal("expected preflight not to run when reusing a live pane")
+	}
 	if launcher.gotHandle != "review-mer-1" {
 		t.Fatalf("notify handle = %q", launcher.gotHandle)
 	}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -91,8 +93,20 @@ func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHa
 	if len(cmd.Argv) == 0 {
 		return fmt.Errorf("reviewer produced empty command")
 	}
-	if _, err := exec.LookPath(cmd.Argv[0]); err != nil {
-		return fmt.Errorf("reviewer binary %q not found: %w", cmd.Argv[0], err)
+	// Unwrap any leading env KEY=value ... prefix so the real binary is
+	// validated. Mirrors launchBinary in the session manager, which already
+	// skips the same prefix to validate the worker agent binary.
+	bin := cmd.Argv[0]
+	if filepath.Base(bin) == "env" {
+		for _, arg := range cmd.Argv[1:] {
+			if !strings.Contains(arg, "=") {
+				bin = arg
+				break
+			}
+		}
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		return fmt.Errorf("reviewer binary %q not found: %w", bin, err)
 	}
 	return nil
 }
