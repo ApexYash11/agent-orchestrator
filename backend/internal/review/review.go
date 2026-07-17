@@ -207,13 +207,6 @@ func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID) (Trigger
 		return TriggerResult{}, err
 	}
 
-	// Preflight: verify the reviewer binary is available before creating any
-	// review runs. A missing binary fails fast with a clear error and zero
-	// side effects instead of creating runs that are retroactively marked failed.
-	if err := e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath); err != nil {
-		return TriggerResult{}, fmt.Errorf("reviewer preflight: %w", err)
-	}
-
 	now := e.clock()
 	reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, now)
 	if err != nil {
@@ -269,6 +262,14 @@ func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID) (Trigger
 			}
 		}
 		return err
+	}
+
+	// Preflight: verify the reviewer binary can be launched before attempting
+	// to start the runtime pane. Uses the same adapter + ReviewCommand path as
+	// Spawn. On failure, created runs are marked failed via failRuns so a
+	// future trigger can retry.
+	if err := e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath); err != nil {
+		return TriggerResult{}, failRuns(0, fmt.Errorf("reviewer preflight: %w", err))
 	}
 
 	handleID := ""

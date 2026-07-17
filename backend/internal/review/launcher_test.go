@@ -55,15 +55,20 @@ func (f *fakeCancellableReviewer) ReviewCancel(context.Context) (ports.ReviewCan
 	return ports.ReviewCancelSpec{Mode: mode, Interrupts: f.interrupts}, nil
 }
 
-type fakeAgentChecker struct {
-	authorized bool
-	checkErr   error
-	checkedID  string
+type fakeReviewerForPreflight struct {
+	CommandErr error
+	Argv       []string
 }
 
-func (f *fakeAgentChecker) IsAgentAuthorized(_ context.Context, agentID string) (bool, error) {
-	f.checkedID = agentID
-	return f.authorized, f.checkErr
+func (f *fakeReviewerForPreflight) ReviewCommand(_ context.Context, _ ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
+	if f.CommandErr != nil {
+		return ports.ReviewCommandSpec{}, f.CommandErr
+	}
+	return ports.ReviewCommandSpec{Argv: f.Argv}, nil
+}
+
+func (f *fakeReviewerForPreflight) ReviewMessage(_ context.Context, _ ports.ReviewInvocation) (string, error) {
+	return "", nil
 }
 
 type fakeReviewerResolver struct {
@@ -209,40 +214,41 @@ func TestLauncherSpawnNoAdapter(t *testing.T) {
 	}
 }
 
-func TestLauncherPreflightCallsAgentChecker(t *testing.T) {
-	checker := &fakeAgentChecker{authorized: true}
-	l := NewLauncher(fakeReviewerResolver{reviewer: &fakeReviewer{}, ok: true}, &fakeRuntime{}, WithAgentChecker(checker))
+func TestLauncherPreflightResolvesAdapter(t *testing.T) {
+	reviewer := &fakeReviewerForPreflight{Argv: []string{"go"}}
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{})
 	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err != nil {
 		t.Fatalf("Preflight: %v", err)
 	}
-	if checker.checkedID != string(domain.ReviewerClaudeCode) {
-		t.Fatalf("checkedID = %q, want %q", checker.checkedID, domain.ReviewerClaudeCode)
+}
+
+func TestLauncherPreflightNoAdapter(t *testing.T) {
+	l := NewLauncher(fakeReviewerResolver{ok: false}, &fakeRuntime{})
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err == nil || !strings.Contains(err.Error(), "no reviewer adapter") {
+		t.Fatalf("err = %v, want 'no reviewer adapter'", err)
 	}
 }
 
-func TestLauncherPreflightRejectsUnauthorized(t *testing.T) {
-	checker := &fakeAgentChecker{authorized: false}
-	l := NewLauncher(fakeReviewerResolver{reviewer: &fakeReviewer{}, ok: true}, &fakeRuntime{}, WithAgentChecker(checker))
-	if err := l.Preflight(context.Background(), domain.ReviewerCodex, "/ws/mer-1"); err == nil {
-		t.Fatal("expected error from preflight, got nil")
-	} else if !strings.Contains(err.Error(), "not installed or not authorized") {
-		t.Fatalf("err = %v, want containing 'not installed or not authorized'", err)
+func TestLauncherPreflightReviewCommandError(t *testing.T) {
+	reviewer := &fakeReviewerForPreflight{CommandErr: errors.New("reviewer unavailable")}
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{})
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err == nil || !strings.Contains(err.Error(), "reviewer unavailable") {
+		t.Fatalf("err = %v, want containing 'reviewer unavailable'", err)
 	}
 }
 
-func TestLauncherPreflightForwardsCheckerError(t *testing.T) {
-	checker := &fakeAgentChecker{checkErr: errors.New("probe failed")}
-	l := NewLauncher(fakeReviewerResolver{reviewer: &fakeReviewer{}, ok: true}, &fakeRuntime{}, WithAgentChecker(checker))
-	if err := l.Preflight(context.Background(), domain.ReviewerCodex, "/ws/mer-1"); err == nil {
-		t.Fatal("expected error from preflight, got nil")
-	} else if !strings.Contains(err.Error(), "probe failed") {
-		t.Fatalf("err = %v, want containing 'probe failed'", err)
+func TestLauncherPreflightEmptyArgv(t *testing.T) {
+	reviewer := &fakeReviewerForPreflight{}
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{})
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err == nil || !strings.Contains(err.Error(), "empty command") {
+		t.Fatalf("err = %v, want 'empty command'", err)
 	}
 }
 
-func TestLauncherPreflightSkipsWhenNoChecker(t *testing.T) {
-	l := NewLauncher(fakeReviewerResolver{reviewer: &fakeReviewer{}, ok: true}, &fakeRuntime{})
-	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err != nil {
-		t.Fatalf("Preflight with no checker: %v", err)
+func TestLauncherPreflightBinaryNotFound(t *testing.T) {
+	reviewer := &fakeReviewerForPreflight{Argv: []string{"this-binary-does-not-exist-12345"}}
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, &fakeRuntime{})
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("err = %v, want 'not found'", err)
 	}
 }

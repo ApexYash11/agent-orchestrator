@@ -671,6 +671,9 @@ func TestTriggerSkipsApprovedAndRunningCurrentHead(t *testing.T) {
 	if res.Created || len(res.CreatedRuns) != 0 || launcher.spawned || launcher.notified {
 		t.Fatalf("expected no new work: res=%+v launcher=%+v", res, launcher)
 	}
+	if launcher.preflighted {
+		t.Fatal("expected preflight not to run")
+	}
 	if len(res.Reviews) != 2 || res.Reviews[0].Status != ReviewStateUpToDate || res.Reviews[1].Status != ReviewStateRunning {
 		t.Fatalf("review states = %+v", res.Reviews)
 	}
@@ -741,7 +744,7 @@ func TestListReturnsHandleAndRuns(t *testing.T) {
 	}
 }
 
-func TestTriggerPreflightFailureReturnsErrorWithoutCreatingRuns(t *testing.T) {
+func TestTriggerPreflightFailureRecordsFailedRun(t *testing.T) {
 	store := &fakeStore{}
 	launcher := &fakeLauncher{preflightErr: fmt.Errorf("codex: %w", ports.ErrAgentBinaryNotFound)}
 	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
@@ -756,11 +759,18 @@ func TestTriggerPreflightFailureReturnsErrorWithoutCreatingRuns(t *testing.T) {
 	if !launcher.preflighted {
 		t.Fatal("expected Preflight to be called")
 	}
-	if len(store.runs) != 0 {
-		t.Fatalf("expected 0 review runs, got %d: %+v", len(store.runs), store.runs)
-	}
 	if launcher.spawned {
 		t.Fatal("expected no spawn attempt when preflight fails")
+	}
+	if len(store.runs) != 1 {
+		t.Fatalf("expected 1 review run (failed), got %d", len(store.runs))
+	}
+	run := store.runs[0]
+	if run.Status != domain.ReviewRunFailed || run.Verdict != domain.VerdictNone {
+		t.Fatalf("run = %+v, want failed with no verdict", run)
+	}
+	if !strings.Contains(run.Body, "codex") || !strings.Contains(run.Body, ports.ErrAgentBinaryNotFound.Error()) {
+		t.Fatalf("run body = %q, want preflight cause", run.Body)
 	}
 }
 
