@@ -106,6 +106,12 @@ export function useBrowserView({
 	const mirrorStreamRef = useRef<MediaStream | null>(null);
 	const hasNativeBrowser = Boolean(window.ao?.browser);
 
+	// Reset the preview dedup cache on every session switch so the preview
+	// effect does not skip clear/navigate based on stale ref values.
+	useEffect(() => {
+		previewTriggerRef.current = null;
+	}, [sessionId]);
+
 	useEffect(() => {
 		activeRef.current = active;
 	}, [active]);
@@ -434,7 +440,7 @@ export function useBrowserView({
 	// this on previewRevision (bumped on every `ao preview` call); older daemons
 	// did not send it, so fall back to URL changes for compatibility.
 	useEffect(() => {
-		if (!viewId || terminated) return;
+		if (!viewId || !viewIdRef.current || terminated) return;
 		const target = previewUrl?.trim() ?? "";
 		const revision = typeof previewRevision === "number" ? previewRevision : null;
 		const previous = previewTriggerRef.current;

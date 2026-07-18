@@ -458,6 +458,32 @@ describe("useBrowserView", () => {
 		expect(bridge.clear).not.toHaveBeenCalled();
 	});
 
+	it("re-navigates to the new session's preview target after switching sessions", async () => {
+		const bridge = setupBridge();
+		const { rerender } = renderHook(
+			({ sessionId, previewUrl, previewRevision }) =>
+				useBrowserView({ sessionId, active: true, poppedOut: false, previewUrl, previewRevision }),
+			{ initialProps: { sessionId: "sess-a", previewUrl: "http://localhost:5173/", previewRevision: 1 } },
+		);
+		// Wait for sess-a ensure + navigate.
+		await waitFor(() => expect(bridge.ensure).toHaveBeenCalledWith("sess-a"));
+		await waitFor(() =>
+			expect(bridge.navigate).toHaveBeenCalledWith({ viewId: "42:sess-a", url: "http://localhost:5173/" }),
+		);
+		bridge.navigate.mockClear();
+
+		// Switch to sess-b — the hook's cleanup runs, viewIdRef is cleared, and
+		// ensure(sess-b) starts asynchronously.  Without Fix B the preview
+		// effect would fire during the async window (viewId state still stale
+		// from sess-a, viewIdRef already empty) and silently no-op.  The new
+		// session's preview target must eventually be navigated to.
+		rerender({ sessionId: "sess-b", previewUrl: "file:///tmp/preview.html", previewRevision: 2 });
+		await waitFor(() => expect(bridge.ensure).toHaveBeenCalledWith("sess-b"));
+		await waitFor(() =>
+			expect(bridge.navigate).toHaveBeenCalledWith({ viewId: "42:sess-b", url: "file:///tmp/preview.html" }),
+		);
+	});
+
 	it("clears the view when the session is terminated, even with an active preview URL", async () => {
 		const bridge = setupBridge();
 		const { rerender } = renderHook(
