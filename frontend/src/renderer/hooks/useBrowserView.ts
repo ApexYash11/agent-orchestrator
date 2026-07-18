@@ -98,7 +98,7 @@ export function useBrowserView({
 	const frameRef = useRef<number | null>(null);
 	const settleTimerRef = useRef<number | null>(null);
 	const observerRef = useRef<ResizeObserver | null>(null);
-	const previewTriggerRef = useRef<{ revision: number | null; target: string } | null>(null);
+	const previewTriggerRef = useRef<{ sessionId: string; revision: number | null; target: string } | null>(null);
 	const hasUrlRef = useRef(false);
 	const modalOpenRef = useRef(false);
 	const mirrorTokenRef = useRef(0);
@@ -438,15 +438,15 @@ export function useBrowserView({
 		const target = previewUrl?.trim() ?? "";
 		const revision = typeof previewRevision === "number" ? previewRevision : null;
 		const previous = previewTriggerRef.current;
-		if (previous?.revision === revision && previous.target === target) return;
-		if (revision !== null && previous?.revision === revision) return;
-		previewTriggerRef.current = { revision, target };
+		if (previous?.sessionId === sessionId && previous?.revision === revision && previous.target === target) return;
+		if (previous?.sessionId === sessionId && revision !== null && previous?.revision === revision) return;
+		previewTriggerRef.current = { sessionId, revision, target };
 		if (target) {
 			void navigate(target);
 		} else if ((revision !== null && revision > 0) || previous?.target) {
 			void clear();
 		}
-	}, [clear, navigate, previewRevision, previewUrl, viewId]);
+	}, [clear, navigate, previewRevision, previewUrl, sessionId, viewId]);
 
 	const destroy = useCallback(() => {
 		const id = viewIdRef.current;
