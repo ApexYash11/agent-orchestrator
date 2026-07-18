@@ -62,7 +62,14 @@ export type XtermTerminalProps = {
 function loadRenderer(term: Terminal): void {
 	try {
 		const webgl = new WebglAddon();
-		webgl.onContextLoss(() => webgl.dispose());
+		webgl.onContextLoss(() => {
+			webgl.dispose();
+			try {
+				term.loadAddon(new CanvasAddon());
+			} catch {
+				console.warn("xterm: WebGL context lost and canvas fallback also failed");
+			}
+		});
 		term.loadAddon(webgl);
 		return;
 	} catch {
@@ -443,45 +450,55 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// measured cell box. Crucially we never re-fit straight off a single
 		// frame's proposal: the WebGL atlas warm-up can emit a one-frame transient
 		// cell box (e.g. a doubled box on a HiDPI display) that halves the grid,
-		// and committing it would lock the terminal at half size and detach (the
-		// #313 ghost). So a differing proposal must REPEAT identically across two
-		// consecutive renders — proving the measurement settled — before we apply
-		// it. proposeDimensions returns undefined until the cell box is non-zero,
-		// so a fit is never accepted from an unmeasured cell. Once the proposal
-		// holds at the live grid for a few frames (or a hard re-fit cap is hit) the
-		// listener detaches, so steady-state content renders cost nothing.
-		const STABLE_FRAMES_TARGET = 3;
+		// and committing it would lock the terminal at half size (the #313 ghost).
+		// So a differing proposal must REPEAT identically across two consecutive
+		// renders — proving the measurement settled — before we apply it.
+		// proposeDimensions returns undefined until the cell box is non-zero, so a
+		// fit is never accepted from an unmeasured cell. The listener stays alive
+		// to catch late grid changes (DPI, font metric drift); the comparison is
+		// negligible — proposeDimensions reads cached renderer dimensions and the
+		// host's clientWidth/clientHeight without forced layout.
 		const MAX_REFITS = 20;
-		let stableFrames = 0;
 		let refits = 0;
 		let pending: { cols: number; rows: number } | null = null;
 		const stabilizer = term.onRender(() => {
 			const proposed = fit.proposeDimensions();
 			if (!proposed || !proposed.cols || !proposed.rows) return;
 			if (proposed.cols !== term.cols || proposed.rows !== term.rows) {
-				stableFrames = 0;
 				// Only act once the same differing proposal repeats — a single-frame
 				// transient never gets committed, it just updates `pending`.
 				if (pending && pending.cols === proposed.cols && pending.rows === proposed.rows) {
 					pending = null;
-					if (refits++ >= MAX_REFITS) {
-						stabilizer.dispose();
-						return;
+					if (refits < MAX_REFITS) {
+						refits++;
+						fitTerminal();
 					}
-					fitTerminal();
 					return;
 				}
 				pending = { cols: proposed.cols, rows: proposed.rows };
 				return;
 			}
 			pending = null;
-			if (++stableFrames >= STABLE_FRAMES_TARGET) stabilizer.dispose();
 		});
 
 		// OS window resize and monitor/DPR changes also alter the true cell box
 		// without touching the host's height:100% box, so the ResizeObserver above
 		// misses them. Listen on window directly as a session-long recovery path.
 		window.addEventListener("resize", fitTerminal);
+
+		// Display configuration changes (DPI scaling, monitor hotplug, window moved
+		// between screens) alter the cell box without resizing the host element.
+		// The ResizeObserver misses these and the onRender stabilizer only compares
+		// grid dimensions after a renderer repaint; listen on the pixel ratio so a
+		// re-fit triggers the next repaint at the correct cell size.
+		let resolutionMedia = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+		const onResolutionChange = () => {
+			resolutionMedia.removeEventListener("change", onResolutionChange);
+			resolutionMedia = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+			resolutionMedia.addEventListener("change", onResolutionChange);
+			fitTerminal();
+		};
+		resolutionMedia.addEventListener("change", onResolutionChange);
 
 		// Do not replace this with term.onData. xterm's raw data stream can include
 		// terminal-generated control responses during attach/repaint; forwarding
@@ -620,6 +637,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			observer.disconnect();
 			stabilizer.dispose();
 			window.removeEventListener("resize", fitTerminal);
+			resolutionMedia.removeEventListener("change", onResolutionChange);
 			host.removeEventListener("copy", copyInput);
 			window.removeEventListener("keydown", copyShortcut, true);
 			selectionChange.dispose();
