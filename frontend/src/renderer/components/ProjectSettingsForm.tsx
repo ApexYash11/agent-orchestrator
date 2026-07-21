@@ -26,7 +26,7 @@ const PERMISSION_MODE_OPTIONS = [
 	{ value: "bypass-permissions", label: "Bypass permissions" },
 ] as const;
 
-const REVIEWER_OPTIONS = ["claude-code", "codex", "opencode"] as const;
+const KNOWN_REVIEWER_HARNESS_IDS = new Set(["claude-code", "codex", "opencode"]);
 
 const projectQueryKey = (id: string) => ["project", id] as const;
 
@@ -332,6 +332,9 @@ function SettingsBody({ project, projectId, onSaved }: { project: Project; proje
 							id="reviewerHarness"
 							value={form.reviewerHarness}
 							onChange={(v) => setForm((f) => ({ ...f, reviewerHarness: v }))}
+							authorized={agentCatalog?.authorized}
+							installed={agentCatalog?.installed}
+							supported={agentCatalog?.supported}
 						/>
 					</Field>
 				</CardContent>
@@ -391,7 +394,39 @@ function PermissionModeSelect({
 	);
 }
 
-function ReviewerSelect({ id, value, onChange }: { id: string; value: string; onChange: (value: string) => void }) {
+function ReviewerSelect({
+	id,
+	value,
+	onChange,
+	authorized,
+	installed,
+	supported,
+}: {
+	id: string;
+	value: string;
+	onChange: (value: string) => void;
+	authorized?: components["schemas"]["AgentInfo"][];
+	installed?: components["schemas"]["AgentInfo"][];
+	supported?: components["schemas"]["AgentInfo"][];
+}) {
+	const fallbackReviewers: components["schemas"]["AgentInfo"][] = [...KNOWN_REVIEWER_HARNESS_IDS].map((id) => ({
+		id,
+		label: id,
+	}));
+	const supportedReviewers = (supported ?? []).filter((a) => KNOWN_REVIEWER_HARNESS_IDS.has(a.id));
+	const displayReviewers = supportedReviewers.length > 0 ? supportedReviewers : fallbackReviewers;
+	const installedById = new Map((installed ?? []).map((a) => [a.id, a]));
+	const authorizedIds = new Set((authorized ?? []).map((a) => a.id));
+	const options = displayReviewers.map((agent) => {
+		const installedAgent = installedById.get(agent.id);
+		const isAuthorized = authorizedIds.has(agent.id) || installedAgent?.authStatus === "authorized";
+		const isSelectable = isAuthorized || !installedAgent;
+		return {
+			...agent,
+			disabled: !isSelectable,
+			reason: !installedAgent ? "Needs install" : !isAuthorized ? "Needs auth" : "",
+		};
+	});
 	return (
 		<Select value={value || "__default__"} onValueChange={(v) => onChange(v === "__default__" ? "" : v)}>
 			<SelectTrigger id={id} className="h-control-form w-full text-control">
@@ -399,9 +434,16 @@ function ReviewerSelect({ id, value, onChange }: { id: string; value: string; on
 			</SelectTrigger>
 			<SelectContent>
 				<SelectItem value="__default__">Project default</SelectItem>
-				{REVIEWER_OPTIONS.map((reviewer) => (
-					<SelectItem key={reviewer} value={reviewer}>
-						{reviewer}
+				{options.map((reviewer) => (
+					<SelectItem key={reviewer.id} value={reviewer.id} disabled={reviewer.disabled}>
+						<span className="flex min-w-0 w-full items-center justify-between gap-4">
+							<span className="truncate">{reviewer.label}</span>
+							{reviewer.reason && (
+								<span className="inline-flex shrink-0 items-center gap-1 text-caption text-muted-foreground">
+									{reviewer.reason}
+								</span>
+							)}
+						</span>
 					</SelectItem>
 				))}
 			</SelectContent>
