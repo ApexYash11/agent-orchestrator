@@ -60,14 +60,14 @@ func (f *fakeSessionService) List(_ context.Context, filter sessionsvc.ListFilte
 	return out, nil
 }
 
-func (f *fakeSessionService) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.Session, error) {
+func (f *fakeSessionService) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
 	if f.spawnErr != nil {
-		return domain.Session{}, f.spawnErr
+		return domain.Session{}, 0, 0, f.spawnErr
 	}
 	now := time.Now().UTC()
 	s := domain.Session{SessionRecord: domain.SessionRecord{ID: domain.SessionID(string(cfg.ProjectID) + "-2"), ProjectID: cfg.ProjectID, IssueID: cfg.IssueID, Kind: cfg.Kind, Harness: cfg.Harness, DisplayName: cfg.DisplayName, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, CreatedAt: now, UpdatedAt: now}, Status: domain.StatusIdle}
 	f.sessions[s.ID] = s
-	return s, nil
+	return s, len(cfg.Prompt), 0, nil
 }
 
 func (f *fakeSessionService) SpawnOrchestrator(ctx context.Context, projectID domain.ProjectID, clean bool) (domain.Session, error) {
@@ -83,7 +83,8 @@ func (f *fakeSessionService) SpawnOrchestrator(ctx context.Context, projectID do
 			}
 		}
 	}
-	return f.Spawn(ctx, ports.SpawnConfig{ProjectID: projectID, Kind: domain.KindOrchestrator})
+	s, _, _, err := f.Spawn(ctx, ports.SpawnConfig{ProjectID: projectID, Kind: domain.KindOrchestrator})
+	return s, err
 }
 
 func (f *fakeSessionService) Get(_ context.Context, id domain.SessionID) (domain.Session, error) {

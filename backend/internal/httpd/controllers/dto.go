@@ -165,8 +165,12 @@ type SpawnSessionRequest struct {
 }
 
 // SessionResponse is the { session } body shared by session create/get.
+// PromptBytes and SystemPromptBytes are spawn-only ephemeral measurements;
+// they are zero (and omitted from JSON) on other endpoints that reuse this type.
 type SessionResponse struct {
-	Session SessionView `json:"session"`
+	Session           SessionView `json:"session"`
+	PromptBytes       int         `json:"promptBytes,omitempty"`
+	SystemPromptBytes int         `json:"systemPromptBytes,omitempty"`
 }
 
 // ListWorkspaceFilesResponse is the body of GET /api/v1/sessions/{sessionId}/workspace/files.

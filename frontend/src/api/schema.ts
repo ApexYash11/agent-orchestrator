@@ -1185,7 +1185,9 @@ export interface components {
             sessionId: string;
         };
         SessionResponse: {
+            promptBytes?: number;
             session: components["schemas"]["ControllersSessionView"];
+            systemPromptBytes?: number;
         };
         SetActivityRequest: {
             /** @description Native agent session identifier used to resume its transcript. */
