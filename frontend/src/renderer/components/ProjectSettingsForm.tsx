@@ -483,19 +483,18 @@ function ReviewerSelect({
 		.sort((a, b) => a.rank - b.rank || a.priorityRank - b.priorityRank || agentLabelCompare(a, b));
 
 	return (
-		<Select value={value || "__default__"} onValueChange={(v) => onChange(v === "__default__" ? "" : v)} disabled={disabled}>
+		<Select
+			value={value || "__default__"}
+			onValueChange={(v) => onChange(v === "__default__" ? "" : v)}
+			disabled={disabled}
+		>
 			<SelectTrigger id={id} size="sm" className="w-full text-control">
 				<SelectValue />
 			</SelectTrigger>
 			<SelectContent position="popper" side="bottom" align="start" sideOffset={4} className="max-h-select-menu-max!">
 				<SelectItem value="__default__">Project default</SelectItem>
 				{options.map((agent) => (
-					<SelectItem
-						key={agent.id}
-						value={agent.id}
-						disabled={agent.disabled}
-						className="[&>span:last-child]:w-full"
-					>
+					<SelectItem key={agent.id} value={agent.id} disabled={agent.disabled} className="[&>span:last-child]:w-full">
 						<span className="flex min-w-0 w-full items-center justify-between gap-4">
 							<span className="truncate">{agent.label}</span>
 							{agent.reason && (
