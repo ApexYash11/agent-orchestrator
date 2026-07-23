@@ -178,9 +178,18 @@ type SpawnAttachmentInput struct {
 	Data string `json:"data"`
 }
 
-// SessionResponse is the { session } body shared by session create/get.
+// SessionResponse is the { session } body shared by session reads and updates.
 type SessionResponse struct {
 	Session SessionView `json:"session"`
+}
+
+// SpawnSessionResponse includes ephemeral measurements of the final assembled
+// prompt texts. The fields are required so a measured zero remains distinct
+// from a response that never measured prompt sizes.
+type SpawnSessionResponse struct {
+	Session           SessionView `json:"session"`
+	PromptBytes       int         `json:"promptBytes"`
+	SystemPromptBytes int         `json:"systemPromptBytes"`
 }
 
 // ListWorkspaceFilesResponse is the body of GET /api/v1/sessions/{sessionId}/workspace/files.
@@ -352,6 +361,18 @@ type SessionPRReviewSummary struct {
 	Decision                   domain.ReviewDecision         `json:"decision" enum:"none,approved,changes_requested,review_required"`
 	HasUnresolvedHumanComments bool                          `json:"hasUnresolvedHumanComments"`
 	UnresolvedBy               []SessionPRUnresolvedReviewer `json:"unresolvedBy"`
+	Reviews                    []SessionPRReviewEntry        `json:"reviews,omitempty"`
+}
+
+// SessionPRReviewEntry is one submitted provider review summary: a reviewer's
+// decisive verdict and the summary body they submitted with it.
+type SessionPRReviewEntry struct {
+	ReviewerID  string                `json:"reviewerId"`
+	Verdict     domain.ReviewDecision `json:"verdict" enum:"none,approved,changes_requested,review_required"`
+	Body        string                `json:"body,omitempty"`
+	ReviewURL   string                `json:"reviewUrl,omitempty"`
+	SubmittedAt time.Time             `json:"submittedAt"`
+	IsBot       bool                  `json:"isBot,omitempty"`
 }
 
 // SessionPRUnresolvedReviewer groups unresolved human comments by reviewer.
@@ -434,7 +455,18 @@ func newSessionPRReviewSummary(in sessionsvc.PRReviewSummary) SessionPRReviewSum
 		}
 		reviewers = append(reviewers, SessionPRUnresolvedReviewer{ReviewerID: reviewer.ReviewerID, Count: reviewer.Count, Links: links, ReviewURL: reviewer.ReviewURL, IsBot: reviewer.IsBot})
 	}
-	return SessionPRReviewSummary{Decision: in.Decision, HasUnresolvedHumanComments: in.HasUnresolvedHumanComments, UnresolvedBy: reviewers}
+	entries := make([]SessionPRReviewEntry, 0, len(in.Reviews))
+	for _, review := range in.Reviews {
+		entries = append(entries, SessionPRReviewEntry{
+			ReviewerID:  review.Reviewer,
+			Verdict:     review.Verdict,
+			Body:        review.Body,
+			ReviewURL:   review.URL,
+			SubmittedAt: review.SubmittedAt,
+			IsBot:       review.IsBot,
+		})
+	}
+	return SessionPRReviewSummary{Decision: in.Decision, HasUnresolvedHumanComments: in.HasUnresolvedHumanComments, UnresolvedBy: reviewers, Reviews: entries}
 }
 
 func newSessionPRMergeabilitySummary(in sessionsvc.PRMergeabilitySummary) SessionPRMergeabilitySummary {

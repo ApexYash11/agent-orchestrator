@@ -1188,10 +1188,21 @@ export interface components {
             line?: number;
             url?: string;
         };
+        SessionPRReviewEntry: {
+            body?: string;
+            isBot?: boolean;
+            reviewUrl?: string;
+            reviewerId: string;
+            /** Format: date-time */
+            submittedAt: string;
+            /** @enum {string} */
+            verdict: "none" | "approved" | "changes_requested" | "review_required";
+        };
         SessionPRReviewSummary: {
             /** @enum {string} */
             decision: "none" | "approved" | "changes_requested" | "review_required";
             hasUnresolvedHumanComments: boolean;
+            reviews?: components["schemas"]["SessionPRReviewEntry"][];
             unresolvedBy: components["schemas"]["SessionPRUnresolvedReviewer"][];
         };
         SessionPRSummary: {
@@ -1294,6 +1305,11 @@ export interface components {
             kind?: "worker" | "orchestrator";
             projectId: string;
             prompt?: string;
+        };
+        SpawnSessionResponse: {
+            promptBytes: number;
+            session: components["schemas"]["ControllersSessionView"];
+            systemPromptBytes: number;
         };
         SubmitReviewInput: {
             /** @description Review body recorded by AO. Required for changes_requested. */
@@ -2763,7 +2779,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionResponse"];
+                    "application/json": components["schemas"]["SpawnSessionResponse"];
                 };
             };
             /** @description Bad Request */
