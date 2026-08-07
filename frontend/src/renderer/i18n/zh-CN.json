@@ -1022,5 +1022,10 @@
 	"newTask.task": "Task",
 	"newTask.taskPlaceholder": "例如：修复不稳定的结账测试（可选）…",
 	"newTask.model": "Model",
-	"newTask.taskRequired": "Task is required."
+	"newTask.taskRequired": "Task is required.",
+	"shell.signIn": "Sign in",
+	"shell.signInToAOCloud": "Sign in to AO Cloud",
+	"shell.signedInAs": "Signed in as {{email}}",
+	"shell.signOut": "Sign out",
+	"shell.signOutWithEmail": "{{email}} · Sign out"
 }

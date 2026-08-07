@@ -1055,5 +1055,10 @@
 	"newTask.task": "Task",
 	"newTask.taskPlaceholder": "p. ex. Corriger le test de paiement instable (facultatif)…",
 	"newTask.model": "Model",
-	"newTask.taskRequired": "Task is required."
+	"newTask.taskRequired": "Task is required.",
+	"shell.signIn": "Sign in",
+	"shell.signInToAOCloud": "Sign in to AO Cloud",
+	"shell.signedInAs": "Signed in as {{email}}",
+	"shell.signOut": "Sign out",
+	"shell.signOutWithEmail": "{{email}} · Sign out"
 }
