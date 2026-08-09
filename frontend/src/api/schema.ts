@@ -1453,6 +1453,10 @@ export interface components {
             validatedAt?: string;
             warning?: string;
         };
+        AttachmentInput: {
+            data: string;
+            mimeType?: string;
+        };
         BrowserCommandRequest: {
             action: string;
             args?: {
@@ -1548,10 +1552,6 @@ export interface components {
             terminateOnPrMerge: boolean;
             /** Format: date-time */
             updatedAt: string;
-        };
-        ControllersSpawnAttachmentInput: {
-            data: string;
-            mimeType?: string;
         };
         ConversationAccountPayload: {
             authMode?: string;
@@ -1777,7 +1777,7 @@ export interface components {
         DelegateTaskRequest: {
             /** @enum {string} */
             agent?: "claude-code" | "codex" | "aider" | "opencode" | "grok" | "droid" | "amp" | "agy" | "crush" | "cursor" | "qwen" | "copilot" | "goose" | "auggie" | "continue" | "devin" | "cline" | "kimi" | "muse" | "kiro" | "kilocode" | "vibe" | "pi" | "kimchi" | "prime-agent" | "autohand" | "fake";
-            attachments?: components["schemas"]["ControllersSpawnAttachmentInput"][];
+            attachments?: components["schemas"]["AttachmentInput"][];
             brief: string;
             /** @enum {string} */
             mode?: "tui" | "chat";
@@ -2171,6 +2171,7 @@ export interface components {
             turnId?: string;
         };
         SendSessionMessageRequest: {
+            attachment?: components["schemas"]["AttachmentInput"];
             message: string;
         };
         SendSessionMessageResponse: {
@@ -2429,7 +2430,7 @@ export interface components {
             orchestrator: components["schemas"]["OrchestratorResponse"];
         };
         SpawnSessionRequest: {
-            attachments?: components["schemas"]["ControllersSpawnAttachmentInput"][];
+            attachments?: components["schemas"]["AttachmentInput"][];
             branch?: string;
             displayName?: string;
             /** @enum {string} */
@@ -2448,7 +2449,7 @@ export interface components {
             systemPromptBytes: number;
         };
         StageSessionAttachmentsRequest: {
-            attachments: components["schemas"]["ControllersSpawnAttachmentInput"][];
+            attachments: components["schemas"]["AttachmentInput"][];
         };
         StageSessionAttachmentsResponse: {
             paths: string[];
