@@ -68,6 +68,7 @@ var shippedMigrations = map[int64]string{
 	49: "0049_review_per_harness.sql",
 	52: "0052_model_usage.sql",
 	53: "0053_allow_muse_harness.sql",
+	54: "0054_allow_kimchi_harness.sql",
 	66: "0066_chat_session_mode.sql",
 	67: "0067_app_settings.sql",
 	68: "0068_conversation_turn_settings.sql",
@@ -85,6 +86,7 @@ var shippedMigrations = map[int64]string{
 	80: "0080_review_per_harness.sql",
 	81: "0081_browser_capability_verifier.sql",
 	82: "0082_allow_prime_agent_harness.sql",
+	83: "0083_reconcile_kimchi_prime_agent_harnesses.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
