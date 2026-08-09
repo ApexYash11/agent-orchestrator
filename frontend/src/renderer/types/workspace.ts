@@ -1,67 +1,16 @@
 import { attentionZone as presentationAttentionZone } from "../lib/session-presentation";
+import {
+	toSessionActivity,
+	toSessionStatus,
+	type SessionActivity,
+	type SessionActivityState,
+	type SessionStatus,
+} from "@aoagents/product-ui";
 
 import type { ReviewerHarnessId } from "../lib/reviewer-harnesses";
 
-export type SessionStatus =
-	| "working"
-	| "pr_open"
-	| "draft"
-	| "ci_failed"
-	| "review_pending"
-	| "changes_requested"
-	| "approved"
-	| "mergeable"
-	| "merged"
-	| "needs_input"
-	| "exited"
-	| "no_signal"
-	| "idle"
-	| "terminated"
-	| "unknown";
-
-const sessionStatuses = new Set<SessionStatus>([
-	"working",
-	"pr_open",
-	"draft",
-	"ci_failed",
-	"review_pending",
-	"changes_requested",
-	"approved",
-	"mergeable",
-	"merged",
-	"needs_input",
-	"exited",
-	"no_signal",
-	"idle",
-	"terminated",
-]);
-
-export function toSessionStatus(status?: string, isTerminated = false): SessionStatus {
-	if (status && sessionStatuses.has(status as SessionStatus)) return status as SessionStatus;
-	return isTerminated ? "terminated" : "unknown";
-}
-
-export type SessionActivityState = "active" | "idle" | "waiting_input" | "blocked" | "exited" | "unknown";
-
-const sessionActivityStates = new Set<SessionActivityState>(["active", "idle", "waiting_input", "blocked", "exited"]);
-
-export type SessionActivity = {
-	state: SessionActivityState;
-	lastActivityAt: string;
-};
-
-export function toSessionActivity(
-	activity?: { state?: string; lastActivityAt?: string } | null,
-): SessionActivity | undefined {
-	if (!activity) return undefined;
-	const state = sessionActivityStates.has(activity.state as SessionActivityState)
-		? (activity.state as SessionActivityState)
-		: "unknown";
-	return {
-		state,
-		lastActivityAt: activity.lastActivityAt ?? "",
-	};
-}
+export { toSessionActivity, toSessionStatus };
+export type { SessionActivity, SessionActivityState, SessionStatus };
 
 export type AgentProvider =
 	| "codex"
