@@ -266,25 +266,15 @@ func (o *Observer) Poll(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := o.reconcileStaleReviewRuns(ctx, now); err != nil {
+		return err
+	}
 	if o.disabled {
 		return nil
 	}
 	subjects, sessionRepos, err := o.discoverSubjects(ctx)
 	if err != nil {
 		return err
-	}
-	if o.reviewReconciler != nil {
-		seen := make(map[domain.SessionID]struct{}, len(sessionRepos))
-		for _, sessionRepo := range sessionRepos {
-			workerID := sessionRepo.session.ID
-			if _, ok := seen[workerID]; ok {
-				continue
-			}
-			seen[workerID] = struct{}{}
-			if err := o.reviewReconciler.ReconcileStaleReviewRuns(ctx, workerID, now); err != nil {
-				o.logger.Error("scm observer: stale review reconciliation failed", "session", workerID, "err", err)
-			}
-		}
 	}
 	if len(sessionRepos) == 0 {
 		return nil
@@ -460,6 +450,30 @@ func (o *Observer) Poll(ctx context.Context) error {
 		}
 		if etag := repoGuards[key].result.ETag; etag != "" {
 			o.cacheSetString(o.Cache.RepoPRListETag, &o.Cache.repoOrder, key, etag)
+		}
+	}
+	return nil
+}
+
+func (o *Observer) reconcileStaleReviewRuns(ctx context.Context, now time.Time) error {
+	if o.reviewReconciler == nil {
+		return nil
+	}
+	sessions, err := o.store.ListAllSessions(ctx)
+	if err != nil {
+		return err
+	}
+	seen := make(map[domain.SessionID]struct{}, len(sessions))
+	for _, session := range sessions {
+		if session.IsTerminated {
+			continue
+		}
+		if _, ok := seen[session.ID]; ok {
+			continue
+		}
+		seen[session.ID] = struct{}{}
+		if err := o.reviewReconciler.ReconcileStaleReviewRuns(ctx, session.ID, now); err != nil {
+			o.logger.Error("scm observer: stale review reconciliation failed", "session", session.ID, "err", err)
 		}
 	}
 	return nil
@@ -1101,6 +1115,10 @@ func (o *Observer) needsReviewRefresh(key string, local domain.PullRequest, deci
 	}
 	if local.ReviewHash == "" {
 		return true
+	}
+	if o.reviewReconciler != nil {
+		last := o.Cache.LastReviewPollAt[key]
+		return last.IsZero() || now.Sub(last) >= o.reviewInterval
 	}
 	if decision == string(domain.ReviewChangesRequest) {
 		last := o.Cache.LastReviewPollAt[key]

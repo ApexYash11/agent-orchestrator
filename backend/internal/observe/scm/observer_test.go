@@ -267,15 +267,16 @@ func newTestObserver(store *fakeStore, provider *fakeProvider, lc Lifecycle, now
 	return New(provider, store, lc, Config{Clock: func() time.Time { return now }, Tick: time.Hour, Logger: quietSlog(), CacheMax: 128, IdentityResolver: provider})
 }
 
-func TestObserverReconcilesStaleRunsBeforeCredentialGate(t *testing.T) {
+func TestObserverReconcilesStaleRunsWhileSCMObserverIsDisabled(t *testing.T) {
 	now := time.Unix(10, 0).UTC()
 	store := testStoreWithSession()
-	provider := &fakeProvider{credentialGate: true, credentialOK: false}
+	provider := &fakeProvider{}
 	reconciler := &fakeReviewReconciler{}
 	observer := New(provider, store, nil, Config{
 		Clock: func() time.Time { return now }, Logger: quietSlog(), IdentityResolver: provider,
 		ReviewReconciler: reconciler,
 	})
+	observer.disabled = true
 
 	if err := observer.Poll(context.Background()); err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -283,8 +284,24 @@ func TestObserverReconcilesStaleRunsBeforeCredentialGate(t *testing.T) {
 	if len(reconciler.staleCalls) != 1 || reconciler.staleCalls[0] != "p-1" {
 		t.Fatalf("stale calls = %v", reconciler.staleCalls)
 	}
-	if provider.credentialChecks != 1 {
-		t.Fatalf("credential checks = %d, want 1", provider.credentialChecks)
+	if provider.credentialChecks != 0 {
+		t.Fatalf("credential checks = %d, want 0 for disabled provider", provider.credentialChecks)
+	}
+}
+
+func TestNeedsReviewRefreshPollsForAOCommentReviews(t *testing.T) {
+	now := time.Unix(300, 0).UTC()
+	reconciler := &fakeReviewReconciler{}
+	observer := New(&fakeProvider{}, &fakeStore{}, nil, Config{
+		Clock: func() time.Time { return now }, ReviewInterval: 2 * time.Minute,
+		ReviewReconciler: reconciler, Logger: quietSlog(),
+	})
+	key := "github.com/o/r#1"
+	observer.Cache.LastReviewPollAt[key] = now.Add(-2 * time.Minute)
+	local := domain.PullRequest{Review: domain.ReviewNone, ReviewHash: "known-review-hash"}
+
+	if !observer.needsReviewRefresh(key, local, string(domain.ReviewNone), false, now) {
+		t.Fatal("AO reconciliation must periodically fetch COMMENTED reviews even when reviewDecision is unchanged")
 	}
 }
 
