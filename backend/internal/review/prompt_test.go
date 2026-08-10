@@ -31,9 +31,25 @@ func TestReviewTextsIncludesMultiPRQueue(t *testing.T) {
 		"do not use a heredoc",
 		"ao review submit --session mer-1 --reviews -",
 		`"reviews": [`,
+		"<!-- ao-review:v1 run=run-1 sha=sha1 verdict=<approved|changes_requested> -->",
+		"<!-- ao-review:v1 run=run-2 sha=sha2 verdict=<approved|changes_requested> -->",
+		"Do not include the ao-review marker in the JSON sent to `ao review submit`",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestReviewTextsIncludesSinglePRProviderMarker(t *testing.T) {
+	spec := launchSpec()
+	spec.RunID = "run-123"
+	spec.TargetSHA = "abc123"
+	spec.ReviewQueue = nil
+
+	prompt, _ := reviewTexts(spec)
+	want := "<!-- ao-review:v1 run=run-123 sha=abc123 verdict=<approved|changes_requested> -->"
+	if !strings.Contains(prompt, want) {
+		t.Fatalf("prompt missing provider marker %q:\n%s", want, prompt)
 	}
 }
