@@ -1790,16 +1790,16 @@ function cloudDataDir(): string {
 		: path.join(os.homedir(), ".ao");
 }
 
-function notifyRenderersOfCloudSession(session: import("./main/cloud-auth").CloudSession | null): void {
-	for (const wc of webContents.getAllWebContents()) {
-		wc.send("cloud:sessionChanged", session);
-	}
+function notifyRenderersOfCloudSession(account: import("./shared/cloud-account").CloudAccount | null): void {
+	const contents = getShellWebContents();
+	if (!contents || contents.isDestroyed()) return;
+	contents.send("cloud:sessionChanged", account);
 }
 
 installCloudIPC(cloudDataDir, notifyRenderersOfCloudSession);
 
 function focusCloudWindow(): void {
-	const window = BrowserWindow.getAllWindows()[0];
+	const window = BaseWindow.getAllWindows()[0];
 	if (!window) return;
 	if (window.isMinimized()) window.restore();
 	window.show();
@@ -1831,7 +1831,7 @@ app.on("second-instance", (_event, argv) => {
 		void handleCloudDeepLinkAndFocus(deepLink);
 		return;
 	}
-	const window = BrowserWindow.getAllWindows()[0];
+	const window = BaseWindow.getAllWindows()[0];
 	if (!window) return;
 	if (window.isMinimized()) window.restore();
 	window.show();

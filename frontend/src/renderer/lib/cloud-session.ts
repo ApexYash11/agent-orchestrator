@@ -1,20 +1,20 @@
 import { useEffect, useState } from "react";
 import { aoBridge } from "./bridge";
-import type { CloudSession } from "../../main/cloud-auth";
+import type { CloudAccount } from "../../shared/cloud-account";
 
-export type { CloudSession };
+export type { CloudAccount };
 
 export type CloudSessionStatus = "loading" | "authenticated" | "unauthenticated";
 
 export interface UseCloudSessionResult {
-  session: CloudSession | null;
+  session: CloudAccount | null;
   status: CloudSessionStatus;
   signIn: (returnTo?: string) => void;
   signOut: () => Promise<void>;
 }
 
 export function useCloudSession(): UseCloudSessionResult {
-  const [session, setSession] = useState<CloudSession | null>(null);
+  const [session, setSession] = useState<CloudAccount | null>(null);
   const [status, setStatus] = useState<CloudSessionStatus>("loading");
 
   useEffect(() => {

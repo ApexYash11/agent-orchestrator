@@ -8,6 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import type { CloudAccount } from "../shared/cloud-account";
 
 const CLIENT_ID =
   import.meta.env.VITE_WORKOS_CLIENT_ID?.trim() ||
@@ -18,18 +19,8 @@ const LEGACY_SESSION_FILE = "cloud-session.json";
 const PKCE_TTL_MS = 10 * 60 * 1000;
 const workos = CLIENT_ID ? createWorkOS({ clientId: CLIENT_ID }) : null;
 
-export interface CloudSession {
+interface StoredSession extends CloudAccount {
   accessToken: string;
-  authProvider: "workos";
-  user: {
-    id: string;
-    email: string;
-    displayName: string;
-  };
-  storedAt: string;
-}
-
-interface StoredSession extends CloudSession {
   refreshToken: string;
 }
 
@@ -43,32 +34,32 @@ interface AuthStore {
 }
 
 const emptyStore = (): AuthStore => ({ session: null, pkce: null });
+const memoryStores = new Map<string, AuthStore>();
+const refreshes = new Map<string, Promise<CloudAccount | null>>();
 
 function storePath(dataDir: string): string {
   return path.join(dataDir, AUTH_STORE_FILE);
 }
 
 function encodeStore(store: AuthStore): Buffer {
-  const value = JSON.stringify(store);
-  if (safeStorage.isEncryptionAvailable()) {
-    return safeStorage.encryptString(value);
-  }
-  // Files remain owner-only on systems without an OS keyring. Electron reports
-  // this case on some headless Linux setups.
-  return Buffer.from(value, "utf8");
+  return safeStorage.encryptString(JSON.stringify(store));
 }
 
 function decodeStore(value: Buffer): AuthStore {
-  const json = safeStorage.isEncryptionAvailable()
-    ? safeStorage.decryptString(value)
-    : value.toString("utf8");
-  return JSON.parse(json) as AuthStore;
+  return JSON.parse(safeStorage.decryptString(value)) as AuthStore;
 }
 
 async function readAuthStore(dataDir: string): Promise<AuthStore> {
+  const memoryStore = memoryStores.get(dataDir);
+  if (memoryStore) return memoryStore;
+  if (!safeStorage.isEncryptionAvailable()) {
+    await rm(storePath(dataDir), { force: true });
+    return emptyStore();
+  }
   try {
     return decodeStore(await readFile(storePath(dataDir)));
   } catch {
+    await rm(storePath(dataDir), { force: true });
     return emptyStore();
   }
 }
@@ -77,6 +68,14 @@ async function writeAuthStore(
   dataDir: string,
   store: AuthStore,
 ): Promise<void> {
+  if (!safeStorage.isEncryptionAvailable()) {
+    // A rotating refresh token must never fall back to plaintext persistence.
+    // Keep the session process-local until the OS keyring becomes available.
+    memoryStores.set(dataDir, store);
+    await rm(storePath(dataDir), { force: true });
+    return;
+  }
+  memoryStores.delete(dataDir);
   await mkdir(dataDir, { recursive: true });
   const target = storePath(dataDir);
   await writeFile(target, encodeStore(store), { mode: 0o600 });
@@ -84,6 +83,7 @@ async function writeAuthStore(
 }
 
 async function removeAuthStore(dataDir: string): Promise<void> {
+  memoryStores.delete(dataDir);
   await Promise.all([
     rm(storePath(dataDir), { force: true }),
     rm(path.join(dataDir, LEGACY_SESSION_FILE), { force: true }),
@@ -116,9 +116,12 @@ function toStoredSession(
   };
 }
 
-function publicSession(session: StoredSession): CloudSession {
-  const { refreshToken: _refreshToken, ...result } = session;
-  return result;
+function publicAccount(session: StoredSession): CloudAccount {
+  return {
+    authProvider: session.authProvider,
+    user: session.user,
+    storedAt: session.storedAt,
+  };
 }
 
 function jwtPayload(token: string): Record<string, unknown> | null {
@@ -140,18 +143,36 @@ function tokenExpiresSoon(token: string): boolean {
 
 export async function getCloudSession(
   dataDir: string,
-): Promise<CloudSession | null> {
+): Promise<CloudAccount | null> {
   if (!workos) return null;
+  const activeRefresh = refreshes.get(dataDir);
+  if (activeRefresh) return activeRefresh;
   const store = await readAuthStore(dataDir);
   if (!store.session) return null;
   if (!tokenExpiresSoon(store.session.accessToken)) {
-    return publicSession(store.session);
+    return publicAccount(store.session);
   }
 
+  const pendingRefresh = refreshes.get(dataDir);
+  if (pendingRefresh) return pendingRefresh;
+  const refresh = refreshCloudSession(dataDir, store, store.session);
+  refreshes.set(dataDir, refresh);
   try {
-    const refreshed = await workos.userManagement.authenticateWithRefreshToken({
+    return await refresh;
+  } finally {
+    if (refreshes.get(dataDir) === refresh) refreshes.delete(dataDir);
+  }
+}
+
+async function refreshCloudSession(
+  dataDir: string,
+  store: AuthStore,
+  storedSession: StoredSession,
+): Promise<CloudAccount | null> {
+  try {
+    const refreshed = await workos!.userManagement.authenticateWithRefreshToken({
       clientId: CLIENT_ID,
-      refreshToken: store.session.refreshToken,
+      refreshToken: storedSession.refreshToken,
     });
     const session = toStoredSession(
       refreshed.accessToken,
@@ -159,7 +180,7 @@ export async function getCloudSession(
       refreshed.user,
     );
     await writeAuthStore(dataDir, { ...store, session });
-    return publicSession(session);
+    return publicAccount(session);
   } catch {
     await removeAuthStore(dataDir);
     return null;
@@ -193,7 +214,7 @@ export async function beginCloudSignIn(dataDir: string): Promise<void> {
 export async function handleCloudDeepLink(
   rawURL: string,
   dataDir: string,
-): Promise<CloudSession | null> {
+): Promise<CloudAccount | null> {
   if (!workos) throw new Error("WorkOS is not configured.");
   const url = new URL(rawURL);
   if (url.protocol !== "ao-app:" || url.hostname !== "callback") return null;
@@ -228,7 +249,7 @@ export async function handleCloudDeepLink(
     result.user,
   );
   await writeAuthStore(dataDir, { session, pkce: null });
-  return publicSession(session);
+  return publicAccount(session);
 }
 
 export async function signOutCloud(dataDir: string): Promise<void> {
@@ -247,7 +268,7 @@ export function registerCloudProtocol(): void {
 
 export function installCloudIPC(
   getDataDir: () => string,
-  notifyRenderers: (session: CloudSession | null) => void,
+  notifyRenderers: (session: CloudAccount | null) => void,
 ): void {
   ipcMain.handle("cloud:getSession", () => getCloudSession(getDataDir()));
   ipcMain.handle("cloud:signIn", async () => {
