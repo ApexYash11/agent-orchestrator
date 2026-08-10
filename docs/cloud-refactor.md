@@ -5,6 +5,9 @@ layer reusable by the future private `ao-cloud` repository. Public AO remains a
 complete local product; no hosted control-plane, database, provisioner, or worker
 implementation belongs here.
 
+For the optional private checkout workflow and recommended implementation
+sequence, see [cloud-development.md](cloud-development.md).
+
 ## Public boundaries
 
 | Boundary | Owns | Does not own |
