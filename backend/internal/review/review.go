@@ -53,57 +53,6 @@ type Store interface {
 
 const unavailableReviewerCancellationBody = "cancelled because reviewer terminal is unavailable"
 
-// ReconcileStaleRunningRuns cancels only old review runs whose reviewer pane is
-// conclusively absent. Runtime probe errors are preserved as errors and never
-// interpreted as proof that a reviewer died.
-func (e *Engine) ReconcileStaleRunningRuns(ctx stdctx.Context, workerID domain.SessionID, staleBefore time.Time) error {
-	runs, err := e.store.ListRunningReviewRunsBySession(ctx, workerID)
-	if err != nil {
-		return err
-	}
-	reviews, err := e.store.ListReviewsBySession(ctx, workerID)
-	if err != nil {
-		return err
-	}
-	byHarness := make(map[domain.ReviewerHarness]domain.Review, len(reviews))
-	for _, review := range reviews {
-		byHarness[review.Harness] = review
-	}
-	type probeResult struct {
-		alive bool
-		err   error
-	}
-	probes := make(map[string]probeResult)
-	var probeErrors []error
-	for _, run := range runs {
-		if run.CreatedAt.After(staleBefore) {
-			continue
-		}
-		review, found := byHarness[run.Harness]
-		if !found || review.ReviewerHandleID == "" {
-			if _, err := e.store.CancelReviewRun(ctx, run.ID, unavailableReviewerCancellationBody); err != nil {
-				return err
-			}
-			continue
-		}
-		probe, ok := probes[review.ReviewerHandleID]
-		if !ok {
-			probe.alive, probe.err = e.launcher.Alive(ctx, review.ReviewerHandleID)
-			probes[review.ReviewerHandleID] = probe
-		}
-		if probe.err != nil {
-			probeErrors = append(probeErrors, fmt.Errorf("probe reviewer %q: %w", review.ReviewerHandleID, probe.err))
-			continue
-		}
-		if !probe.alive {
-			if _, err := e.store.CancelReviewRun(ctx, run.ID, unavailableReviewerCancellationBody); err != nil {
-				return err
-			}
-		}
-	}
-	return errors.Join(probeErrors...)
-}
-
 // Sessions resolves the worker session under review.
 type Sessions interface {
 	GetSession(ctx stdctx.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
@@ -169,6 +118,57 @@ func New(d Deps) *Engine {
 		newID:        newID,
 		triggerLocks: make(map[domain.SessionID]*sync.Mutex),
 	}
+}
+
+// ReconcileStaleRunningRuns cancels only old review runs whose reviewer pane is
+// conclusively absent. Runtime probe errors are preserved as errors and never
+// interpreted as proof that a reviewer died.
+func (e *Engine) ReconcileStaleRunningRuns(ctx stdctx.Context, workerID domain.SessionID, staleBefore time.Time) error {
+	runs, err := e.store.ListRunningReviewRunsBySession(ctx, workerID)
+	if err != nil {
+		return err
+	}
+	reviews, err := e.store.ListReviewsBySession(ctx, workerID)
+	if err != nil {
+		return err
+	}
+	byHarness := make(map[domain.ReviewerHarness]domain.Review, len(reviews))
+	for _, review := range reviews {
+		byHarness[review.Harness] = review
+	}
+	type probeResult struct {
+		alive bool
+		err   error
+	}
+	probes := make(map[string]probeResult)
+	var probeErrors []error
+	for _, run := range runs {
+		if run.CreatedAt.After(staleBefore) {
+			continue
+		}
+		review, found := byHarness[run.Harness]
+		if !found || review.ReviewerHandleID == "" {
+			if _, err := e.store.CancelReviewRun(ctx, run.ID, unavailableReviewerCancellationBody); err != nil {
+				return err
+			}
+			continue
+		}
+		probe, ok := probes[review.ReviewerHandleID]
+		if !ok {
+			probe.alive, probe.err = e.launcher.Alive(ctx, review.ReviewerHandleID)
+			probes[review.ReviewerHandleID] = probe
+		}
+		if probe.err != nil {
+			probeErrors = append(probeErrors, fmt.Errorf("probe reviewer %q: %w", review.ReviewerHandleID, probe.err))
+			continue
+		}
+		if !probe.alive {
+			if _, err := e.store.CancelReviewRun(ctx, run.ID, unavailableReviewerCancellationBody); err != nil {
+				return err
+			}
+		}
+	}
+	return errors.Join(probeErrors...)
 }
 
 // lockWorker serialises Trigger calls for a single worker session and returns
