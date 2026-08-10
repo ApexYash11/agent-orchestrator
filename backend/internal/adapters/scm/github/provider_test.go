@@ -1413,8 +1413,11 @@ func TestFetchReviewThreadsUsesLatestWindowWithoutFallbackWhenOldestResolved(t *
 		if !strings.Contains(string(body), "reviewThreads(last:50, before:null)") {
 			t.Fatalf("review query should fetch latest 50, body=%s", body)
 		}
-		if !strings.Contains(string(body), "reviews(last:20, states:[APPROVED,CHANGES_REQUESTED])") {
-			t.Fatalf("review query should fetch decisive review summaries, body=%s", body)
+		if !strings.Contains(string(body), "reviews(last:20, states:[APPROVED,CHANGES_REQUESTED,COMMENTED])") {
+			t.Fatalf("review query should fetch AO comment review summaries, body=%s", body)
+		}
+		if !strings.Contains(string(body), "id databaseId state") {
+			t.Fatalf("review query should request numeric database ids, body=%s", body)
 		}
 		if !strings.Contains(string(body), "submittedAt body author") {
 			t.Fatalf("review query should request the review body, body=%s", body)
@@ -1427,8 +1430,9 @@ func TestFetchReviewThreadsUsesLatestWindowWithoutFallbackWhenOldestResolved(t *
 			"data": map[string]any{"repo": map[string]any{"pullRequest": map[string]any{
 				"reviewDecision": "CHANGES_REQUESTED",
 				"reviewSummaries": map[string]any{"nodes": []any{map[string]any{
-					"id":          "review-1",
-					"state":       "CHANGES_REQUESTED",
+					"id":          "PRR_review_opaque",
+					"databaseId":  float64(98765),
+					"state":       "COMMENTED",
 					"url":         "https://github.com/o/r/pull/1#pullrequestreview-1",
 					"submittedAt": "2026-06-15T00:00:00Z",
 					"body":        "please address the failing test",
@@ -1457,7 +1461,7 @@ func TestFetchReviewThreadsUsesLatestWindowWithoutFallbackWhenOldestResolved(t *
 	if len(review.Threads) != 1 || review.Threads[0].ID != "latest-resolved" {
 		t.Fatalf("threads = %#v", review.Threads)
 	}
-	if len(review.Reviews) != 1 || review.Reviews[0].Author != "alice" || review.Reviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" || review.Reviews[0].Body != "please address the failing test" {
+	if len(review.Reviews) != 1 || review.Reviews[0].ID != "98765" || review.Reviews[0].Author != "alice" || review.Reviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" || review.Reviews[0].Body != "please address the failing test" {
 		t.Fatalf("reviews = %#v", review.Reviews)
 	}
 	if len(review.Threads[0].Comments) != 1 || review.Threads[0].Comments[0].URL != "https://github.com/o/r/pull/1#discussion_r1" {

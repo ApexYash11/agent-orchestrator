@@ -668,7 +668,7 @@ func buildReviewThreadsQuery(ref ports.SCMPRRef, beforeCursor string, includeRev
 	}
 	reviewSelection := ""
 	if includeReviews {
-		reviewSelection = fmt.Sprintf(" reviewSummaries: reviews(last:%d, states:[APPROVED,CHANGES_REQUESTED]){ nodes{ id state url submittedAt body author{ login __typename } } }", githubReviewSummaryLimit)
+		reviewSelection = fmt.Sprintf(" reviewSummaries: reviews(last:%d, states:[APPROVED,CHANGES_REQUESTED,COMMENTED]){ nodes{ id databaseId state url submittedAt body author{ login __typename } } }", githubReviewSummaryLimit)
 	}
 	return fmt.Sprintf(`query{
 repo: repository(owner:%s,name:%s){ pullRequest(number:%d){ reviewDecision%s reviewThreads(last:%d, before:%s){ nodes{
@@ -680,8 +680,12 @@ repo: repository(owner:%s,name:%s){ pullRequest(number:%d){ reviewDecision%s rev
 
 func scmReviewSummaryFromGraphQL(review map[string]any) ports.SCMReviewSummaryObservation {
 	author, _ := review["author"].(map[string]any)
+	reviewID := str(review["id"])
+	if databaseID := int64(num(review["databaseId"])); databaseID > 0 {
+		reviewID = strconv.FormatInt(databaseID, 10)
+	}
 	return ports.SCMReviewSummaryObservation{
-		ID:          str(review["id"]),
+		ID:          reviewID,
 		Author:      str(author["login"]),
 		State:       string(reviewStateFromGraphQL(review["state"])),
 		URL:         str(review["url"]),
