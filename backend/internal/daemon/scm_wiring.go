@@ -19,7 +19,7 @@ import (
 // provider used by v1. Missing credentials do not fail daemon startup; the
 // observer performs a lazy credential check in its background goroutine, logs
 // one warning, and disables itself before any provider API calls.
-func startSCMObserver(ctx context.Context, store *sqlite.Store, lcm *lifecycle.Manager, logger *slog.Logger) <-chan struct{} {
+func startSCMObserver(ctx context.Context, store *sqlite.Store, lcm *lifecycle.Manager, reviewReconciler scmobserve.ReviewReconciler, logger *slog.Logger) <-chan struct{} {
 	provider, err := newGitHubSCMProvider(logger)
 	if err != nil {
 		logSCMProviderDisabled(logger, err)
@@ -28,6 +28,7 @@ func startSCMObserver(ctx context.Context, store *sqlite.Store, lcm *lifecycle.M
 	observer := scmobserve.New(provider, store, lcm, scmobserve.Config{
 		Logger:           logger,
 		IdentityResolver: provider,
+		ReviewReconciler: reviewReconciler,
 	})
 	return observer.Start(ctx)
 }
