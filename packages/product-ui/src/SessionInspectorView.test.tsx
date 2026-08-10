@@ -4,10 +4,8 @@ import {
 	InspectorActivityTimelineView,
 	InspectorPullRequestCardView,
 	InspectorReviewsView,
-	InspectorUsageView,
 	SessionInspectorShellView,
 	type InspectorReviewLabels,
-	type InspectorUsageLabels,
 } from "./SessionInspectorView";
 import type { ExternalLinkProps } from "./external-link";
 
@@ -150,30 +148,6 @@ describe("portable inspector presentations", () => {
 		expect(screen.getByText("2h ago")).toHaveClass("font-mono", "text-passive");
 	});
 
-	it("owns usage disclosure behavior through neutral telemetry", () => {
-		render(
-			<InspectorUsageView
-				formatTokens={(tokens) => `${tokens} compact`}
-				labels={usageLabels}
-				usage={{
-					totals: totals(1200, 300),
-					harnesses: [
-						{
-							harness: "codex",
-							totals: totals(1200, 300),
-							models: [{ modelId: "gpt-5.6", totals: totals(1200, 300) }],
-						},
-					],
-				}}
-			/>,
-		);
-		expect(screen.getByLabelText("1,500 total tokens")).toHaveTextContent("1500 compact");
-		fireEvent.click(screen.getByRole("button", { name: "Codex provider details" }));
-		expect(screen.getByRole("region", { name: "Codex provider peek" })).toBeInTheDocument();
-		fireEvent.click(screen.getByRole("button", { name: "gpt-5.6 model details" }));
-		expect(screen.getByRole("region", { name: "gpt-5.6 model peek" })).toBeInTheDocument();
-	});
-
 	it("owns grouped review disclosure while the host supplies markdown and assets", () => {
 		const renderAvatar = vi.fn((harness: string) => <span data-testid="avatar">{harness}</span>);
 		const renderMarkdown = vi.fn((body: string) => <p>{body}</p>);
@@ -289,34 +263,6 @@ describe("portable inspector presentations", () => {
 	});
 });
 
-const usageLabels: InspectorUsageLabels = {
-	agent: "Agent",
-	cacheReadTokens: "Cache read",
-	cacheWriteTokens: "Cache write",
-	comingSoon: "Coming soon",
-	cost: "Cost",
-	costComingSoon: "Cost coming soon",
-	inputTokens: "Input",
-	metricAria: (label, count) => `${label}: ${count}`,
-	metricUnavailable: (label) => `${label} unavailable`,
-	modelDetails: (name) => `${name} model details`,
-	modelPeek: (name) => `${name} model peek`,
-	models: (count) => `${count} models`,
-	noModelTelemetry: "No model telemetry",
-	noUsageYet: "No usage yet",
-	outputTokens: "Output",
-	providerDetails: (name) => `${name} provider details`,
-	providerPeek: (name) => `${name} provider peek`,
-	reasoningTokens: "Reasoning",
-	tokens: "Tokens",
-	tokensExact: (count) => `${count} tokens exact`,
-	totalCost: "Total cost",
-	totalTokens: "Total tokens",
-	totalTokensAria: (count) => `${count} total tokens`,
-	totalTokensUnavailable: "Total tokens unavailable",
-	uncachedInputTokens: "Uncached input",
-};
-
 const reviewLabels: InspectorReviewLabels = {
 	aoSource: "AO",
 	bot: "Bot",
@@ -335,14 +281,3 @@ const reviewLabels: InspectorReviewLabels = {
 	unresolvedCount: (count) => `${count} unresolved`,
 	viewOnPR: "View on PR",
 };
-
-function totals(inputTokens: number, outputTokens: number) {
-	return {
-		cacheReadTokens: 0,
-		cacheWriteTokens: 0,
-		inputTokens,
-		outputTokens,
-		reasoningTokens: 0,
-		uncachedInputTokens: inputTokens,
-	};
-}

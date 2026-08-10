@@ -6,30 +6,6 @@ export type ProjectRepositorySummary = {
 	repo?: string;
 };
 
-export type ProjectCardSummary = {
-	id: string;
-	displayName: string;
-	kindLabel: string;
-	repository?: string;
-	location?: string;
-	defaultBranch?: string;
-};
-
-export type ProjectRepositoryValues = {
-	repository: string;
-	defaultBranch: string;
-};
-
-export type ProjectRepositoryValidationCode = "repository_required" | "default_branch_required";
-
-export function validateProjectRepository(
-	values: ProjectRepositoryValues,
-): ProjectRepositoryValidationCode | null {
-	if (values.repository.trim() === "") return "repository_required";
-	if (values.defaultBranch.trim() === "") return "default_branch_required";
-	return null;
-}
-
 export type ProjectSettingsValues = {
 	displayName: string;
 	defaultBranch: string;

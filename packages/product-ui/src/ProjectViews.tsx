@@ -6,16 +6,15 @@ import {
 } from "react";
 import { cn } from "./utils";
 import type {
-	ProjectCardSummary,
 	ProjectKind,
 	ProjectRepositorySummary,
-	ProjectRepositoryValues,
 } from "./project-models";
 
 type ProjectExternalLink = ComponentType<{
 	children: ReactNode;
 	className?: string;
 	href: string;
+	title?: string;
 }>;
 
 export type ProjectModePickerLabels = {
@@ -455,6 +454,7 @@ export function ProjectSettingsValueRow({
 				<ExternalLink
 					href={href}
 					className="settings-row-value text-settings-accent hover:underline"
+					title={value}
 				>
 					{value}
 				</ExternalLink>
@@ -464,112 +464,6 @@ export function ProjectSettingsValueRow({
 				</span>
 			)}
 		</ProjectSettingsRow>
-	);
-}
-
-export function ProjectRepositoryFieldsView({
-	icons,
-	labels,
-	onChange,
-	values,
-}: {
-	icons?: Partial<Record<"repository" | "defaultBranch", ReactNode>>;
-	labels: {
-		title: string;
-		repository: string;
-		repositoryPlaceholder?: string;
-		defaultBranch: string;
-		defaultBranchPlaceholder?: string;
-	};
-	onChange: (values: ProjectRepositoryValues) => void;
-	values: ProjectRepositoryValues;
-}) {
-	return (
-		<ProjectSettingsSection title={labels.title}>
-			<ProjectSettingsInputRow
-				icon={icons?.repository}
-				id="projectRepository"
-				label={labels.repository}
-				onChange={(repository) => onChange({ ...values, repository })}
-				placeholder={labels.repositoryPlaceholder}
-				value={values.repository}
-			/>
-			<ProjectSettingsInputRow
-				icon={icons?.defaultBranch}
-				id="projectDefaultBranch"
-				label={labels.defaultBranch}
-				onChange={(defaultBranch) => onChange({ ...values, defaultBranch })}
-				placeholder={labels.defaultBranchPlaceholder}
-				value={values.defaultBranch}
-			/>
-		</ProjectSettingsSection>
-	);
-}
-
-export function ProjectCardView({
-	actions,
-	labels,
-	onOpen,
-	project,
-}: {
-	actions?: ReactNode;
-	labels: {
-		open: string;
-		repository: string;
-		location: string;
-		defaultBranch: string;
-	};
-	onOpen: () => void;
-	project: ProjectCardSummary;
-}) {
-	const repository = project.repository?.trim();
-	const location = project.location?.trim();
-	const defaultBranch = project.defaultBranch?.trim();
-	return (
-		<article className="rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) p-4">
-			<div className="flex min-w-0 items-start justify-between gap-3">
-				<div className="min-w-0">
-					<button
-						type="button"
-						aria-label={`${labels.open}: ${project.displayName}`}
-						className="block max-w-full truncate text-left text-sm font-semibold text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-						onClick={onOpen}
-					>
-						{project.displayName}
-					</button>
-					<p className="mt-1 font-mono text-micro uppercase tracking-wide text-settings-muted">
-						{project.kindLabel}
-					</p>
-				</div>
-				{actions}
-			</div>
-			<dl className="mt-3 grid gap-2 text-xs">
-				{repository ? (
-					<div className="flex min-w-0 items-baseline justify-between gap-3">
-						<dt className="shrink-0 text-settings-muted">{labels.repository}</dt>
-						<dd className="min-w-0 truncate text-right text-settings-label" title={repository}>
-							{repository}
-						</dd>
-					</div>
-				) : null}
-				{location ? (
-					<div className="flex min-w-0 items-baseline justify-between gap-3">
-						<dt className="shrink-0 text-settings-muted">{labels.location}</dt>
-						<dd className="min-w-0 truncate text-right text-settings-label" title={location}>
-							{location}
-						</dd>
-					</div>
-				) : null}
-				{defaultBranch ? (
-					<div className="flex min-w-0 items-baseline justify-between gap-3">
-						<dt className="shrink-0 text-settings-muted">{labels.defaultBranch}</dt>
-						<dd className="min-w-0 truncate text-right font-mono text-settings-label" title={defaultBranch}>
-							{defaultBranch}
-						</dd>
-					</div>
-				) : null}
-			</dl>
-		</article>
 	);
 }
 
@@ -753,48 +647,6 @@ export function ProjectWorkflowSettingsView({
 				)}
 			</ProjectSettingsSection>
 		</>
-	);
-}
-
-export function ProjectSettingsFooter({
-	isPending,
-	labels,
-	mutationError,
-	replacementError,
-	saved,
-	validationError,
-	validationErrorIcon,
-}: {
-	isPending: boolean;
-	labels: { save: string; saving: string; saved: string };
-	mutationError?: string | null;
-	replacementError?: string | null;
-	saved: boolean;
-	validationError?: string | null;
-	validationErrorIcon?: ReactNode;
-}) {
-	const hasError = Boolean(validationError || mutationError);
-	return (
-		<div className="flex flex-col items-start">
-			<button
-				className="settings-footer-button settings-footer-button-primary disabled:pointer-events-none disabled:opacity-50"
-				type="submit"
-				disabled={isPending}
-			>
-				{isPending ? labels.saving : labels.save}
-			</button>
-			{validationError && (
-				<span className="inline-flex items-center gap-1.5 text-xs text-error" role="alert">
-					{validationErrorIcon}
-					{validationError}
-				</span>
-			)}
-			{mutationError && <span className="text-xs text-error" role="alert">{mutationError}</span>}
-			{saved && !isPending && !hasError && <span className="text-xs text-success" role="status">{labels.saved}</span>}
-			{replacementError && !isPending && !hasError && (
-				<span className="text-xs text-warning" role="status">{replacementError}</span>
-			)}
-		</div>
 	);
 }
 

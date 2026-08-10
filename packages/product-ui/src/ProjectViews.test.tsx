@@ -1,18 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
-	ProjectCardView,
 	ProjectGeneralSettingsView,
 	ProjectModePickerView,
-	ProjectRepositoryFieldsView,
-	ProjectSettingsFooter,
 	ProjectSetupFormView,
 } from "./ProjectViews";
-import {
-	canSubmitProjectSetup,
-	validateProjectRepository,
-	validateProjectSettings,
-} from "./project-models";
+import { canSubmitProjectSetup, validateProjectSettings } from "./project-models";
 
 const modeLabels = {
 	title: "Import",
@@ -27,6 +21,10 @@ const modeLabels = {
 	projectExample: "web-app",
 	projectBranchExample: "main",
 };
+
+function ExternalLink(props: ComponentProps<"a">) {
+	return <a {...props} />;
+}
 
 describe("project models", () => {
 	it("validates settings in user-action order", () => {
@@ -61,18 +59,6 @@ describe("project models", () => {
 		).toBe(false);
 	});
 
-	it("validates portable repository fields", () => {
-		expect(validateProjectRepository({ repository: "", defaultBranch: "main" })).toBe("repository_required");
-		expect(validateProjectRepository({ repository: "https://github.com/acme/app", defaultBranch: "" })).toBe(
-			"default_branch_required",
-		);
-		expect(
-			validateProjectRepository({
-				repository: "https://github.com/acme/app",
-				defaultBranch: "main",
-			}),
-		).toBeNull();
-	});
 });
 
 describe("project presentation", () => {
@@ -119,6 +105,7 @@ describe("project presentation", () => {
 		render(
 			<ProjectGeneralSettingsView
 				displayName="Workspace"
+				externalLink={ExternalLink}
 				labels={{
 					title: "Identity",
 					name: "Project name",
@@ -134,85 +121,21 @@ describe("project presentation", () => {
 					id: "workspace-1",
 					kindLabel: "Workspace",
 					path: "/repo",
-					repo: "",
+					pathHref: "file:///repo",
+					repo: "https://github.com/acme/workspace",
+					repoHref: "https://github.com/acme/workspace",
 					workspaceRepos: [{ name: "web", relativePath: "apps/web", repo: "acme/web" }],
 				}}
 			/>,
 		);
 
 		expect(screen.getByLabelText("Project name")).toHaveValue("Workspace");
+		expect(screen.getByRole("link", { name: "/repo" })).toHaveAttribute("title", "/repo");
+		expect(screen.getByRole("link", { name: "https://github.com/acme/workspace" })).toHaveAttribute(
+			"title",
+			"https://github.com/acme/workspace",
+		);
 		expect(screen.getByText("apps/web · acme/web")).toBeInTheDocument();
 	});
 
-	it("edits repository fields without owning persistence", () => {
-		const onChange = vi.fn();
-		render(
-			<ProjectRepositoryFieldsView
-				labels={{
-					title: "Repository",
-					repository: "Repository URL",
-					defaultBranch: "Default branch",
-				}}
-				onChange={onChange}
-				values={{ repository: "https://github.com/acme/app", defaultBranch: "main" }}
-			/>,
-		);
-
-		fireEvent.change(screen.getByLabelText("Repository URL"), {
-			target: { value: "https://github.com/acme/web" },
-		});
-		expect(onChange).toHaveBeenCalledWith({
-			repository: "https://github.com/acme/web",
-			defaultBranch: "main",
-		});
-	});
-
-	it("renders a host-controlled project card", () => {
-		const onOpen = vi.fn();
-		render(
-			<ProjectCardView
-				labels={{
-					open: "Open project",
-					repository: "Repository",
-					location: "Location",
-					defaultBranch: "Default branch",
-				}}
-				onOpen={onOpen}
-				project={{
-					id: "project-1",
-					displayName: "Web app",
-					kindLabel: "Project",
-					repository: "acme/web",
-					defaultBranch: "main",
-				}}
-			/>,
-		);
-
-		fireEvent.click(screen.getByRole("button", { name: "Open project: Web app" }));
-		expect(onOpen).toHaveBeenCalledOnce();
-		expect(screen.getByText("acme/web")).toBeInTheDocument();
-	});
-
-	it("shows save, error, saved, and restart states without owning persistence", () => {
-		const { rerender } = render(
-			<ProjectSettingsFooter
-				isPending={false}
-				labels={{ save: "Save changes", saving: "Saving…", saved: "Saved." }}
-				saved={false}
-				validationError="Name required"
-			/>,
-		);
-		expect(screen.getByText("Name required")).toBeInTheDocument();
-
-		rerender(
-			<ProjectSettingsFooter
-				isPending={false}
-				labels={{ save: "Save changes", saving: "Saving…", saved: "Saved." }}
-				replacementError="Restart failed"
-				saved
-			/>,
-		);
-		expect(screen.getByText("Saved.")).toBeInTheDocument();
-		expect(screen.getByText("Restart failed")).toBeInTheDocument();
-	});
 });

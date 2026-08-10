@@ -29,10 +29,9 @@ components use AO design-system utility classes and semantic tokens.
 neutral presentation models plus focused action/asset slots. Hosts retain data
 fetching, routing, persistence, and platform-specific controls.
 
-Project exports provide controlled setup and settings presentations, repository
-fields, project cards, neutral project models, and pure validation. Hosts inject
-translated labels and their own agent, model, reviewer, intake, persistence, and
-platform actions.
+Project exports provide controlled setup and settings presentations, neutral
+project models, and pure validation. Hosts inject translated labels and their
+own agent, model, reviewer, intake, persistence, and platform actions.
 
 ## Development
 

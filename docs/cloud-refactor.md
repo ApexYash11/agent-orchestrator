@@ -11,7 +11,7 @@ implementation belongs here.
 | --- | --- | --- |
 | `backend/pkg/contract` | Session/PR facts, stack positions, and pure status derivation | Local durable records, stores, runtime ports, provider payloads |
 | `contracts/cloud` | Authenticated, organization-scoped HTTP contract and client-visible event schemas | Route implementation, authorization policy, persistence |
-| `packages/cloud-client` | Generated/typed Cloud client, auth injection, errors, pagination, replay cursors | Refresh-token storage, Electron, React, worker RPC |
+| `packages/cloud-client` | Handwritten typed Cloud client over generated OpenAPI schema types, auth injection, errors, pagination, replay cursors | Refresh-token storage, Electron, React, worker RPC |
 | `packages/product-ui` | Semantic view models, pure presentation logic, and portable board/composer/inspector React views | Electron bridges, loopback API calls, native BrowserView, daemon lifecycle |
 | `frontend/src/renderer` | Desktop controllers and adapters for the local daemon and Electron | Cloud control-plane implementation |
 
@@ -39,7 +39,7 @@ route or supplies the host data.
 | --- | --- | --- |
 | Status and stacks | Go facts, deterministic derivation, PR stack rules | Mapping hosted observations into the shared facts |
 | Agents | Identity, capability vocabulary, installation/auth/org availability, Cloud list contract | Runtime probing, image availability, org policy, provider authentication |
-| Projects | Cloud DTOs/client plus controlled repository fields, setup/settings sections, validation, and project cards | Hosted CRUD handlers, authorization, persistence, repository import |
+| Projects | Cloud DTOs/client plus controlled setup/settings sections and validation used by local AO | Hosted CRUD handlers, authorization, persistence, repository import, and Cloud-specific project list/import UI |
 | Sessions and chat | Session/message/event DTOs, replay rules, client, board/composer/inspector views | Hosted lifecycle, durable transcript, reconciliation and execution |
 | PRs and reviews | Raw PR/CI/review/mergeability/AO-review models, read routes, client methods, reusable inspector presentation | GitHub observation, stale-head enforcement, review execution and storage |
 | Workspace and terminal | File/diff shapes, workspace requests, terminal-ticket and WebSocket contracts | Sandbox RPC, ticket issuance, filesystem confinement and terminal transport |
@@ -58,8 +58,9 @@ model to those DTOs.
 - `packages/cloud-client/src/client.ts`: fetch, bearer auth, pagination, SSE, and
   terminal-ticket helpers.
 - `packages/product-ui/src`: portable models, formatting, session/SCM views, and
-  controlled project setup/settings/card presentations.
-- `frontend/src/renderer/components/*Adapters.tsx`: desktop data/action adapters.
+  controlled project setup/settings presentations used by local AO.
+- `frontend/src/renderer/components/SessionsBoardAdapters.tsx` and the desktop
+  controller components: local-daemon data/action adapters for shared views.
 - `frontend/src/main/cloud-auth.ts` and `frontend/src/shared/cloud-account.ts`:
   WorkOS token custody and the token-free renderer projection.
 
@@ -87,7 +88,7 @@ model to those DTOs.
   database or service-layer structs with the local daemon.
 - `product-ui` cannot import Electron, `window.ao`, renderer stores, local generated
   API types, or either local/Cloud API client.
-- `cloud-client` accepts `baseURL`, `fetch`, and access-token providers from its host.
+- `cloud-client` accepts `baseUrl`, `fetch`, and access-token providers from its host.
   It never stores or refreshes refresh tokens.
 - Local SQLite CDC events and Cloud transcript/control events remain separate.
 - Agent identity metadata is shared; installed/authenticated/organization-allowed
