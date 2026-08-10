@@ -13,6 +13,23 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+const cancelReviewRun = `-- name: CancelReviewRun :execrows
+UPDATE review_run SET status = 'cancelled', body = ? WHERE id = ? AND status = 'running' AND verdict = ''
+`
+
+type CancelReviewRunParams struct {
+	Body string
+	ID   string
+}
+
+func (q *Queries) CancelReviewRun(ctx context.Context, arg CancelReviewRunParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cancelReviewRun, arg.Body, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const cancelRunningReviewRunsBySession = `-- name: CancelRunningReviewRunsBySession :execrows
 UPDATE review_run SET status = 'cancelled', body = ? WHERE session_id = ? AND status = 'running' AND verdict = ''
 `

@@ -3,9 +3,11 @@ package review
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
+	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
 )
 
 func TestParseProviderReviewMarker(t *testing.T) {
@@ -21,6 +23,46 @@ func TestParseProviderReviewMarker(t *testing.T) {
 	}
 	if prose != "Looks good." {
 		t.Fatalf("prose = %q", prose)
+	}
+}
+
+type staleReconcileStore struct {
+	reviewcore.Store
+	runs []domain.ReviewRun
+}
+
+func (s *staleReconcileStore) ListRunningReviewRunsBySession(context.Context, domain.SessionID) ([]domain.ReviewRun, error) {
+	return append([]domain.ReviewRun(nil), s.runs...), nil
+}
+
+func (s *staleReconcileStore) ListReviewsBySession(context.Context, domain.SessionID) ([]domain.Review, error) {
+	return nil, nil
+}
+
+func (s *staleReconcileStore) CancelReviewRun(_ context.Context, id, body string) (bool, error) {
+	for i := range s.runs {
+		if s.runs[i].ID == id && s.runs[i].Status == domain.ReviewRunRunning {
+			s.runs[i].Status = domain.ReviewRunCancelled
+			s.runs[i].Body = body
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func TestReconcileStaleReviewRunsUsesThirtyMinuteThreshold(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	store := &staleReconcileStore{runs: []domain.ReviewRun{
+		{ID: "stale", SessionID: "worker-1", Status: domain.ReviewRunRunning, CreatedAt: now.Add(-30 * time.Minute)},
+		{ID: "young", SessionID: "worker-1", Status: domain.ReviewRunRunning, CreatedAt: now.Add(-30*time.Minute + time.Nanosecond)},
+	}}
+	service := New(reviewcore.New(reviewcore.Deps{Store: store}), nil)
+
+	if err := service.ReconcileStaleReviewRuns(context.Background(), "worker-1", now); err != nil {
+		t.Fatalf("ReconcileStaleReviewRuns: %v", err)
+	}
+	if store.runs[0].Status != domain.ReviewRunCancelled || store.runs[1].Status != domain.ReviewRunRunning {
+		t.Fatalf("statuses = %q/%q", store.runs[0].Status, store.runs[1].Status)
 	}
 }
 

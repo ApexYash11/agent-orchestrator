@@ -389,6 +389,49 @@ func TestCancelRunningReviewRunsBySession(t *testing.T) {
 	}
 }
 
+func TestCancelReviewRunCancelsOnlyTheNamedRunningRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.UpsertReview(ctx, domain.Review{
+		ID: "rev-1", SessionID: rec.ID, ProjectID: rec.ProjectID, Harness: domain.ReviewerCodex,
+		PRURL: "https://example/pr/1", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert review: %v", err)
+	}
+	for _, run := range []domain.ReviewRun{
+		{ID: "run-running", ReviewID: "rev-1", SessionID: rec.ID, Harness: domain.ReviewerCodex, PRURL: "https://example/pr/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning, CreatedAt: now},
+		{ID: "run-complete", ReviewID: "rev-1", SessionID: rec.ID, Harness: domain.ReviewerCodex, PRURL: "https://example/pr/2", TargetSHA: "sha2", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, CreatedAt: now.Add(time.Second)},
+	} {
+		if err := s.InsertReviewRun(ctx, run); err != nil {
+			t.Fatalf("insert %s: %v", run.ID, err)
+		}
+	}
+
+	cancelled, err := s.CancelReviewRun(ctx, "run-running", "cancelled because reviewer terminal is unavailable")
+	if err != nil || !cancelled {
+		t.Fatalf("cancel running: cancelled=%v err=%v", cancelled, err)
+	}
+	cancelled, err = s.CancelReviewRun(ctx, "run-complete", "must not overwrite")
+	if err != nil || cancelled {
+		t.Fatalf("cancel complete: cancelled=%v err=%v", cancelled, err)
+	}
+
+	running, _, _ := s.GetReviewRun(ctx, "run-running")
+	complete, _, _ := s.GetReviewRun(ctx, "run-complete")
+	if running.Status != domain.ReviewRunCancelled || running.Body != "cancelled because reviewer terminal is unavailable" {
+		t.Fatalf("running = %+v", running)
+	}
+	if complete.Status != domain.ReviewRunComplete || complete.Body != "" {
+		t.Fatalf("complete = %+v", complete)
+	}
+}
+
 func TestReviewGettersMissing(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

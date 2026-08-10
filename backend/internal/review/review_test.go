@@ -179,6 +179,16 @@ func (f *fakeStore) CancelRunningReviewRunsBySessionAndHarness(_ context.Context
 	}
 	return n, nil
 }
+func (f *fakeStore) CancelReviewRun(_ context.Context, id, body string) (bool, error) {
+	for i := range f.runs {
+		if f.runs[i].ID == id && f.runs[i].Status == domain.ReviewRunRunning && f.runs[i].Verdict == domain.VerdictNone {
+			f.runs[i].Status = domain.ReviewRunCancelled
+			f.runs[i].Body = body
+			return true, nil
+		}
+	}
+	return false, nil
+}
 func (f *fakeStore) GetReviewRun(_ context.Context, id string) (domain.ReviewRun, bool, error) {
 	for _, r := range f.runs {
 		if r.ID == id {
@@ -356,6 +366,47 @@ func prAt(sha string) fakePRs {
 }
 
 // --- tests ---
+
+func TestEngineReconcileStaleRunningRunsUsesConfirmedReviewerLiveness(t *testing.T) {
+	cutoff := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		createdAt  time.Time
+		review     *domain.Review
+		alive      bool
+		aliveErr   error
+		wantStatus domain.ReviewRunStatus
+		wantErr    bool
+	}{
+		{name: "young missing reviewer remains running", createdAt: cutoff.Add(time.Second), wantStatus: domain.ReviewRunRunning},
+		{name: "stale missing reviewer is cancelled", createdAt: cutoff, wantStatus: domain.ReviewRunCancelled},
+		{name: "stale empty handle is cancelled", createdAt: cutoff, review: &domain.Review{Harness: domain.ReviewerCodex}, wantStatus: domain.ReviewRunCancelled},
+		{name: "stale confirmed dead is cancelled", createdAt: cutoff, review: &domain.Review{Harness: domain.ReviewerCodex, ReviewerHandleID: "review-1"}, wantStatus: domain.ReviewRunCancelled},
+		{name: "stale live remains running", createdAt: cutoff, review: &domain.Review{Harness: domain.ReviewerCodex, ReviewerHandleID: "review-1"}, alive: true, wantStatus: domain.ReviewRunRunning},
+		{name: "probe error remains running", createdAt: cutoff, review: &domain.Review{Harness: domain.ReviewerCodex, ReviewerHandleID: "review-1"}, aliveErr: errors.New("probe unavailable"), wantStatus: domain.ReviewRunRunning, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeStore{runs: []domain.ReviewRun{{
+				ID: "run-1", SessionID: "worker-1", Harness: domain.ReviewerCodex,
+				Status: domain.ReviewRunRunning, CreatedAt: tt.createdAt,
+			}}}
+			if tt.review != nil {
+				store.reviews = map[domain.ReviewerHarness]domain.Review{domain.ReviewerCodex: *tt.review}
+			}
+			launcher := &fakeLauncher{alive: tt.alive, aliveErr: tt.aliveErr}
+			engine := New(Deps{Store: store, Launcher: launcher})
+
+			err := engine.ReconcileStaleRunningRuns(context.Background(), "worker-1", cutoff)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr=%v", err, tt.wantErr)
+			}
+			if got := store.runs[0].Status; got != tt.wantStatus {
+				t.Fatalf("status = %q, want %q", got, tt.wantStatus)
+			}
+		})
+	}
+}
 
 func TestTriggerSpawnsNewReviewerAndRecordsRunAfterLaunch(t *testing.T) {
 	store := &fakeStore{}

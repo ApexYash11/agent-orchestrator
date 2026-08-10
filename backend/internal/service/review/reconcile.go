@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -17,6 +18,14 @@ type providerReviewMarker struct {
 	RunID   string
 	SHA     string
 	Verdict domain.ReviewVerdict
+}
+
+const staleReviewRunAge = 30 * time.Minute
+
+// ReconcileStaleReviewRuns applies the conservative reviewer-liveness fallback
+// to runs old enough that an explicit submit should already have arrived.
+func (s *Service) ReconcileStaleReviewRuns(ctx context.Context, workerID domain.SessionID, now time.Time) error {
+	return s.engine.ReconcileStaleRunningRuns(ctx, workerID, now.Add(-staleReviewRunAge))
 }
 
 // ReconcileProviderReviews completes marked runs from provider facts when the

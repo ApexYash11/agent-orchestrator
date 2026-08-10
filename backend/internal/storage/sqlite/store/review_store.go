@@ -191,6 +191,17 @@ func (s *Store) CancelRunningReviewRunsBySessionAndHarness(ctx context.Context, 
 	})
 }
 
+// CancelReviewRun marks one running, unverdicted review pass as cancelled.
+func (s *Store) CancelReviewRun(ctx context.Context, id, body string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.CancelReviewRun(ctx, gen.CancelReviewRunParams{Body: body, ID: id})
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // MarkReviewRunDelivered records that lifecycle delivered the worker nudge for
 // a completed AO-internal review pass.
 func (s *Store) MarkReviewRunDelivered(ctx context.Context, id string, deliveredAt time.Time) (bool, error) {
