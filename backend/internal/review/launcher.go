@@ -90,10 +90,11 @@ type reviewerRuntime interface {
 // runtime. The reviewer reuses the worker's worktree (a fresh session worktree
 // would branch off the default branch and so would not contain the PR changes).
 type agentLauncher struct {
-	reviewers ports.ReviewerResolver
-	runtime   reviewerRuntime
-	dataDir   string
-	auth      agentAuthResolver
+	reviewers          ports.ReviewerResolver
+	runtime            reviewerRuntime
+	dataDir            string
+	auth               agentAuthResolver
+	executableResolver func() (string, error)
 }
 
 type preLaunchReviewer interface {
@@ -120,9 +121,16 @@ func WithAgentAuth(auth agentAuthResolver) LauncherOption {
 	}
 }
 
+// WithExecutableResolver overrides AO executable discovery for tests.
+func WithExecutableResolver(resolve func() (string, error)) LauncherOption {
+	return func(l *agentLauncher) {
+		l.executableResolver = resolve
+	}
+}
+
 // NewLauncher builds the production reviewer launcher.
 func NewLauncher(reviewers ports.ReviewerResolver, runtime reviewerRuntime, dataDir string, opts ...LauncherOption) Launcher {
-	l := &agentLauncher{reviewers: reviewers, runtime: runtime, dataDir: dataDir}
+	l := &agentLauncher{reviewers: reviewers, runtime: runtime, dataDir: dataDir, executableResolver: os.Executable}
 	for _, opt := range opts {
 		opt(l)
 	}
@@ -388,6 +396,10 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 			return LaunchResult{}, fmt.Errorf("reviewer command: %w", err)
 		}
 	}
+	runtimeEnv, err := l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env)
+	if err != nil {
+		return LaunchResult{}, err
+	}
 	handleID := reviewerHandleID(spec.WorkerID)
 	// The reviewer handle is stable per worker, so a still-live pane from a
 	// previous pass would otherwise block `tmux new-session` (duplicate name) or,
@@ -406,7 +418,7 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 		SessionID:     domain.SessionID(handleID),
 		WorkspacePath: workingDirectory,
 		Argv:          cmd.Argv,
-		Env:           l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env),
+		Env:           runtimeEnv,
 	})
 	if err != nil {
 		return LaunchResult{}, fmt.Errorf("reviewer runtime: %w", err)
@@ -486,7 +498,7 @@ func outputContainsAny(output string, patterns []string) bool {
 	return false
 }
 
-func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []string, base map[string]string) map[string]string {
+func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []string, base map[string]string) (map[string]string, error) {
 	env := make(map[string]string, len(base)+3)
 	for k, v := range base {
 		env[k] = v
@@ -497,12 +509,13 @@ func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []
 	env["AO_REVIEW_HARNESS"] = string(spec.Harness)
 	env[sessionmanager.EnvProjectID] = string(spec.ProjectID)
 	env[sessionmanager.EnvDataDir] = l.dataDir
-	path, err := sessionmanager.HookPATH(os.Executable, os.Getenv, env)
-	if err == nil {
-		env["PATH"] = path
+	path, err := sessionmanager.HookPATH(l.executableResolver, os.Getenv, env)
+	if err != nil {
+		return nil, fmt.Errorf("pin ao executable in PATH: %w", err)
 	}
+	env["PATH"] = path
 	sessionmanager.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, exec.LookPath)
-	return env
+	return env, nil
 }
 
 func (l *agentLauncher) Notify(ctx context.Context, handleID string, spec LaunchSpec) error {

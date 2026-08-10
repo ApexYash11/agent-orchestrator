@@ -39,7 +39,7 @@ func TestLauncherSpawnEnvCannotOverrideWorkerContext(t *testing.T) {
 	}}
 	rt := &fakeRuntime{}
 	dataDir := t.TempDir()
-	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir)
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir, testExecutableOption(t))
 
 	if _, err := l.Spawn(context.Background(), launchSpec()); err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -65,6 +65,28 @@ func TestLauncherSpawnEnvCannotOverrideWorkerContext(t *testing.T) {
 	}
 	if rt.createCfg.Env[sessionmanager.EnvDataDir] != dataDir {
 		t.Fatalf("%s = %q, want %q", sessionmanager.EnvDataDir, rt.createCfg.Env[sessionmanager.EnvDataDir], dataDir)
+	}
+}
+
+func TestLauncherSpawnFailsWhenExecutablePATHCannotBePinned(t *testing.T) {
+	reviewer := &fakeReviewer{}
+	runtime := &fakeRuntime{}
+	launcher := NewLauncher(
+		fakeReviewerResolver{reviewer: reviewer, ok: true},
+		runtime,
+		t.TempDir(),
+		WithExecutableResolver(func() (string, error) { return "", errors.New("executable unavailable") }),
+	)
+
+	_, err := launcher.Spawn(context.Background(), launchSpec())
+	if err == nil || !strings.Contains(err.Error(), "pin ao executable in PATH") {
+		t.Fatalf("Spawn error = %v", err)
+	}
+	if runtime.created {
+		t.Fatal("runtime Create called after PATH pinning failed")
+	}
+	if runtime.destroyed != "" {
+		t.Fatalf("existing reviewer %q destroyed before PATH validation", runtime.destroyed)
 	}
 }
 
@@ -300,14 +322,24 @@ func launchSpec() LaunchSpec {
 
 func newTestLauncher(t *testing.T, reviewer ports.Reviewer, rt reviewerRuntime) Launcher {
 	t.Helper()
-	return NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, t.TempDir())
+	return NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, t.TempDir(), testExecutableOption(t))
+}
+
+func testExecutableOption(t *testing.T) LauncherOption {
+	t.Helper()
+	name := "ao"
+	if os.PathSeparator == '\\' {
+		name = "ao.exe"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	return WithExecutableResolver(func() (string, error) { return path, nil })
 }
 
 func TestLauncherSpawnReturnsStableHandle(t *testing.T) {
 	reviewer := &fakeReviewer{}
 	rt := &fakeRuntime{}
 	dataDir := t.TempDir()
-	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir)
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir, testExecutableOption(t))
 
 	launch, err := l.Spawn(context.Background(), launchSpec())
 	if err != nil {
@@ -398,7 +430,7 @@ func TestLauncherRestoreTerminalStartsIdlePane(t *testing.T) {
 	reviewer := &fakeReviewer{}
 	rt := &fakeRuntime{}
 	dataDir := t.TempDir()
-	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir)
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir, testExecutableOption(t))
 	spec := launchSpec()
 	spec.PreviousRuns = []domain.ReviewRun{{
 		ID:             "run-1",
@@ -450,7 +482,7 @@ func TestLauncherRestoreTerminalUsesReviewerRestoreCommandWhenAvailable(t *testi
 	}
 	rt := &fakeRuntime{}
 	dataDir := t.TempDir()
-	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir)
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir, testExecutableOption(t))
 	spec := launchSpec()
 	spec.AgentSessionID = "native-reviewer-1"
 
