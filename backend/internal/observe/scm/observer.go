@@ -71,6 +71,13 @@ type Lifecycle interface {
 	ApplySCMObservation(ctx context.Context, sessionID domain.SessionID, obs ports.SCMObservation) error
 }
 
+// ReviewReconciler applies durable SCM review facts and conservative stale-run
+// recovery without coupling the observer to the concrete review service.
+type ReviewReconciler interface {
+	ReconcileProviderReviews(ctx context.Context, workerID domain.SessionID, pr domain.PullRequest, reviews []domain.PullRequestReview) error
+	ReconcileStaleReviewRuns(ctx context.Context, workerID domain.SessionID, now time.Time) error
+}
+
 type credentialChecker interface {
 	SCMCredentialsAvailable(ctx context.Context) (bool, error)
 }
@@ -89,6 +96,8 @@ type Config struct {
 	CacheMax int
 	// IdentityResolver resolves the active SCM account lazily. Nil preserves branch-based discovery.
 	IdentityResolver ports.SCMIdentityResolver
+	// ReviewReconciler recovers review runs from durable provider facts.
+	ReviewReconciler ReviewReconciler
 }
 
 // ObserverCache stores provider ETags and review polling timestamps in memory.
@@ -156,6 +165,7 @@ type Observer struct {
 	disabled bool
 	// identityResolver is the explicitly wired source of the active SCM account.
 	identityResolver ports.SCMIdentityResolver
+	reviewReconciler ReviewReconciler
 	// Cache holds bounded in-memory provider ETags and review poll timestamps.
 	Cache ObserverCache
 }
@@ -163,7 +173,7 @@ type Observer struct {
 // New constructs an Observer with default cadence/cache settings for zero
 // values in cfg.
 func New(provider Provider, store Store, lifecycle Lifecycle, cfg Config) *Observer {
-	o := &Observer{provider: provider, store: store, lifecycle: lifecycle, tick: cfg.Tick, reviewInterval: cfg.ReviewInterval, clock: cfg.Clock, logger: cfg.Logger, identityResolver: cfg.IdentityResolver, Cache: newCache(cfg.CacheMax)}
+	o := &Observer{provider: provider, store: store, lifecycle: lifecycle, tick: cfg.Tick, reviewInterval: cfg.ReviewInterval, clock: cfg.Clock, logger: cfg.Logger, identityResolver: cfg.IdentityResolver, reviewReconciler: cfg.ReviewReconciler, Cache: newCache(cfg.CacheMax)}
 	if o.tick <= 0 {
 		o.tick = DefaultTickInterval
 	}
@@ -262,6 +272,19 @@ func (o *Observer) Poll(ctx context.Context) error {
 	subjects, sessionRepos, err := o.discoverSubjects(ctx)
 	if err != nil {
 		return err
+	}
+	if o.reviewReconciler != nil {
+		seen := make(map[domain.SessionID]struct{}, len(sessionRepos))
+		for _, sessionRepo := range sessionRepos {
+			workerID := sessionRepo.session.ID
+			if _, ok := seen[workerID]; ok {
+				continue
+			}
+			seen[workerID] = struct{}{}
+			if err := o.reviewReconciler.ReconcileStaleReviewRuns(ctx, workerID, now); err != nil {
+				o.logger.Error("scm observer: stale review reconciliation failed", "session", workerID, "err", err)
+			}
+		}
 	}
 	if len(sessionRepos) == 0 {
 		return nil
@@ -377,7 +400,8 @@ func (o *Observer) Poll(ctx context.Context) error {
 		// changed hashes at their local values until lifecycle succeeds; if the
 		// daemon restarts after a lifecycle failure, the stale hashes force the
 		// same observation to be fetched and delivered again.
-		if o.lifecycle != nil {
+		needsAcknowledgement := o.lifecycle != nil || o.reviewReconciler != nil
+		if needsAcknowledgement {
 			pendingOpts := opts
 			if prepared.Changed.Metadata {
 				pendingOpts.preserveLocalMetadataHash = true
@@ -395,14 +419,23 @@ func (o *Observer) Poll(ctx context.Context) error {
 			markRepoRefreshFailed(subj.repo)
 			continue
 		}
+		if o.reviewReconciler != nil && prepared.Changed.Review && opts.reviewFetched {
+			if err := o.reviewReconciler.ReconcileProviderReviews(ctx, subj.session.ID, finalPR, finalReviews); err != nil {
+				o.logger.Error("scm observer: provider review reconciliation failed", "session", subj.session.ID, "pr", finalPR.URL, "err", err)
+				markRepoRefreshFailed(subj.repo)
+				continue
+			}
+		}
 		if o.lifecycle != nil {
 			if err := o.lifecycle.ApplySCMObservation(ctx, subj.session.ID, prepared); err != nil {
 				o.logger.Error("scm observer: lifecycle notification failed", "session", subj.session.ID, "pr", firstNonEmpty(prepared.PR.URL, prepared.PR.HTMLURL, local.URL), "err", err)
 				markRepoRefreshFailed(subj.repo)
 				continue
 			}
+		}
+		if needsAcknowledgement {
 			if err := o.store.WriteSCMObservation(ctx, finalPR, finalChecks, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
-				o.logger.Error("scm observer: DB lifecycle acknowledgement failed", "session", subj.session.ID, "pr", finalPR.URL, "err", err)
+				o.logger.Error("scm observer: DB acknowledgement failed", "session", subj.session.ID, "pr", finalPR.URL, "err", err)
 				markRepoRefreshFailed(subj.repo)
 				continue
 			}

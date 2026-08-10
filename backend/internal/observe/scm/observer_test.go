@@ -238,6 +238,23 @@ type fakeLifecycle struct {
 	err      error
 }
 
+type fakeReviewReconciler struct {
+	providerCalls int
+	staleCalls    []domain.SessionID
+	providerErr   error
+	staleErr      error
+}
+
+func (r *fakeReviewReconciler) ReconcileProviderReviews(_ context.Context, _ domain.SessionID, _ domain.PullRequest, _ []domain.PullRequestReview) error {
+	r.providerCalls++
+	return r.providerErr
+}
+
+func (r *fakeReviewReconciler) ReconcileStaleReviewRuns(_ context.Context, workerID domain.SessionID, _ time.Time) error {
+	r.staleCalls = append(r.staleCalls, workerID)
+	return r.staleErr
+}
+
 func (l *fakeLifecycle) ApplySCMObservation(_ context.Context, _ domain.SessionID, obs ports.SCMObservation) error {
 	if l.err != nil {
 		return l.err
@@ -248,6 +265,27 @@ func (l *fakeLifecycle) ApplySCMObservation(_ context.Context, _ domain.SessionI
 
 func newTestObserver(store *fakeStore, provider *fakeProvider, lc Lifecycle, now time.Time) *Observer {
 	return New(provider, store, lc, Config{Clock: func() time.Time { return now }, Tick: time.Hour, Logger: quietSlog(), CacheMax: 128, IdentityResolver: provider})
+}
+
+func TestObserverReconcilesStaleRunsBeforeCredentialGate(t *testing.T) {
+	now := time.Unix(10, 0).UTC()
+	store := testStoreWithSession()
+	provider := &fakeProvider{credentialGate: true, credentialOK: false}
+	reconciler := &fakeReviewReconciler{}
+	observer := New(provider, store, nil, Config{
+		Clock: func() time.Time { return now }, Logger: quietSlog(), IdentityResolver: provider,
+		ReviewReconciler: reconciler,
+	})
+
+	if err := observer.Poll(context.Background()); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if len(reconciler.staleCalls) != 1 || reconciler.staleCalls[0] != "p-1" {
+		t.Fatalf("stale calls = %v", reconciler.staleCalls)
+	}
+	if provider.credentialChecks != 1 {
+		t.Fatalf("credential checks = %d, want 1", provider.credentialChecks)
+	}
 }
 
 func TestDispatchOrderIsDeterministic(t *testing.T) {
@@ -1176,6 +1214,8 @@ func TestPoll_ReviewHashDrivesPersistenceAndLifecycle(t *testing.T) {
 	provider := &fakeProvider{repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "repo", NotModified: true}}, observations: map[string]ports.SCMObservation{}, reviews: map[string]ports.SCMReviewObservation{prKey(testRepo, 1): review}}
 	lc := &fakeLifecycle{}
 	obs := newTestObserver(store, provider, lc, time.Unix(200, 0).UTC())
+	reconciler := &fakeReviewReconciler{}
+	obs.reviewReconciler = reconciler
 	obs.Cache.RepoPRListETag[prKey(testRepo, 0)] = "repo"
 	if err := obs.Poll(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1185,6 +1225,9 @@ func TestPoll_ReviewHashDrivesPersistenceAndLifecycle(t *testing.T) {
 	}
 	if len(store.writes[0].reviews) != 1 || store.writes[0].reviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" {
 		t.Fatalf("review summaries not persisted: %#v", store.writes[0].reviews)
+	}
+	if reconciler.providerCalls != 1 {
+		t.Fatalf("provider reconciliation calls = %d, want 1", reconciler.providerCalls)
 	}
 	if len(store.writes) != 2 {
 		t.Fatalf("review change with lifecycle should write held-back facts then acknowledgement, got %d writes", len(store.writes))
