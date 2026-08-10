@@ -41,6 +41,13 @@ function storePath(dataDir: string): string {
   return path.join(dataDir, AUTH_STORE_FILE);
 }
 
+function protectedStorageAvailable(): boolean {
+  if (!safeStorage.isEncryptionAvailable()) return false;
+  if (process.platform !== "linux") return true;
+  const backend = safeStorage.getSelectedStorageBackend();
+  return backend !== "basic_text" && backend !== "unknown";
+}
+
 function encodeStore(store: AuthStore): Buffer {
   return safeStorage.encryptString(JSON.stringify(store));
 }
@@ -52,7 +59,7 @@ function decodeStore(value: Buffer): AuthStore {
 async function readAuthStore(dataDir: string): Promise<AuthStore> {
   const memoryStore = memoryStores.get(dataDir);
   if (memoryStore) return memoryStore;
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (!protectedStorageAvailable()) {
     await rm(storePath(dataDir), { force: true });
     return emptyStore();
   }
@@ -68,9 +75,10 @@ async function writeAuthStore(
   dataDir: string,
   store: AuthStore,
 ): Promise<void> {
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (!protectedStorageAvailable()) {
     // A rotating refresh token must never fall back to plaintext persistence.
-    // Keep the session process-local until the OS keyring becomes available.
+    // Linux's basic_text backend also reports encryption as available despite
+    // using an unprotected hardcoded password, so keep that process-local too.
     memoryStores.set(dataDir, store);
     await rm(storePath(dataDir), { force: true });
     return;
@@ -254,6 +262,36 @@ export async function handleCloudDeepLink(
 
 export async function signOutCloud(dataDir: string): Promise<void> {
   await removeAuthStore(dataDir);
+}
+
+function signInFailureDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (message.includes("cancel") || message.includes("access_denied")) {
+    return "The WorkOS sign-in was cancelled. You can try again whenever you are ready.";
+  }
+  if (message.includes("expired")) {
+    return "The WorkOS sign-in request expired. Start sign-in again to continue.";
+  }
+  if (
+    message.includes("state") ||
+    message.includes("pending") ||
+    message.includes("incomplete")
+  ) {
+    return "The WorkOS response could not be verified. Start sign-in again to continue.";
+  }
+  if (message.includes("network") || message.includes("fetch")) {
+    return "Agent Orchestrator could not reach WorkOS. Check your connection and try again.";
+  }
+  return "Agent Orchestrator could not complete WorkOS sign-in. Please try again.";
+}
+
+export async function showCloudSignInFailure(error: unknown): Promise<void> {
+  await dialog.showMessageBox({
+    type: "error",
+    title: "AO Cloud sign-in failed",
+    message: "Unable to sign in to AO Cloud",
+    detail: signInFailureDetail(error),
+  });
 }
 
 export function registerCloudProtocol(): void {

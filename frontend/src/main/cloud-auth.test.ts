@@ -16,8 +16,10 @@ const mocks = vi.hoisted(() => ({
   decryptString: vi.fn((value: Buffer) => value.toString("utf8")),
   encryptString: vi.fn((value: string) => Buffer.from(value, "utf8")),
   encryptionAvailable: true,
+  selectedStorageBackend: "gnome_libsecret",
   getAuthorizationUrlWithPKCE: vi.fn(),
   openExternal: vi.fn(),
+  showMessageBox: vi.fn(),
 }));
 
 vi.mock("@workos-inc/node", () => ({
@@ -34,11 +36,12 @@ vi.mock("electron", () => ({
   app: {
     setAsDefaultProtocolClient: vi.fn(),
   },
-  dialog: { showMessageBox: vi.fn() },
+  dialog: { showMessageBox: mocks.showMessageBox },
   ipcMain: { handle: vi.fn() },
   safeStorage: {
     decryptString: mocks.decryptString,
     encryptString: mocks.encryptString,
+    getSelectedStorageBackend: () => mocks.selectedStorageBackend,
     isEncryptionAvailable: () => mocks.encryptionAvailable,
   },
   shell: { openExternal: mocks.openExternal },
@@ -48,6 +51,7 @@ import {
   beginCloudSignIn,
   getCloudSession,
   handleCloudDeepLink,
+  showCloudSignInFailure,
   signOutCloud,
 } from "./cloud-auth";
 
@@ -57,6 +61,7 @@ describe("native WorkOS authentication", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mocks.encryptionAvailable = true;
+    mocks.selectedStorageBackend = "gnome_libsecret";
     dataDir = await mkdtemp(path.join(os.tmpdir(), "ao-cloud-auth-"));
     mocks.getAuthorizationUrlWithPKCE.mockResolvedValue({
       url: "https://workos.example/authorize",
@@ -77,6 +82,7 @@ describe("native WorkOS authentication", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(dataDir, { recursive: true, force: true });
   });
 
@@ -139,6 +145,39 @@ describe("native WorkOS authentication", () => {
       user: { email: "person@example.com" },
     });
     await signOutCloud(dataDir);
+  });
+
+  it("keeps the auth store in memory with Linux basic_text storage", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    mocks.selectedStorageBackend = "basic_text";
+    await beginCloudSignIn(dataDir);
+    const account = await handleCloudDeepLink(
+      "ao-app://callback?code=code_123&state=state_123",
+      dataDir,
+    );
+
+    expect(account?.user.email).toBe("person@example.com");
+    await expect(
+      readFile(path.join(dataDir, "cloud-auth.bin")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(getCloudSession(dataDir)).resolves.toMatchObject({
+      user: { email: "person@example.com" },
+    });
+    await signOutCloud(dataDir);
+  });
+
+  it("shows a bounded error when the callback cannot be completed", async () => {
+    await showCloudSignInFailure(
+      new Error("The WorkOS sign-in request expired with secret details"),
+    );
+
+    expect(mocks.showMessageBox).toHaveBeenCalledWith({
+      type: "error",
+      title: "AO Cloud sign-in failed",
+      message: "Unable to sign in to AO Cloud",
+      detail:
+        "The WorkOS sign-in request expired. Start sign-in again to continue.",
+    });
   });
 
   it("shares one rotating-token refresh between concurrent callers", async () => {

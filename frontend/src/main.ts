@@ -66,6 +66,7 @@ import {
 	handleCloudDeepLink,
 	installCloudIPC,
 	registerCloudProtocol,
+	showCloudSignInFailure,
 } from "./main/cloud-auth";
 import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "./shared/posthog-config";
 import { buildTelemetryBootstrap } from "./shared/telemetry";
@@ -1807,13 +1808,14 @@ function focusCloudWindow(): void {
 }
 
 async function handleCloudDeepLinkAndFocus(url: string): Promise<void> {
+	focusCloudWindow();
 	try {
 		const session = await handleCloudDeepLink(url, cloudDataDir());
 		if (!session) return;
 		notifyRenderersOfCloudSession(session);
-		focusCloudWindow();
 	} catch (error) {
 		console.error("WorkOS callback failed:", error);
+		await showCloudSignInFailure(error);
 	}
 }
 
