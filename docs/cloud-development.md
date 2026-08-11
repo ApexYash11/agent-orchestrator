@@ -23,8 +23,9 @@ git -c submodule.private/ao-cloud.update=checkout \
 ```
 
 Developers without access do nothing. A normal clone, build, and test of public
-AO continues to work; only submodule initialization fails without private
-repository permission.
+AO—including `git clone --recursive`—continues to work because the submodule is
+configured with `update = none`. Only the explicit opt-in command above fails
+without private repository permission.
 
 Work in the two repositories remains separate:
 
@@ -42,10 +43,11 @@ token with read access to `ao-cloud`.
 
 - Stable Go facts and pure rules for agents, sessions, status, PRs, reviews, and
   stack position.
-- An organization-scoped Cloud OpenAPI contract and generated TypeScript schema
-  types.
+- Organization-scoped account, project, session-policy, event, and GitHub
+  OpenAPI contracts with generated TypeScript schema types.
 - A typed Cloud client for bearer authentication, pagination, idempotent writes,
-  event replay/SSE, terminal tickets, and workspace reads.
+  cursor-safe reconnecting SSE, GitHub App flows, terminal tickets, and
+  workspace reads.
 - Reusable board, composer, inspector, project-settings, agent, and SCM
   presentation used by the local desktop app.
 - WorkOS desktop authentication with token custody in Electron main and a
@@ -61,11 +63,15 @@ The private repository now contains:
   memberships, projects, sessions, turns/events, and future execution,
   sharing, and GitHub records;
 - WorkOS access-token validation, organization authorization, idempotent
-  project/session/message APIs, durable workspace intent, and event replay/SSE;
+  project/session/message APIs, durable workspace intent, and cross-replica
+  event replay/SSE;
+- secure GitHub App installation, OAuth verification, repository grants,
+  synchronization, disconnect, project import, and durable webhook processing;
 - non-root control-plane and migration images;
 - separate staging and production RDS/ECS/ALB/secrets/logging environments; and
 - migration-first staging deployment plus exact-digest production promotion
-  with scanning, health checks, and automatic application rollback.
+  with scanning, health checks, automatic rollback, guarded manual rollback,
+  CloudWatch alarms, and an operations dashboard.
 
 The public submodule pointer records the private `main` commit known to be
 compatible with this public branch. It is a development reference only; public
@@ -81,18 +87,19 @@ builds and releases still do not initialize or package the private repository.
 3. **Cloud app:** organization selection plus project, session, chat, files,
    terminal, review, and settings screens backed by the generated client and
    shared product UI.
-4. **GitHub App:** installation callbacks, scoped token brokering, webhook
-   handlers, repository access, PR/check/review synchronization, and stale-head
-   guards. The private schema exists, but the HTTP integration does not.
-5. **Operations:** private task subnets, production WorkOS credentials,
-   observability, billing, backups, incident controls, and compatibility policy.
+4. **SCM completion:** personal GitHub OAuth, scoped installation-token
+   brokering for workers, PR/issue/check/review synchronization, and stale-head
+   guards.
+5. **Operations:** private task subnets, production WorkOS credentials, SNS
+   alarm notifications, billing, backup restore drills, incident controls, and
+   compatibility policy.
 
 ## Recommended implementation order
 
 1. Complete public HTTPS ingress and configure the desktop Cloud API base URL.
 2. Build the first Cloud app flows with the generated client and shared UI.
 3. Add provisioning and the worker protocol for real hosted sessions.
-4. Add GitHub App installation, repository access, and SCM synchronization.
+4. Add worker GitHub token brokering and SCM synchronization.
 5. Add terminal/files, sharing, review synchronization, and remaining operations
    hardening.
 
