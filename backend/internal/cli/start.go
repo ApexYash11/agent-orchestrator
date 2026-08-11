@@ -305,7 +305,7 @@ MimeType=x-scheme-handler/ao-app;
 	if err := os.WriteFile(temporary, []byte(entry), 0o600); err != nil {
 		return fmt.Errorf("write Linux desktop entry: %w", err)
 	}
-	if err := os.Chmod(temporary, 0o644); err != nil {
+	if err := os.Chmod(temporary, 0o644); err != nil { //nolint:gosec // G302: desktop entries must be world-readable
 		_ = os.Remove(temporary)
 		return fmt.Errorf("chmod Linux desktop entry: %w", err)
 	}
