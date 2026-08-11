@@ -10,7 +10,7 @@ import {
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { Pencil, RefreshCw } from "lucide-react";
 import type { components } from "../../api/schema";
 import {
 	agentModelsQueryKey,
@@ -319,6 +319,9 @@ function SettingsBody({
 					<ProjectGeneralSettingsView
 						displayName={form.displayName}
 						externalLink={ProductExternalLink}
+						icons={{
+							edit: <Pencil className="settings-inline-edit-icon" aria-hidden="true" />,
+						}}
 						onDisplayNameChange={(displayName) => setForm((f) => ({ ...f, displayName }))}
 						labels={{
 							title: t("settings.project.identity"),
@@ -329,6 +332,7 @@ function SettingsBody({
 							repo: t("settings.project.repo"),
 							workspaceRepos: t("settings.project.workspaceRepos"),
 							workspaceReposEmpty: t("settings.project.childReposEmpty"),
+							editName: t("settings.field.edit", { label: t("settings.project.name") }),
 						}}
 						project={{
 							id: project.id,
@@ -454,6 +458,9 @@ function SettingsBody({
 						<>
 							<ProjectWorkflowSettingsView
 								branch={form.defaultBranch}
+								icons={{
+									edit: <Pencil className="settings-inline-edit-icon" aria-hidden="true" />,
+								}}
 								prefix={form.sessionPrefix}
 								onBranchChange={(defaultBranch) => setForm((f) => ({ ...f, defaultBranch }))}
 								onPrefixChange={(sessionPrefix) => setForm((f) => ({ ...f, sessionPrefix }))}
@@ -463,6 +470,12 @@ function SettingsBody({
 									sessionPrefix: t("settings.project.sessionPrefix"),
 									reviewers: t("settings.project.reviewers"),
 									defaultReviewer: t("settings.project.defaultReviewer"),
+									editDefaultBranch: t("settings.field.edit", {
+										label: t("settings.project.defaultBranch"),
+									}),
+									editSessionPrefix: t("settings.field.edit", {
+										label: t("settings.project.sessionPrefix"),
+									}),
 								}}
 								reviewerControl={
 									<ReviewerSelect

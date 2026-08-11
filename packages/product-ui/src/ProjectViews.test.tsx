@@ -115,6 +115,7 @@ describe("project presentation", () => {
 					repo: "Repository",
 					workspaceRepos: "Workspace repositories",
 					workspaceReposEmpty: "No repositories",
+					editName: "Edit Project name",
 				}}
 				onDisplayNameChange={vi.fn()}
 				project={{
@@ -129,6 +130,7 @@ describe("project presentation", () => {
 			/>,
 		);
 
+		fireEvent.click(screen.getByRole("button", { name: "Edit Project name" }));
 		expect(screen.getByLabelText("Project name")).toHaveValue("Workspace");
 		expect(screen.getByRole("link", { name: "/repo" })).toHaveAttribute("title", "/repo");
 		expect(screen.getByRole("link", { name: "https://github.com/acme/workspace" })).toHaveAttribute(

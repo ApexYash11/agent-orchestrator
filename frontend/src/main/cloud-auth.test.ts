@@ -257,6 +257,103 @@ describe("native WorkOS authentication", () => {
     expect(mocks.authenticateWithRefreshToken).toHaveBeenCalledOnce();
   });
 
+  it("preserves encrypted credentials after a retryable refresh failure", async () => {
+    mocks.authenticateWithCode.mockResolvedValueOnce({
+      accessToken: EXPIRED_ACCESS_TOKEN,
+      refreshToken: "refresh_123",
+      user: {
+        id: "user_123",
+        email: "person@example.com",
+        name: "Person Example",
+      },
+    });
+    mocks.authenticateWithRefreshToken
+      .mockRejectedValueOnce(
+        Object.assign(new Error("WorkOS temporarily unavailable"), {
+          status: 503,
+        }),
+      )
+      .mockResolvedValueOnce({
+        accessToken: ACCESS_TOKEN,
+        refreshToken: "refresh_456",
+        user: {
+          id: "user_123",
+          email: "person@example.com",
+          name: "Person Example",
+        },
+      });
+    await beginCloudSignIn(dataDir);
+    await handleCloudDeepLink(
+      "ao-app://callback?code=code_123&state=state_123",
+      dataDir,
+    );
+
+    await expect(getCloudSession(dataDir)).resolves.toMatchObject({
+      user: { email: "person@example.com" },
+    });
+    await expect(
+      readFile(path.join(dataDir, "cloud-auth.bin")),
+    ).resolves.toBeInstanceOf(Buffer);
+    await expect(getCloudSession(dataDir)).resolves.toMatchObject({
+      user: { email: "person@example.com" },
+    });
+    expect(mocks.authenticateWithRefreshToken).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not restore a refreshed session after explicit sign-out", async () => {
+    mocks.authenticateWithCode.mockResolvedValueOnce({
+      accessToken: EXPIRED_ACCESS_TOKEN,
+      refreshToken: "refresh_123",
+      user: {
+        id: "user_123",
+        email: "person@example.com",
+        name: "Person Example",
+      },
+    });
+    let resolveRefresh:
+      | ((value: {
+          accessToken: string;
+          refreshToken: string;
+          user: {
+            id: string;
+            email: string;
+            name: string;
+          };
+        }) => void)
+      | undefined;
+    mocks.authenticateWithRefreshToken.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+    await beginCloudSignIn(dataDir);
+    await handleCloudDeepLink(
+      "ao-app://callback?code=code_123&state=state_123",
+      dataDir,
+    );
+
+    const pendingSession = getCloudSession(dataDir);
+    await vi.waitFor(() =>
+      expect(mocks.authenticateWithRefreshToken).toHaveBeenCalledOnce(),
+    );
+    await signOutCloud(dataDir);
+    resolveRefresh?.({
+      accessToken: ACCESS_TOKEN,
+      refreshToken: "refresh_456",
+      user: {
+        id: "user_123",
+        email: "person@example.com",
+        name: "Person Example",
+      },
+    });
+
+    await expect(pendingSession).resolves.toBeNull();
+    await expect(getCloudSession(dataDir)).resolves.toBeNull();
+    await expect(
+      readFile(path.join(dataDir, "cloud-auth.bin")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("signs out locally without opening the browser", async () => {
     await beginCloudSignIn(dataDir);
     await handleCloudDeepLink(

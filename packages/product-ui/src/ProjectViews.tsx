@@ -2,7 +2,11 @@ import {
 	type ComponentType,
 	type FormEvent,
 	type HTMLAttributes,
+	type KeyboardEvent,
 	type ReactNode,
+	useEffect,
+	useRef,
+	useState,
 } from "react";
 import { cn } from "./utils";
 import type {
@@ -407,6 +411,8 @@ export function ProjectSettingsRow({
 }
 
 export function ProjectSettingsInputRow({
+	editIcon,
+	editLabel,
 	icon,
 	id,
 	label,
@@ -414,6 +420,8 @@ export function ProjectSettingsInputRow({
 	placeholder,
 	value,
 }: {
+	editIcon?: ReactNode;
+	editLabel: string;
 	icon?: ReactNode;
 	id: string;
 	label: string;
@@ -421,16 +429,54 @@ export function ProjectSettingsInputRow({
 	placeholder?: string;
 	value: string;
 }) {
+	const [editing, setEditing] = useState(false);
+	const inputRef = useRef<HTMLInputElement>(null);
+
+	useEffect(() => {
+		if (!editing) return;
+		inputRef.current?.focus();
+		inputRef.current?.select();
+	}, [editing]);
+
+	const finishEditing = () => setEditing(false);
+	const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+		if (event.key === "Enter") {
+			event.preventDefault();
+			finishEditing();
+		} else if (event.key === "Escape") {
+			event.preventDefault();
+			event.stopPropagation();
+			finishEditing();
+		}
+	};
+
 	return (
 		<ProjectSettingsRow icon={icon} label={label}>
-			<input
-				id={id}
-				aria-label={label}
-				className="settings-inline-input"
-				value={value}
-				onChange={(event) => onChange(event.target.value)}
-				placeholder={placeholder}
-			/>
+			{editing ? (
+				<input
+					ref={inputRef}
+					id={id}
+					aria-label={label}
+					className="settings-inline-edit-input"
+					value={value}
+					onChange={(event) => onChange(event.target.value)}
+					onBlur={finishEditing}
+					onKeyDown={onKeyDown}
+					placeholder={placeholder}
+				/>
+			) : (
+				<button
+					type="button"
+					className="settings-inline-edit-trigger"
+					aria-label={editLabel}
+					onClick={() => setEditing(true)}
+				>
+					<span className="settings-row-value" title={value || placeholder}>
+						{value || placeholder}
+					</span>
+					{editIcon}
+				</button>
+			)}
 		</ProjectSettingsRow>
 	);
 }
@@ -477,7 +523,7 @@ export function ProjectGeneralSettingsView({
 }: {
 	displayName: string;
 	externalLink?: ProjectExternalLink;
-	icons?: Partial<Record<"name" | "id" | "kind" | "path" | "repo" | "workspaceRepo", ReactNode>>;
+	icons?: Partial<Record<"edit" | "name" | "id" | "kind" | "path" | "repo" | "workspaceRepo", ReactNode>>;
 	labels: {
 		title: string;
 		name: string;
@@ -487,6 +533,7 @@ export function ProjectGeneralSettingsView({
 		repo: string;
 		workspaceRepos: string;
 		workspaceReposEmpty: string;
+		editName: string;
 	};
 	onDisplayNameChange: (value: string) => void;
 	project: {
@@ -503,6 +550,8 @@ export function ProjectGeneralSettingsView({
 		<>
 			<ProjectSettingsSection title={labels.title} titleHidden grouped>
 				<ProjectSettingsInputRow
+					editIcon={icons?.edit}
+					editLabel={labels.editName}
 					icon={icons?.name}
 					label={labels.name}
 					id="projectName"
@@ -602,13 +651,15 @@ export function ProjectWorkflowSettingsView({
 	reviewerWarning,
 }: {
 	branch: string;
-	icons?: Partial<Record<"branch" | "prefix" | "reviewer", ReactNode>>;
+	icons?: Partial<Record<"branch" | "edit" | "prefix" | "reviewer", ReactNode>>;
 	labels: {
 		worktrees: string;
 		defaultBranch: string;
 		sessionPrefix: string;
 		reviewers: string;
 		defaultReviewer: string;
+		editDefaultBranch: string;
+		editSessionPrefix: string;
 	};
 	onBranchChange: (value: string) => void;
 	onPrefixChange: (value: string) => void;
@@ -620,6 +671,8 @@ export function ProjectWorkflowSettingsView({
 		<>
 			<ProjectSettingsSection title={labels.worktrees} grouped>
 				<ProjectSettingsInputRow
+					editIcon={icons?.edit}
+					editLabel={labels.editDefaultBranch}
 					icon={icons?.branch}
 					label={labels.defaultBranch}
 					id="defaultBranch"
@@ -628,6 +681,8 @@ export function ProjectWorkflowSettingsView({
 					onChange={onBranchChange}
 				/>
 				<ProjectSettingsInputRow
+					editIcon={icons?.edit}
+					editLabel={labels.editSessionPrefix}
 					icon={icons?.prefix}
 					label={labels.sessionPrefix}
 					id="sessionPrefix"

@@ -36,6 +36,38 @@ interface AuthStore {
 const emptyStore = (): AuthStore => ({ session: null, pkce: null });
 const memoryStores = new Map<string, AuthStore>();
 const refreshes = new Map<string, Promise<CloudAccount | null>>();
+const authGenerations = new Map<string, number>();
+const authMutations = new Map<string, Promise<void>>();
+
+function authGeneration(dataDir: string): number {
+  return authGenerations.get(dataDir) ?? 0;
+}
+
+function invalidateAuthOperations(dataDir: string): number {
+  const generation = authGeneration(dataDir) + 1;
+  authGenerations.set(dataDir, generation);
+  return generation;
+}
+
+async function withAuthMutation<T>(
+  dataDir: string,
+  mutation: () => Promise<T>,
+): Promise<T> {
+  const previous = authMutations.get(dataDir) ?? Promise.resolve();
+  const result = previous.catch(() => undefined).then(mutation);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  authMutations.set(dataDir, settled);
+  try {
+    return await result;
+  } finally {
+    if (authMutations.get(dataDir) === settled) {
+      authMutations.delete(dataDir);
+    }
+  }
+}
 
 function storePath(dataDir: string): string {
   return path.join(dataDir, AUTH_STORE_FILE);
@@ -149,6 +181,35 @@ function tokenExpiresSoon(token: string): boolean {
   return typeof exp !== "number" || Date.now() >= exp * 1000 - 60_000;
 }
 
+function isTerminalRefreshFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return String(error).toLowerCase().includes("refresh token already consumed");
+  }
+  const candidate = error as {
+    code?: unknown;
+    error?: unknown;
+    message?: unknown;
+    rawData?: { code?: unknown; error?: unknown; message?: unknown };
+  };
+  const details = [
+    candidate.code,
+    candidate.error,
+    candidate.message,
+    candidate.rawData?.code,
+    candidate.rawData?.error,
+    candidate.rawData?.message,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+  return (
+    details.includes("invalid_grant") ||
+    details.includes("refresh token already consumed") ||
+    details.includes("refresh token expired") ||
+    details.includes("refresh token revoked")
+  );
+}
+
 export async function getCloudSession(
   dataDir: string,
 ): Promise<CloudAccount | null> {
@@ -163,7 +224,11 @@ export async function getCloudSession(
 
   const pendingRefresh = refreshes.get(dataDir);
   if (pendingRefresh) return pendingRefresh;
-  const refresh = refreshCloudSession(dataDir, store, store.session);
+  const refresh = refreshCloudSession(
+    dataDir,
+    store.session,
+    authGeneration(dataDir),
+  );
   refreshes.set(dataDir, refresh);
   try {
     return await refresh;
@@ -174,8 +239,8 @@ export async function getCloudSession(
 
 async function refreshCloudSession(
   dataDir: string,
-  store: AuthStore,
   storedSession: StoredSession,
+  generation: number,
 ): Promise<CloudAccount | null> {
   try {
     const refreshed = await workos!.userManagement.authenticateWithRefreshToken({
@@ -187,10 +252,30 @@ async function refreshCloudSession(
       refreshed.refreshToken,
       refreshed.user,
     );
-    await writeAuthStore(dataDir, { ...store, session });
-    return publicAccount(session);
-  } catch {
-    await removeAuthStore(dataDir);
+    return withAuthMutation(dataDir, async () => {
+      if (authGeneration(dataDir) !== generation) return null;
+      const currentStore = await readAuthStore(dataDir);
+      if (
+        currentStore.session?.refreshToken !== storedSession.refreshToken
+      ) {
+        return null;
+      }
+      await writeAuthStore(dataDir, { ...currentStore, session });
+      return publicAccount(session);
+    });
+  } catch (error) {
+    if (!isTerminalRefreshFailure(error)) {
+      return publicAccount(storedSession);
+    }
+    await withAuthMutation(dataDir, async () => {
+      if (authGeneration(dataDir) !== generation) return;
+      const currentStore = await readAuthStore(dataDir);
+      if (
+        currentStore.session?.refreshToken === storedSession.refreshToken
+      ) {
+        await removeAuthStore(dataDir);
+      }
+    });
     return null;
   }
 }
@@ -207,6 +292,7 @@ export async function beginCloudSignIn(dataDir: string): Promise<void> {
       maxAge: 0,
       redirectUri: REDIRECT_URI,
     });
+  invalidateAuthOperations(dataDir);
   const store = await readAuthStore(dataDir);
   await writeAuthStore(dataDir, {
     ...store,
@@ -261,7 +347,8 @@ export async function handleCloudDeepLink(
 }
 
 export async function signOutCloud(dataDir: string): Promise<void> {
-  await removeAuthStore(dataDir);
+  invalidateAuthOperations(dataDir);
+  await withAuthMutation(dataDir, () => removeAuthStore(dataDir));
 }
 
 function signInFailureDetail(error: unknown): string {
