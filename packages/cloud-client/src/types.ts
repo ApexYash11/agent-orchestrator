@@ -4,6 +4,11 @@ type Schemas = components["schemas"];
 
 export type ErrorEnvelope = Schemas["ErrorEnvelope"];
 export type PageInfo = Schemas["PageInfo"];
+export type AuthProvider = Schemas["AuthProvider"];
+export type OrganizationRole = Schemas["OrganizationRole"];
+export type CurrentUser = Schemas["CurrentUser"];
+export type OrganizationMembership = Schemas["OrganizationMembership"];
+export type CurrentAccount = Schemas["CurrentAccount"];
 
 export type AgentCapability = Schemas["AgentCapability"];
 export type AgentInstallationState = Schemas["AgentInstallationState"];
@@ -28,6 +33,7 @@ export type CreateGitHubProjectInput = Schemas["CreateGitHubProjectInput"];
 
 export type Session = Schemas["Session"];
 export type SessionKind = Schemas["SessionKind"];
+export type SessionMode = Schemas["SessionMode"];
 export type SessionActivityState = Schemas["SessionActivityState"];
 export type SessionStatus = Schemas["SessionStatus"];
 export type Turn = Schemas["Turn"];

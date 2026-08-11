@@ -9,9 +9,11 @@ info:
 security:
   - bearerAuth: []
 tags:
+  - name: Account
   - name: Agents
   - name: Projects
   - name: Sessions
+  - name: GitHub
   - name: Pull Requests
   - name: Reviews
   - name: Events
@@ -19,6 +21,19 @@ tags:
   - name: Workspace
   - name: Providers
 paths:
+  /api/cloud/v1/me:
+    get:
+      operationId: getCurrentAccount
+      tags: [Account]
+      responses:
+        "200":
+          description: The authenticated user and their active organization memberships.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentAccount"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/agents:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -120,10 +135,10 @@ paths:
                 $ref: "#/components/schemas/GitHubInstallationStart"
         default:
           $ref: "#/components/responses/Error"
-  /api/cloud/v1/orgs/{orgId}/github/installations/{githubInstallationId}/sync:
+  /api/cloud/v1/orgs/{orgId}/github/installations/{installationId}/sync:
     parameters:
       - $ref: "#/components/parameters/OrgId"
-      - $ref: "#/components/parameters/GitHubInstallationId"
+      - $ref: "#/components/parameters/InstallationId"
     post:
       operationId: syncGitHubInstallation
       tags: [GitHub]
@@ -141,10 +156,10 @@ paths:
                     $ref: "#/components/schemas/GitHubInstallation"
         default:
           $ref: "#/components/responses/Error"
-  /api/cloud/v1/orgs/{orgId}/github/installations/{githubInstallationId}/disconnect:
+  /api/cloud/v1/orgs/{orgId}/github/installations/{installationId}/disconnect:
     parameters:
       - $ref: "#/components/parameters/OrgId"
-      - $ref: "#/components/parameters/GitHubInstallationId"
+      - $ref: "#/components/parameters/InstallationId"
     post:
       operationId: disconnectGitHubInstallation
       tags: [GitHub]
@@ -531,16 +546,16 @@ components:
       required: true
       schema:
         type: string
-        minLength: 1
+        format: uuid
     SessionId:
       name: sessionId
       in: path
       required: true
       schema:
         type: string
-        minLength: 1
-    GitHubInstallationId:
-      name: githubInstallationId
+        format: uuid
+    InstallationId:
+      name: installationId
       in: path
       required: true
       schema:
@@ -596,6 +611,53 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    AuthProvider:
+      type: string
+      enum: [workos, local]
+    OrganizationRole:
+      type: string
+      enum: [owner, admin, member]
+    CurrentUser:
+      type: object
+      additionalProperties: false
+      required: [id, email, displayName, authProvider]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        authProvider:
+          $ref: "#/components/schemas/AuthProvider"
+    OrganizationMembership:
+      type: object
+      additionalProperties: false
+      required: [id, slug, displayName, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{1,62}$"
+        displayName:
+          type: string
+        role:
+          $ref: "#/components/schemas/OrganizationRole"
+    CurrentAccount:
+      type: object
+      additionalProperties: false
+      required: [user, organizations]
+      properties:
+        user:
+          $ref: "#/components/schemas/CurrentUser"
+        organizations:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationMembership"
     AgentCapability:
       type: string
       enum:
@@ -680,8 +742,10 @@ components:
       properties:
         id:
           type: string
+          format: uuid
         orgId:
           type: string
+          format: uuid
         displayName:
           type: string
         repositoryUrl:
@@ -689,6 +753,10 @@ components:
           format: uri
         defaultBranch:
           type: string
+        githubRepositoryId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer repository ID encoded as a decimal string to preserve precision.
         config:
           type: object
           additionalProperties: true
@@ -710,9 +778,11 @@ components:
         repositoryUrl:
           type: string
           format: uri
+          pattern: "^https://"
         defaultBranch:
           type: string
           minLength: 1
+          maxLength: 255
         config:
           type: object
           additionalProperties: true
@@ -751,8 +821,9 @@ components:
           type: string
           format: uuid
         githubInstallationId:
-          type: integer
-          format: int64
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer installation ID encoded as a decimal string to preserve precision.
         accountLogin:
           type: string
         accountType:
@@ -806,8 +877,9 @@ components:
         - grantedAt
       properties:
         githubRepositoryId:
-          type: integer
-          format: int64
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer repository ID encoded as a decimal string to preserve precision.
         name:
           type: string
         fullName:
@@ -848,11 +920,10 @@ components:
       required: [githubRepositoryId]
       properties:
         githubRepositoryId:
-          type: integer
-          format: int64
+          type: string
+          pattern: "^[1-9][0-9]*$"
         displayName:
           type: string
-          minLength: 1
           maxLength: 120
         config:
           type: object
@@ -860,6 +931,9 @@ components:
     SessionKind:
       type: string
       enum: [worker, orchestrator]
+    SessionMode:
+      type: string
+      enum: [read-only, standard, trusted]
     SessionActivityState:
       type: string
       enum: [active, idle, waiting_input, blocked, exited]
@@ -924,6 +998,8 @@ components:
         - harness
         - displayName
         - branch
+        - mode
+        - deniedCommands
         - activityState
         - status
         - runtimeConnected
@@ -933,10 +1009,13 @@ components:
       properties:
         id:
           type: string
+          format: uuid
         orgId:
           type: string
+          format: uuid
         projectId:
           type: string
+          format: uuid
         kind:
           $ref: "#/components/schemas/SessionKind"
         harness:
@@ -945,6 +1024,12 @@ components:
           type: string
         branch:
           type: string
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+        deniedCommands:
+          type: array
+          items:
+            type: string
         activityState:
           $ref: "#/components/schemas/SessionActivityState"
         status:
@@ -976,19 +1061,31 @@ components:
       properties:
         projectId:
           type: string
+          format: uuid
         kind:
           $ref: "#/components/schemas/SessionKind"
         harness:
           type: string
           minLength: 1
+          maxLength: 120
         displayName:
           type: string
           minLength: 1
           maxLength: 80
         prompt:
           type: string
-        providerConnectionId:
+          maxLength: 65536
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+          default: standard
+        deniedCommands:
+          type: array
+          items:
+            type: string
+          default: []
+        sandboxProviderConnectionId:
           type: string
+          format: uuid
     SessionPage:
       type: object
       additionalProperties: false

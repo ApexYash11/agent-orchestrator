@@ -39,11 +39,11 @@ route or supplies the host data.
 | --- | --- | --- |
 | Status and stacks | Go facts, deterministic derivation, PR stack rules | Mapping hosted observations into the shared facts |
 | Agents | Identity, capability vocabulary, installation/auth/org availability, Cloud list contract | Runtime probing, image availability, org policy, provider authentication |
-| Projects | Cloud DTOs/client plus controlled setup/settings sections and validation used by local AO | Hosted CRUD handlers, authorization, persistence, repository import, and Cloud-specific project list/import UI |
-| Sessions and chat | Session/message/event DTOs, replay rules, client, board/composer/inspector views | Hosted lifecycle, durable transcript, reconciliation and execution |
+| Projects | Cloud DTOs/client plus controlled setup/settings sections and validation used by local AO | Private Cloud implements authorized persistence and GitHub project import; update/archive flows and Cloud-specific list/import UI remain |
+| Sessions and chat | Session/message/event DTOs, replay rules, reconnecting client, board/composer/inspector views | Private Cloud implements durable creation, messages, replay, and replica-safe SSE; reconciliation, worker event ingestion, and execution remain |
 | PRs and reviews | Raw PR/CI/review/mergeability/AO-review models, read routes, client methods, reusable inspector presentation | GitHub observation, stale-head enforcement, review execution and storage |
 | Workspace and terminal | File/diff shapes, workspace requests, terminal-ticket and WebSocket contracts | Sandbox RPC, ticket issuance, filesystem confinement and terminal transport |
-| Authentication | WorkOS desktop token custody and token-free account projection | Hosted access-token validation and organization authorization |
+| Authentication | WorkOS desktop token custody, token-free account projection, and account/membership client contract | Private Cloud implements hosted token validation and organization authorization; the Cloud organization-picker UI remains |
 
 Project/workspace database and service structs are intentionally not shared Go
 types. Public clients exchange OpenAPI DTOs; each backend maps its private domain

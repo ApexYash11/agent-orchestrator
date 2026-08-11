@@ -10,6 +10,39 @@ import {
 } from "../src/index.js";
 
 describe("CloudClient", () => {
+  it("loads the authenticated account and organization memberships", async () => {
+    const account = {
+      user: {
+        id: "aa4c5117-d075-4a4e-a384-149e75f7dc45",
+        email: "alice@example.com",
+        displayName: "Alice",
+        authProvider: "workos",
+      },
+      organizations: [
+        {
+          id: "4165753c-c6ad-4ac2-8f12-e0cbb24d9750",
+          slug: "acme",
+          displayName: "Acme",
+          role: "admin",
+        },
+      ],
+    } as const;
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse(account),
+    );
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(client.getCurrentAccount()).resolves.toEqual(account);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://cloud.example.com/api/cloud/v1/me",
+    );
+  });
+
   it("lists runtime-supplied agent profiles for an organization", async () => {
     const profile: AgentProfile = {
       id: "runtime-agent",
@@ -44,7 +77,7 @@ describe("CloudClient", () => {
   it("manages organization-scoped GitHub App installations and repositories", async () => {
     const installation = {
       id: "d9916dbe-486c-43ec-91b8-379419767719",
-      githubInstallationId: 12345,
+      githubInstallationId: "12345",
       accountLogin: "acme",
       accountType: "Organization",
       status: "active",
@@ -69,6 +102,7 @@ describe("CloudClient", () => {
         }),
       )
       .mockResolvedValueOnce(jsonResponse({ installation }))
+      .mockResolvedValueOnce(jsonResponse({ installation }))
       .mockResolvedValueOnce(jsonResponse({ project: { id: "project-1" } }));
     const client = createCloudClient({
       baseUrl: "https://cloud.example.com",
@@ -88,9 +122,13 @@ describe("CloudClient", () => {
       "tenant one",
       "d9916dbe-486c-43ec-91b8-379419767719",
     );
+    await client.disconnectGitHubInstallation(
+      "tenant one",
+      "d9916dbe-486c-43ec-91b8-379419767719",
+    );
     await client.createProjectFromGitHub(
       "tenant one",
-      { githubRepositoryId: 98765 },
+      { githubRepositoryId: "98765" },
       { idempotencyKey: "github-project-1" },
     );
 
@@ -99,11 +137,13 @@ describe("CloudClient", () => {
       "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/github/installations/start",
       "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/github/repositories?cursor=next+page&limit=25",
       "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/github/installations/d9916dbe-486c-43ec-91b8-379419767719/sync",
+      "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/github/installations/d9916dbe-486c-43ec-91b8-379419767719/disconnect",
       "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/github/projects",
     ]);
     expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("POST");
     expect(fetchMock.mock.calls[3]?.[1]?.method).toBe("POST");
-    expect(requestHeaders(fetchMock, 4).get("Idempotency-Key")).toBe(
+    expect(fetchMock.mock.calls[4]?.[1]?.method).toBe("POST");
+    expect(requestHeaders(fetchMock, 5).get("Idempotency-Key")).toBe(
       "github-project-1",
     );
   });
@@ -329,6 +369,7 @@ describe("CloudClient", () => {
   });
 
   it("streams replayed SSE events from an explicit cursor", async () => {
+    const abort = new AbortController();
     const encoder = new TextEncoder();
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -358,8 +399,10 @@ describe("CloudClient", () => {
     const events: ClientEvent[] = [];
     for await (const event of client.streamEvents("tenant", "session", {
       after: 7,
+      signal: abort.signal,
     })) {
       events.push(event);
+      abort.abort();
     }
 
     expect(events).toEqual([
@@ -376,6 +419,95 @@ describe("CloudClient", () => {
       "text/event-stream",
     );
   });
+
+  it("reconnects event streams from the greatest consumed sequence", async () => {
+    const abort = new AbortController();
+    const fetchMock = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(
+        sseResponse({
+          sessionId: "session",
+          sequence: 8,
+          type: "chat.assistant_delta",
+          payload: { text: "Hi" },
+          createdAt: "2026-08-09T00:00:00Z",
+        }),
+      )
+      .mockResolvedValueOnce(
+        sseResponse(
+          {
+            sessionId: "session",
+            sequence: 8,
+            type: "chat.assistant_delta",
+            payload: { text: "duplicate" },
+            createdAt: "2026-08-09T00:00:00Z",
+          },
+          {
+            sessionId: "session",
+            sequence: 9,
+            type: "chat.turn_completed",
+            payload: {},
+            createdAt: "2026-08-09T00:00:01Z",
+          },
+        ),
+      );
+    const getAccessToken = vi
+      .fn<() => string>()
+      .mockReturnValueOnce("first-token")
+      .mockReturnValueOnce("second-token");
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken,
+      fetch: fetchMock as typeof fetch,
+    });
+
+    const sequences: number[] = [];
+    for await (const event of client.streamEvents("tenant", "session", {
+      after: 7,
+      signal: abort.signal,
+    })) {
+      sequences.push(event.sequence);
+      if (event.sequence === 9) abort.abort();
+    }
+
+    expect(sequences).toEqual([8, 9]);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://cloud.example.com/api/cloud/v1/orgs/tenant/sessions/session/events?after=7",
+      "https://cloud.example.com/api/cloud/v1/orgs/tenant/sessions/session/events?after=8",
+    ]);
+    expect(requestHeaders(fetchMock, 0).get("Authorization")).toBe(
+      "Bearer first-token",
+    );
+    expect(requestHeaders(fetchMock, 1).get("Authorization")).toBe(
+      "Bearer second-token",
+    );
+  });
+
+  it("does not reconnect event streams after non-retryable client errors", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(
+        {
+          error: "unauthorized",
+          code: "unauthorized",
+          message: "Sign in again.",
+          requestId: "request-1",
+        },
+        401,
+      ),
+    );
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "expired-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    const stream = client.streamEvents("tenant", "session");
+    await expect(stream.next()).rejects.toMatchObject({
+      status: 401,
+      code: "unauthorized",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -383,6 +515,21 @@ function jsonResponse(value: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function sseResponse(...events: ClientEvent[]): Response {
+  return new Response(
+    events
+      .map(
+        (event) =>
+          `id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`,
+      )
+      .join(""),
+    {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    },
+  );
 }
 
 function requestHeaders(
