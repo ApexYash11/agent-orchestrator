@@ -266,6 +266,45 @@ func TestDownloadURLUsesReleaseRepo(t *testing.T) {
 	}
 }
 
+func TestRegisterLinuxProtocolHandler(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	var commands [][]string
+	c := &commandContext{deps: Deps{
+		CommandOutput: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			commands = append(commands, append([]string{name}, args...))
+			if len(args) > 0 && args[0] == "query" {
+				return []byte(linuxDesktopEntryName + "\n"), nil
+			}
+			return nil, nil
+		},
+	}.withDefaults()}
+
+	appPath := "/tmp/Agent Orchestrator 100%.AppImage"
+	if err := c.registerLinuxProtocolHandler(context.Background(), appPath); err != nil {
+		t.Fatal(err)
+	}
+	entryPath := filepath.Join(dataHome, "applications", linuxDesktopEntryName)
+	entry, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(entry)
+	if !strings.Contains(content, `Exec="/tmp/Agent Orchestrator 100%%.AppImage" %u`) {
+		t.Fatalf("desktop entry does not safely target AppImage:\n%s", content)
+	}
+	if !strings.Contains(content, "MimeType=x-scheme-handler/ao-app;") {
+		t.Fatalf("desktop entry does not register ao-app:\n%s", content)
+	}
+	wantCommands := [][]string{
+		{"xdg-mime", "default", linuxDesktopEntryName, "x-scheme-handler/ao-app"},
+		{"xdg-mime", "query", "default", "x-scheme-handler/ao-app"},
+	}
+	if !reflect.DeepEqual(commands, wantCommands) {
+		t.Fatalf("commands = %#v, want %#v", commands, wantCommands)
+	}
+}
+
 func TestOpenApp_ArgConstruction(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("openApp launches via `open` only on darwin")
