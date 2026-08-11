@@ -52,33 +52,48 @@ token with read access to `ao-cloud`.
 
 These are shared-ready boundaries, not a hosted Cloud implementation.
 
+## Private implementation status
+
+The private repository now contains:
+
+- the 28-table PostgreSQL schema, tenant keys, forced RLS, organizations,
+  memberships, projects, sessions, turns/events, and future execution,
+  sharing, and GitHub records;
+- WorkOS access-token validation, organization authorization, idempotent
+  project/session/message APIs, durable workspace intent, and event replay/SSE;
+- non-root control-plane and migration images;
+- separate staging and production RDS/ECS/ALB/secrets/logging environments; and
+- migration-first staging deployment plus exact-digest production promotion
+  with scanning, health checks, and automatic application rollback.
+
+The public submodule pointer records the private `main` commit known to be
+compatible with this public branch. It is a development reference only; public
+builds and releases still do not initialize or package the private repository.
+
 ## Private implementation still required
 
-1. **Data model:** PostgreSQL tables, migrations, tenant keys, RLS, organizations,
-   memberships, projects, sessions, turns/events, provider connections, reviews,
-   and execution records.
-2. **Control plane:** hosted handlers for the public OpenAPI contract, WorkOS
-   access-token validation, organization authorization, idempotency, and durable
-   event replay.
-3. **Execution plane:** queues, leases, reconciliation, provisioning, sandbox
+1. **Public HTTPS cutover:** issue ACM certificates, attach the replacement
+   internet-facing ALBs, publish `api.aoagents.dev` and
+   `staging-api.aoagents.dev`, then retire the internal ALBs.
+2. **Execution plane:** queues, leases, reconciliation, provisioning, sandbox
    images, workers, heartbeats, terminal transport, and workspace RPC.
-4. **Cloud app:** organization selection plus project, session, chat, files,
+3. **Cloud app:** organization selection plus project, session, chat, files,
    terminal, review, and settings screens backed by the generated client and
    shared product UI.
-5. **GitHub App:** installation flow, scoped token brokering, webhooks,
-   repository access, PR/check/review synchronization, and stale-head guards.
-6. **Operations:** deployment, observability, billing, backups, incident
-   controls, and public/private release compatibility.
+4. **GitHub App:** installation callbacks, scoped token brokering, webhook
+   handlers, repository access, PR/check/review synchronization, and stale-head
+   guards. The private schema exists, but the HTTP integration does not.
+5. **Operations:** private task subnets, production WorkOS credentials,
+   observability, billing, backups, incident controls, and compatibility policy.
 
 ## Recommended implementation order
 
-1. Define the private PostgreSQL schema and tenant/authorization model.
-2. Implement the existing OpenAPI handlers and contract tests.
-3. Build the first Cloud app flows with the generated client and shared UI.
-4. Add provisioning and the worker protocol for real hosted sessions.
-5. Add GitHub App installation, repository access, and SCM synchronization.
-6. Harden retries, reconciliation, security, observability, billing, and
-   release/version policy.
+1. Complete public HTTPS ingress and configure the desktop Cloud API base URL.
+2. Build the first Cloud app flows with the generated client and shared UI.
+3. Add provisioning and the worker protocol for real hosted sessions.
+4. Add GitHub App installation, repository access, and SCM synchronization.
+5. Add terminal/files, sharing, review synchronization, and remaining operations
+   hardening.
 
 See [cloud-refactor.md](cloud-refactor.md) for package ownership, import rules,
 and the detailed public/private boundary.
