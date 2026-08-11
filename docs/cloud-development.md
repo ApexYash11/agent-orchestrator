@@ -18,7 +18,8 @@ with:
 
 ```bash
 gh auth setup-git
-git submodule update --init private/ao-cloud
+git -c submodule.private/ao-cloud.update=checkout \
+  submodule update --init private/ao-cloud
 ```
 
 Developers without access do nothing. A normal clone, build, and test of public
