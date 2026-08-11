@@ -77,30 +77,44 @@ The public submodule pointer records the private `main` commit known to be
 compatible with this public branch. It is a development reference only; public
 builds and releases still do not initialize or package the private repository.
 
+## Environment modes
+
+1. **Local:** `npm run cloud:local` uses local auth, local PostgreSQL, and the
+   local control-plane container. It does not load WorkOS or GitHub App
+   credentials. Docker workers are intended but are not implemented yet.
+2. **Staging:** `npm run cloud:staging` runs the desktop locally against
+   `https://staging-api.aoagents.dev`, the hosted staging database, and the
+   shared WorkOS environment. Future staging workers run remotely.
+3. **Production:** `https://api.aoagents.dev` uses the production database, the
+   same WorkOS environment, and the production-owned GitHub App. There is no
+   local-desktop-against-production development command.
+
+GitHub App credentials remain disabled outside production. A future broker must
+return signed, environment-scoped repository grants before local or staging UI
+enables GitHub; sharing credentials directly would route callback state to the
+wrong database.
+
 ## Private implementation still required
 
-1. **Public HTTPS cutover:** issue ACM certificates, attach the replacement
-   internet-facing ALBs, publish `api.aoagents.dev` and
-   `staging-api.aoagents.dev`, then retire the internal ALBs.
-2. **Execution plane:** queues, leases, reconciliation, provisioning, sandbox
+1. **Execution plane:** queues, leases, reconciliation, provisioning, sandbox
    images, workers, heartbeats, terminal transport, and workspace RPC.
-3. **Cloud app:** organization selection plus project, session, chat, files,
+2. **Cloud app:** organization selection plus project, session, chat, files,
    terminal, review, and settings screens backed by the generated client and
    shared product UI.
-4. **SCM completion:** personal GitHub OAuth, scoped installation-token
-   brokering for workers, PR/issue/check/review synchronization, and stale-head
-   guards.
-5. **Operations:** private task subnets, production WorkOS credentials, SNS
-   alarm notifications, billing, backup restore drills, incident controls, and
-   compatibility policy.
+3. **SCM completion:** production GitHub App credentials, an environment broker,
+   personal GitHub OAuth, scoped installation-token brokering for workers,
+   PR/issue/check/review synchronization, and stale-head guards.
+4. **Operations:** retire the empty internal ALBs after observation, move tasks
+   to private subnets, configure SNS alarm notifications, and complete billing,
+   backup restore drills, incident controls, and compatibility policy.
 
 ## Recommended implementation order
 
-1. Complete public HTTPS ingress and configure the desktop Cloud API base URL.
-2. Build the first Cloud app flows with the generated client and shared UI.
-3. Add provisioning and the worker protocol for real hosted sessions.
-4. Add worker GitHub token brokering and SCM synchronization.
-5. Add terminal/files, sharing, review synchronization, and remaining operations
+1. Build the first Cloud app flows with the generated client and shared UI.
+2. Add provisioning and the worker protocol for real hosted sessions.
+3. Add the production GitHub broker, worker token brokering, and SCM
+   synchronization.
+4. Add terminal/files, sharing, review synchronization, and remaining operations
    hardening.
 
 See [cloud-refactor.md](cloud-refactor.md) for package ownership, import rules,
