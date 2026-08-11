@@ -2,10 +2,15 @@ import type {
   AgentProfile,
   ClientEvent,
   ClientEventPage,
+  CreateGitHubProjectInput,
   CreateProjectInput,
   CreateSessionInput,
+  CurrentAccount,
   ErrorEnvelope,
   EventReplayOptions,
+  GitHubInstallation,
+  GitHubInstallationStart,
+  GitHubRepositoryPage,
   IdempotentRequestOptions,
   PaginationOptions,
   Project,
@@ -73,6 +78,10 @@ export class CloudClient {
     this.fetch = config.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
+  getCurrentAccount(options: RequestOptions = {}): Promise<CurrentAccount> {
+    return this.request("/api/cloud/v1/me", options);
+  }
+
   async listAgents(
     orgId: string,
     options: RequestOptions = {},
@@ -103,6 +112,80 @@ export class CloudClient {
     options: IdempotentRequestOptions,
   ): Promise<{ project: Project }> {
     return this.request(this.orgPath(orgId, "/projects"), {
+      method: "POST",
+      body: input,
+      idempotencyKey: options.idempotencyKey,
+      signal: options.signal,
+    });
+  }
+
+  async listGitHubInstallations(
+    orgId: string,
+    options: RequestOptions = {},
+  ): Promise<GitHubInstallation[]> {
+    const response = await this.request<{
+      installations: GitHubInstallation[];
+    }>(this.orgPath(orgId, "/github/installations"), options);
+    return response.installations;
+  }
+
+  startGitHubInstallation(
+    orgId: string,
+    options: RequestOptions = {},
+  ): Promise<GitHubInstallationStart> {
+    return this.request(this.orgPath(orgId, "/github/installations/start"), {
+      method: "POST",
+      signal: options.signal,
+    });
+  }
+
+  syncGitHubInstallation(
+    orgId: string,
+    installationId: string,
+    options: RequestOptions = {},
+  ): Promise<{ installation: GitHubInstallation }> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/github/installations/${encodeURIComponent(installationId)}/sync`,
+      ),
+      { method: "POST", signal: options.signal },
+    );
+  }
+
+  disconnectGitHubInstallation(
+    orgId: string,
+    installationId: string,
+    options: RequestOptions = {},
+  ): Promise<{ installation: GitHubInstallation }> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/github/installations/${encodeURIComponent(installationId)}/disconnect`,
+      ),
+      { method: "POST", signal: options.signal },
+    );
+  }
+
+  listGitHubRepositories(
+    orgId: string,
+    options: PaginationOptions = {},
+  ): Promise<GitHubRepositoryPage> {
+    return this.request(
+      this.withQuery(this.orgPath(orgId, "/github/repositories"), {
+        cursor: options.cursor,
+        limit: options.limit,
+      }),
+      { signal: options.signal },
+    );
+  }
+
+  createProjectFromGitHub(
+    orgId: string,
+    input: CreateGitHubProjectInput,
+    options: IdempotentRequestOptions,
+  ): Promise<{ project: Project }> {
+    return this.request(this.orgPath(orgId, "/github/projects"), {
       method: "POST",
       body: input,
       idempotencyKey: options.idempotencyKey,
@@ -219,51 +302,72 @@ export class CloudClient {
     sessionId: string,
     options: Omit<EventReplayOptions, "limit"> = {},
   ): AsyncGenerator<ClientEvent, void, void> {
-    const path = this.withQuery(
-      this.orgPath(
-        orgId,
-        `/sessions/${encodeURIComponent(sessionId)}/events`,
-      ),
-      { after: options.after ?? 0 },
+    const endpoint = this.orgPath(
+      orgId,
+      `/sessions/${encodeURIComponent(sessionId)}/events`,
     );
-    const response = await this.authorizedFetch(path, {
-      headers: { Accept: "text/event-stream" },
-      signal: options.signal,
-    });
-    await this.throwIfError(response);
-    if (!response.body) {
-      throw this.invalidResponse(
-        response.status,
-        "Cloud event stream returned no response body.",
-      );
-    }
+    let after = options.after ?? 0;
+    let retryAttempt = 0;
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-        buffer = buffer.replaceAll("\r\n", "\n");
-
-        let boundary = buffer.indexOf("\n\n");
-        while (boundary >= 0) {
-          const event = parseSSEBlock(buffer.slice(0, boundary));
-          buffer = buffer.slice(boundary + 2);
-          if (event) yield event;
-          boundary = buffer.indexOf("\n\n");
+    while (!options.signal?.aborted) {
+      let receivedEvent = false;
+      try {
+        const path = this.withQuery(endpoint, { after });
+        const response = await this.authorizedFetch(path, {
+          headers: { Accept: "text/event-stream" },
+          signal: options.signal,
+        });
+        await this.throwIfError(response);
+        if (!response.body) {
+          throw this.invalidResponse(
+            response.status,
+            "Cloud event stream returned no response body.",
+          );
         }
 
-        if (done) {
-          const event = parseSSEBlock(buffer);
-          if (event) yield event;
-          return;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        try {
+          while (!options.signal?.aborted) {
+            const { done, value } = await reader.read();
+            buffer += decoder.decode(value, { stream: !done });
+            buffer = buffer.replaceAll("\r\n", "\n");
+
+            let boundary = buffer.indexOf("\n\n");
+            while (boundary >= 0) {
+              const event = parseSSEBlock(buffer.slice(0, boundary));
+              buffer = buffer.slice(boundary + 2);
+              if (event && event.sequence > after) {
+                after = event.sequence;
+                receivedEvent = true;
+                yield event;
+              }
+              boundary = buffer.indexOf("\n\n");
+            }
+
+            if (done) {
+              const event = parseSSEBlock(buffer);
+              if (event && event.sequence > after) {
+                after = event.sequence;
+                receivedEvent = true;
+                yield event;
+              }
+              break;
+            }
+          }
+        } finally {
+          await reader.cancel().catch(() => undefined);
+          reader.releaseLock();
         }
+      } catch (error) {
+        if (options.signal?.aborted) return;
+        if (!isRetryableStreamError(error)) throw error;
       }
-    } finally {
-      await reader.cancel().catch(() => undefined);
-      reader.releaseLock();
+
+      if (options.signal?.aborted) return;
+      retryAttempt = receivedEvent ? 0 : retryAttempt + 1;
+      await waitForRetry(retryAttempt, options.signal);
     }
   }
 
@@ -462,6 +566,34 @@ function parseSSEBlock(block: string): ClientEvent | undefined {
     .map((line) => line.slice(5).trimStart())
     .join("\n");
   return data ? (JSON.parse(data) as ClientEvent) : undefined;
+}
+
+function isRetryableStreamError(error: unknown): boolean {
+  if (!(error instanceof CloudApiError)) return true;
+  return (
+    error.status === 408 ||
+    error.status === 425 ||
+    error.status === 429 ||
+    error.status >= 500
+  );
+}
+
+async function waitForRetry(
+  attempt: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (attempt <= 1 || signal?.aborted) return;
+  const base = Math.min(250 * 2 ** Math.min(attempt - 2, 4), 4_000);
+  const delay = base + Math.floor(Math.random() * Math.max(1, base / 4));
+  await new Promise<void>((resolve) => {
+    const finish = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timeout = setTimeout(finish, delay);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 }
 
 function toErrorEnvelope(response: Response, value: unknown): ErrorEnvelope {

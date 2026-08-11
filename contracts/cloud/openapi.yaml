@@ -9,9 +9,11 @@ info:
 security:
   - bearerAuth: []
 tags:
+  - name: Account
   - name: Agents
   - name: Projects
   - name: Sessions
+  - name: GitHub
   - name: Pull Requests
   - name: Reviews
   - name: Events
@@ -19,6 +21,19 @@ tags:
   - name: Workspace
   - name: Providers
 paths:
+  /api/cloud/v1/me:
+    get:
+      operationId: getCurrentAccount
+      tags: [Account]
+      responses:
+        "200":
+          description: The authenticated user and their active organization memberships.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentAccount"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/agents:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -77,6 +92,131 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [project]
+                properties:
+                  project:
+                    $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/installations:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      operationId: listGitHubInstallations
+      tags: [GitHub]
+      responses:
+        "200":
+          description: GitHub App installations connected to the organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [installations]
+                properties:
+                  installations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GitHubInstallation"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/installations/start:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      operationId: startGitHubInstallation
+      tags: [GitHub]
+      responses:
+        "201":
+          description: A short-lived GitHub App installation attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubInstallationStart"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/installations/{installationId}/sync:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/InstallationId"
+    post:
+      operationId: syncGitHubInstallation
+      tags: [GitHub]
+      responses:
+        "202":
+          description: Repository synchronization accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [installation]
+                properties:
+                  installation:
+                    $ref: "#/components/schemas/GitHubInstallation"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/installations/{installationId}/disconnect:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/InstallationId"
+    post:
+      operationId: disconnectGitHubInstallation
+      tags: [GitHub]
+      responses:
+        "200":
+          description: The GitHub App installation was disconnected from AO.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [installation]
+                properties:
+                  installation:
+                    $ref: "#/components/schemas/GitHubInstallation"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/repositories:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      operationId: listGitHubRepositories
+      tags: [GitHub]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of repositories currently or historically granted to the organization.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubRepositoryPage"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/github/projects:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      operationId: createProjectFromGitHub
+      tags: [GitHub, Projects]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGitHubProjectInput"
+      responses:
+        "201":
+          description: Project created from an actively granted GitHub repository.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
                 required: [project]
                 properties:
                   project:
@@ -406,14 +546,21 @@ components:
       required: true
       schema:
         type: string
-        minLength: 1
+        format: uuid
     SessionId:
       name: sessionId
       in: path
       required: true
       schema:
         type: string
-        minLength: 1
+        format: uuid
+    InstallationId:
+      name: installationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     Cursor:
       name: cursor
       in: query
@@ -464,6 +611,53 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    AuthProvider:
+      type: string
+      enum: [workos, local]
+    OrganizationRole:
+      type: string
+      enum: [owner, admin, member]
+    CurrentUser:
+      type: object
+      additionalProperties: false
+      required: [id, email, displayName, authProvider]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        authProvider:
+          $ref: "#/components/schemas/AuthProvider"
+    OrganizationMembership:
+      type: object
+      additionalProperties: false
+      required: [id, slug, displayName, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{1,62}$"
+        displayName:
+          type: string
+        role:
+          $ref: "#/components/schemas/OrganizationRole"
+    CurrentAccount:
+      type: object
+      additionalProperties: false
+      required: [user, organizations]
+      properties:
+        user:
+          $ref: "#/components/schemas/CurrentUser"
+        organizations:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationMembership"
     AgentCapability:
       type: string
       enum:
@@ -548,8 +742,10 @@ components:
       properties:
         id:
           type: string
+          format: uuid
         orgId:
           type: string
+          format: uuid
         displayName:
           type: string
         repositoryUrl:
@@ -557,6 +753,10 @@ components:
           format: uri
         defaultBranch:
           type: string
+        githubRepositoryId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer repository ID encoded as a decimal string to preserve precision.
         config:
           type: object
           additionalProperties: true
@@ -578,9 +778,11 @@ components:
         repositoryUrl:
           type: string
           format: uri
+          pattern: "^https://"
         defaultBranch:
           type: string
           minLength: 1
+          maxLength: 255
         config:
           type: object
           additionalProperties: true
@@ -595,9 +797,143 @@ components:
             $ref: "#/components/schemas/Project"
         page:
           $ref: "#/components/schemas/PageInfo"
+    GitHubInstallationStatus:
+      type: string
+      enum: [active, suspended, removed]
+    GitHubSyncStatus:
+      type: string
+      enum: [pending, syncing, ready, retry, failed]
+    GitHubInstallation:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - githubInstallationId
+        - accountLogin
+        - accountType
+        - status
+        - repositorySelection
+        - syncStatus
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        githubInstallationId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer installation ID encoded as a decimal string to preserve precision.
+        accountLogin:
+          type: string
+        accountType:
+          type: string
+          enum: [User, Organization, Enterprise]
+        status:
+          $ref: "#/components/schemas/GitHubInstallationStatus"
+        repositorySelection:
+          type: string
+          enum: [all, selected]
+        syncStatus:
+          $ref: "#/components/schemas/GitHubSyncStatus"
+        lastSyncedAt:
+          type: string
+          format: date-time
+        lastError:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    GitHubInstallationStart:
+      type: object
+      additionalProperties: false
+      required: [installationUrl, expiresAt]
+      properties:
+        installationUrl:
+          type: string
+          format: uri
+        expiresAt:
+          type: string
+          format: date-time
+    GitHubRepositoryAccessState:
+      type: string
+      enum: [active, revoked]
+    GitHubRepository:
+      type: object
+      additionalProperties: false
+      required:
+        - githubRepositoryId
+        - name
+        - fullName
+        - htmlUrl
+        - defaultBranch
+        - visibility
+        - isPrivate
+        - isArchived
+        - access
+        - grantedAt
+      properties:
+        githubRepositoryId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer repository ID encoded as a decimal string to preserve precision.
+        name:
+          type: string
+        fullName:
+          type: string
+        htmlUrl:
+          type: string
+          format: uri
+        defaultBranch:
+          type: string
+        visibility:
+          type: string
+        isPrivate:
+          type: boolean
+        isArchived:
+          type: boolean
+        access:
+          $ref: "#/components/schemas/GitHubRepositoryAccessState"
+        grantedAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+    GitHubRepositoryPage:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GitHubRepository"
+        page:
+          $ref: "#/components/schemas/PageInfo"
+    CreateGitHubProjectInput:
+      type: object
+      additionalProperties: false
+      required: [githubRepositoryId]
+      properties:
+        githubRepositoryId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+        displayName:
+          type: string
+          maxLength: 120
+        config:
+          type: object
+          additionalProperties: true
     SessionKind:
       type: string
       enum: [worker, orchestrator]
+    SessionMode:
+      type: string
+      enum: [read-only, standard, trusted]
     SessionActivityState:
       type: string
       enum: [active, idle, waiting_input, blocked, exited]
@@ -662,6 +998,8 @@ components:
         - harness
         - displayName
         - branch
+        - mode
+        - deniedCommands
         - activityState
         - status
         - runtimeConnected
@@ -671,10 +1009,13 @@ components:
       properties:
         id:
           type: string
+          format: uuid
         orgId:
           type: string
+          format: uuid
         projectId:
           type: string
+          format: uuid
         kind:
           $ref: "#/components/schemas/SessionKind"
         harness:
@@ -683,6 +1024,12 @@ components:
           type: string
         branch:
           type: string
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+        deniedCommands:
+          type: array
+          items:
+            type: string
         activityState:
           $ref: "#/components/schemas/SessionActivityState"
         status:
@@ -714,19 +1061,31 @@ components:
       properties:
         projectId:
           type: string
+          format: uuid
         kind:
           $ref: "#/components/schemas/SessionKind"
         harness:
           type: string
           minLength: 1
+          maxLength: 120
         displayName:
           type: string
           minLength: 1
           maxLength: 80
         prompt:
           type: string
-        providerConnectionId:
+          maxLength: 65536
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+          default: standard
+        deniedCommands:
+          type: array
+          items:
+            type: string
+          default: []
+        sandboxProviderConnectionId:
           type: string
+          format: uuid
     SessionPage:
       type: object
       additionalProperties: false
