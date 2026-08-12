@@ -643,6 +643,7 @@ describe("WorkerClient", () => {
     const transport = {
       id: "3d75e11c-c450-4d7e-8daf-ab2af9087c8f",
       kind: "workspace.read",
+      attempt: 2,
       payload: { path: "README.md" },
     };
     const fetchMock = vi
@@ -744,9 +745,11 @@ describe("WorkerClient", () => {
     });
     await expect(client.claimTransport()).resolves.toEqual(transport);
     await client.completeTransport(transport.id, {
+      attempt: transport.attempt,
       response: { path: "README.md", content: "# API", size: 5 },
     });
     await client.failTransport("request one", {
+      attempt: 3,
       code: "WORKER_OPERATION_FAILED",
       message: "Operation failed.",
     });
@@ -786,6 +789,15 @@ describe("WorkerClient", () => {
     );
     expect(JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))).toEqual({
       attempt: 2,
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[13]?.[1]?.body))).toEqual({
+      attempt: 2,
+      response: { path: "README.md", content: "# API", size: 5 },
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[14]?.[1]?.body))).toEqual({
+      attempt: 3,
+      code: "WORKER_OPERATION_FAILED",
+      message: "Operation failed.",
     });
   });
 

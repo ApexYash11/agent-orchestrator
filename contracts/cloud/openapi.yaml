@@ -1027,9 +1027,9 @@ paths:
       description: |
         Claims the next durable workspace or terminal command for the token's
         session and epoch. The internal claim lasts 10 seconds and may be
-        reclaimed up to three times, but neither lease expiry nor claim attempt
-        is exposed on the wire. No work is represented by HTTP 200 with
-        `request: null`.
+        reclaimed up to three times. The positive claim attempt is returned and
+        must be echoed by completion or failure callbacks. No work is represented
+        by HTTP 200 with `request: null`.
       requestBody:
         required: true
         content:
@@ -1059,8 +1059,7 @@ paths:
         - workerAuth: []
       description: |
         Completes a claimed durable command. The worker token epoch, request
-        status, and request expiry are checked. The claim attempt is not sent
-        or checked.
+        status, request expiry, and positive claim attempt are checked.
       requestBody:
         required: true
         content:
@@ -1093,8 +1092,8 @@ paths:
         - workerAuth: []
       description: |
         Records a bounded machine-readable error for a claimed command. The
-        token epoch, request status, and expiry are checked; claim attempt is
-        not part of the wire fence.
+        token epoch, request status, expiry, and positive claim attempt are
+        checked.
       requestBody:
         required: true
         content:
@@ -2082,11 +2081,14 @@ components:
     WorkerWorkspaceListTransport:
       type: object
       additionalProperties: false
-      required: [id, kind, payload]
+      required: [id, kind, attempt, payload]
       properties:
         id:
           type: string
           format: uuid
+        attempt:
+          type: integer
+          minimum: 1
         kind:
           type: string
           const: workspace.list
@@ -2095,11 +2097,14 @@ components:
     WorkerWorkspaceReadTransport:
       type: object
       additionalProperties: false
-      required: [id, kind, payload]
+      required: [id, kind, attempt, payload]
       properties:
         id:
           type: string
           format: uuid
+        attempt:
+          type: integer
+          minimum: 1
         kind:
           type: string
           const: workspace.read
@@ -2108,11 +2113,14 @@ components:
     WorkerWorkspaceWriteTransport:
       type: object
       additionalProperties: false
-      required: [id, kind, payload]
+      required: [id, kind, attempt, payload]
       properties:
         id:
           type: string
           format: uuid
+        attempt:
+          type: integer
+          minimum: 1
         kind:
           type: string
           const: workspace.write
@@ -2121,11 +2129,14 @@ components:
     WorkerWorkspaceDiffTransport:
       type: object
       additionalProperties: false
-      required: [id, kind, payload]
+      required: [id, kind, attempt, payload]
       properties:
         id:
           type: string
           format: uuid
+        attempt:
+          type: integer
+          minimum: 1
         kind:
           type: string
           const: workspace.diff
@@ -2134,11 +2145,14 @@ components:
     WorkerTerminalOpenTransport:
       type: object
       additionalProperties: false
-      required: [id, kind, payload]
+      required: [id, kind, attempt, payload]
       properties:
         id:
           type: string
           format: uuid
+        attempt:
+          type: integer
+          minimum: 1
         kind:
           type: string
           const: terminal.open
@@ -2147,11 +2161,14 @@ components:
     WorkerTerminalInputTransport:
       type: object
       additionalProperties: false
-      required: [id, kind, payload]
+      required: [id, kind, attempt, payload]
       properties:
         id:
           type: string
           format: uuid
+        attempt:
+          type: integer
+          minimum: 1
         kind:
           type: string
           const: terminal.input
@@ -2160,11 +2177,14 @@ components:
     WorkerTerminalCloseTransport:
       type: object
       additionalProperties: false
-      required: [id, kind, payload]
+      required: [id, kind, attempt, payload]
       properties:
         id:
           type: string
           format: uuid
+        attempt:
+          type: integer
+          minimum: 1
         kind:
           type: string
           const: terminal.close
@@ -2201,15 +2221,21 @@ components:
     WorkerCompleteTransportInput:
       type: object
       additionalProperties: false
-      required: [response]
+      required: [attempt, response]
       properties:
+        attempt:
+          type: integer
+          minimum: 1
         response:
           $ref: "#/components/schemas/WorkerTransportResult"
     WorkerFailTransportInput:
       type: object
       additionalProperties: false
-      required: [code, message]
+      required: [attempt, code, message]
       properties:
+        attempt:
+          type: integer
+          minimum: 1
         code:
           type: string
           minLength: 1

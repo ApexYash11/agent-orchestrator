@@ -682,9 +682,9 @@ export interface paths {
         put?: never;
         /** @description Claims the next durable workspace or terminal command for the token's
          *     session and epoch. The internal claim lasts 10 seconds and may be
-         *     reclaimed up to three times, but neither lease expiry nor claim attempt
-         *     is exposed on the wire. No work is represented by HTTP 200 with
-         *     `request: null`.
+         *     reclaimed up to three times. The positive claim attempt is returned and
+         *     must be echoed by completion or failure callbacks. No work is represented
+         *     by HTTP 200 with `request: null`.
          *      */
         post: operations["claimWorkerTransport"];
         delete?: never;
@@ -705,8 +705,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** @description Completes a claimed durable command. The worker token epoch, request
-         *     status, and request expiry are checked. The claim attempt is not sent
-         *     or checked.
+         *     status, request expiry, and positive claim attempt are checked.
          *      */
         post: operations["completeWorkerTransport"];
         delete?: never;
@@ -727,8 +726,8 @@ export interface paths {
         get?: never;
         put?: never;
         /** @description Records a bounded machine-readable error for a claimed command. The
-         *     token epoch, request status, and expiry are checked; claim attempt is
-         *     not part of the wire fence.
+         *     token epoch, request status, expiry, and positive claim attempt are
+         *     checked.
          *      */
         post: operations["failWorkerTransport"];
         delete?: never;
@@ -1113,6 +1112,7 @@ export interface components {
         WorkerWorkspaceListTransport: {
             /** Format: uuid */
             id: string;
+            attempt: number;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1123,6 +1123,7 @@ export interface components {
         WorkerWorkspaceReadTransport: {
             /** Format: uuid */
             id: string;
+            attempt: number;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1133,6 +1134,7 @@ export interface components {
         WorkerWorkspaceWriteTransport: {
             /** Format: uuid */
             id: string;
+            attempt: number;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1143,6 +1145,7 @@ export interface components {
         WorkerWorkspaceDiffTransport: {
             /** Format: uuid */
             id: string;
+            attempt: number;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1153,6 +1156,7 @@ export interface components {
         WorkerTerminalOpenTransport: {
             /** Format: uuid */
             id: string;
+            attempt: number;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1163,6 +1167,7 @@ export interface components {
         WorkerTerminalInputTransport: {
             /** Format: uuid */
             id: string;
+            attempt: number;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1173,6 +1178,7 @@ export interface components {
         WorkerTerminalCloseTransport: {
             /** Format: uuid */
             id: string;
+            attempt: number;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1193,9 +1199,11 @@ export interface components {
             [key: string]: unknown;
         };
         WorkerCompleteTransportInput: {
+            attempt: number;
             response: components["schemas"]["WorkerTransportResult"];
         };
         WorkerFailTransportInput: {
+            attempt: number;
             code: string;
             /** @description Worker-safe failure message, limited by the server to 4 KiB. */
             message: string;
