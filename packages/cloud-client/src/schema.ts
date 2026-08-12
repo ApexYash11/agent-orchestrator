@@ -384,7 +384,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["readWorkspaceFile"];
-        put?: never;
+        put: operations["writeWorkspaceFile"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1053,6 +1053,10 @@ export interface components {
             content: string;
             /** Format: int64 */
             size: number;
+        };
+        WorkspaceFileWriteInput: {
+            path: string;
+            content: string;
         };
         /** @enum {string} */
         WorkspaceFileStatus: "unmodified" | "modified" | "added" | "deleted" | "renamed" | "untracked" | "copied" | "changed";
@@ -1784,6 +1788,34 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description UTF-8 workspace file contents. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceFile"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    writeWorkspaceFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceFileWriteInput"];
+            };
+        };
+        responses: {
+            /** @description The updated UTF-8 workspace file. */
             200: {
                 headers: {
                     [name: string]: unknown;

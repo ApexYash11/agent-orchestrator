@@ -88,6 +88,7 @@ export type TerminalTicket = Schemas["TerminalTicket"];
 export type WorkspaceEntry = Schemas["WorkspaceEntry"];
 export type WorkspaceEntryPage = Schemas["WorkspaceEntryPage"];
 export type WorkspaceFile = Schemas["WorkspaceFile"];
+export type WorkspaceFileWriteInput = Schemas["WorkspaceFileWriteInput"];
 export type WorkspaceFileStatus = Schemas["WorkspaceFileStatus"];
 export type WorkspaceDiffFile = Schemas["WorkspaceDiffFile"];
 export type WorkspaceDiff = Schemas["WorkspaceDiff"];

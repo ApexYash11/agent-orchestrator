@@ -34,6 +34,7 @@ import type {
   WorkspaceDiff,
   WorkspaceEntryPage,
   WorkspaceFile,
+  WorkspaceFileWriteInput,
 } from "./types.js";
 
 type MaybePromise<T> = T | Promise<T>;
@@ -461,6 +462,21 @@ export class CloudClient {
       `/sessions/${encodeURIComponent(sessionId)}/workspace/file`,
     );
     return this.request(this.withQuery(endpoint, { path }), options);
+  }
+
+  writeWorkspaceFile(
+    orgId: string,
+    sessionId: string,
+    input: WorkspaceFileWriteInput,
+    options: RequestOptions = {},
+  ): Promise<WorkspaceFile> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/workspace/file`,
+      ),
+      { ...options, method: "PUT", body: input },
+    );
   }
 
   getWorkspaceDiff(

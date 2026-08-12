@@ -168,6 +168,35 @@ describe("CloudClient", () => {
     );
   });
 
+  it("writes a workspace file through the typed client", async () => {
+    const file = { path: "src/main.ts", content: "export {};\n", size: 11 };
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse(file),
+    );
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(
+      client.writeWorkspaceFile("tenant one", "session one", {
+        path: file.path,
+        content: file.content,
+      }),
+    ).resolves.toEqual(file);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/sessions/session%20one/workspace/file",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      path: file.path,
+      content: file.content,
+    });
+  });
+
   it("reads normalized pull requests and AO review state for a session", async () => {
     const pullRequest = {
       url: "github://o/r/pull/7",

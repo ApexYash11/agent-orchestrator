@@ -522,6 +522,24 @@ paths:
                 $ref: "#/components/schemas/WorkspaceFile"
         default:
           $ref: "#/components/responses/Error"
+    put:
+      operationId: writeWorkspaceFile
+      tags: [Workspace]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceFileWriteInput"
+      responses:
+        "200":
+          description: The updated UTF-8 workspace file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceFile"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/workspace/diff:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -1927,6 +1945,18 @@ components:
         size:
           type: integer
           format: int64
+    WorkspaceFileWriteInput:
+      type: object
+      additionalProperties: false
+      required: [path, content]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        content:
+          type: string
+          maxLength: 1048576
     WorkspaceFileStatus:
       type: string
       enum: [unmodified, modified, added, deleted, renamed, untracked, copied, changed]
