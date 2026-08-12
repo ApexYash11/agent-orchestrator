@@ -104,6 +104,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/projects/{projectId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteProject"];
+        options?: never;
+        head?: never;
+        patch: operations["updateProject"];
+        trace?: never;
+    };
     "/api/cloud/v1/orgs/{orgId}/github/installations": {
         parameters: {
             query?: never;
@@ -568,9 +587,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Publishes one allowlisted event. `worker.ready` must identify the
-         *     authenticated worker and epoch. `chat.assistant_delta` is fenced by
-         *     both the token epoch and the claimed turn attempt.
+        /** @description Publishes one allowlisted event. `agent.activity` carries an explicit
+         *     coding-agent lifecycle hook signal. `worker.ready` must identify the
+         *     authenticated worker and epoch. `chat.assistant_delta` is fenced by both
+         *     the token epoch and the claimed turn attempt.
          *      */
         post: operations["publishWorkerEvent"];
         delete?: never;
@@ -710,6 +730,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Creates a trusted child by default and passes its required prompt directly to the coding-agent launch command. */
         get: operations["listWorkerChildren"];
         put?: never;
         post: operations["createWorkerChild"];
@@ -970,6 +991,17 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        UpdateProjectInput: {
+            displayName: string;
+            defaultBranch: string;
+        };
+        DeleteProjectResponse: {
+            project: {
+                /** Format: uuid */
+                id: string;
+                deleted: boolean;
+            };
+        };
         ProjectPage: {
             items: components["schemas"]["Project"][];
             page: components["schemas"]["PageInfo"];
@@ -1118,6 +1150,7 @@ export interface components {
             displayName: string;
             branch: string;
             prompt: string;
+            agentSessionId?: string;
             mode: components["schemas"]["SessionMode"];
             deniedCommands: string[];
             /** Format: uri */
@@ -1186,7 +1219,25 @@ export interface components {
             type: "chat.assistant_delta";
             payload: components["schemas"]["WorkerOutputPayload"];
         };
-        WorkerEventInput: components["schemas"]["WorkerReadyEventInput"] | components["schemas"]["WorkerOutputEventInput"];
+        WorkerActivityPayload: {
+            /** @enum {string} */
+            harness: "claude-code" | "codex" | "cursor";
+            /** @enum {string} */
+            event: "session-start" | "user-prompt-submit" | "pre-tool-use" | "post-tool-use" | "post-tool-use-failure" | "permission-request" | "stop" | "notification" | "session-end";
+            state?: components["schemas"]["SessionActivityState"];
+            toolName?: string;
+            toolUseId?: string;
+            agentSessionId?: string;
+        };
+        WorkerActivityEventInput: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "agent.activity";
+            payload: components["schemas"]["WorkerActivityPayload"];
+        };
+        WorkerEventInput: components["schemas"]["WorkerActivityEventInput"] | components["schemas"]["WorkerReadyEventInput"] | components["schemas"]["WorkerOutputEventInput"];
         WorkerOKResponse: {
             /** @constant */
             ok: true;
@@ -1227,7 +1278,7 @@ export interface components {
         CreateWorkerChildInput: {
             harness: string;
             displayName: string;
-            prompt?: string;
+            prompt: string;
             mode?: components["schemas"]["SessionMode"];
             deniedCommands?: string[];
             /** Format: uuid */
@@ -1452,7 +1503,7 @@ export interface components {
             harness: string;
             displayName: string;
             prompt: string;
-            /** @default standard */
+            /** @default trusted */
             mode: components["schemas"]["SessionMode"];
             /** @default [] */
             deniedCommands: string[];
@@ -1876,6 +1927,7 @@ export interface components {
     };
     parameters: {
         OrgId: string;
+        ProjectId: string;
         SessionId: string;
         TurnId: string;
         WorkerRequestId: string;
@@ -2081,6 +2133,60 @@ export interface operations {
         responses: {
             /** @description Project created. */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        project: components["schemas"]["Project"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Project archived and sandbox teardown accepted. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteProjectResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProjectInput"];
+            };
+        };
+        responses: {
+            /** @description Project settings updated. */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

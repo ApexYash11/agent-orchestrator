@@ -74,6 +74,69 @@ describe("CloudClient", () => {
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("DELETE");
   });
 
+  it("updates editable project settings on the project resource", async () => {
+    const project = {
+      id: "project one",
+      orgId: "org one",
+      displayName: "Cloud API",
+      repositoryUrl: "https://github.com/acme/cloud",
+      defaultBranch: "develop",
+      config: {},
+      createdAt: "2026-08-12T00:00:00Z",
+      updatedAt: "2026-08-12T01:00:00Z",
+    };
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse({ project }),
+    );
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(
+      client.updateProject("org one", "project one", {
+        displayName: "Cloud API",
+        defaultBranch: "develop",
+      }),
+    ).resolves.toEqual({ project });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://cloud.example.com/api/cloud/v1/orgs/org%20one/projects/project%20one",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PATCH");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      displayName: "Cloud API",
+      defaultBranch: "develop",
+    });
+  });
+
+  it("requests durable project deletion on the project resource", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse(
+          { project: { id: "project one", deleted: true } },
+          202,
+        ),
+    );
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(
+      client.deleteProject("org one", "project one"),
+    ).resolves.toEqual({
+      project: { id: "project one", deleted: true },
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://cloud.example.com/api/cloud/v1/orgs/org%20one/projects/project%20one",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("DELETE");
+  });
+
   it("lists runtime-supplied agent profiles for an organization", async () => {
     const profile: AgentProfile = {
       id: "runtime-agent",

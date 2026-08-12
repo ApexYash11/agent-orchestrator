@@ -163,6 +163,45 @@ paths:
                     $ref: "#/components/schemas/Project"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/projects/{projectId}:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/ProjectId"
+    patch:
+      operationId: updateProject
+      tags: [Projects]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProjectInput"
+      responses:
+        "200":
+          description: Project settings updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [project]
+                properties:
+                  project:
+                    $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteProject
+      tags: [Projects]
+      responses:
+        "202":
+          description: Project archived and sandbox teardown accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteProjectResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/github/installations:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -785,9 +824,10 @@ paths:
       security:
         - workerAuth: []
       description: |
-        Publishes one allowlisted event. `worker.ready` must identify the
-        authenticated worker and epoch. `chat.assistant_delta` is fenced by
-        both the token epoch and the claimed turn attempt.
+        Publishes one allowlisted event. `agent.activity` carries an explicit
+        coding-agent lifecycle hook signal. `worker.ready` must identify the
+        authenticated worker and epoch. `chat.assistant_delta` is fenced by both
+        the token epoch and the claimed turn attempt.
       requestBody:
         required: true
         content:
@@ -1019,6 +1059,7 @@ paths:
       tags: [Worker Orchestration]
       security:
         - workerAuth: []
+      description: Creates a trusted child by default and passes its required prompt directly to the coding-agent launch command.
       parameters:
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
@@ -1349,6 +1390,13 @@ components:
       schema:
         type: string
         format: uuid
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     SessionId:
       name: sessionId
       in: path
@@ -1655,6 +1703,34 @@ components:
         config:
           type: object
           additionalProperties: true
+    UpdateProjectInput:
+      type: object
+      additionalProperties: false
+      required: [displayName, defaultBranch]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        defaultBranch:
+          type: string
+          minLength: 1
+          maxLength: 255
+    DeleteProjectResponse:
+      type: object
+      additionalProperties: false
+      required: [project]
+      properties:
+        project:
+          type: object
+          additionalProperties: false
+          required: [id, deleted]
+          properties:
+            id:
+              type: string
+              format: uuid
+            deleted:
+              type: boolean
     ProjectPage:
       type: object
       additionalProperties: false
@@ -1997,6 +2073,9 @@ components:
           type: string
         prompt:
           type: string
+        agentSessionId:
+          type: string
+          maxLength: 256
         mode:
           $ref: "#/components/schemas/SessionMode"
         deniedCommands:
@@ -2120,13 +2199,56 @@ components:
           const: chat.assistant_delta
         payload:
           $ref: "#/components/schemas/WorkerOutputPayload"
+    WorkerActivityPayload:
+      type: object
+      additionalProperties: false
+      required: [harness, event]
+      properties:
+        harness:
+          type: string
+          enum: [claude-code, codex, cursor]
+        event:
+          type: string
+          enum:
+            - session-start
+            - user-prompt-submit
+            - pre-tool-use
+            - post-tool-use
+            - post-tool-use-failure
+            - permission-request
+            - stop
+            - notification
+            - session-end
+        state:
+          $ref: "#/components/schemas/SessionActivityState"
+        toolName:
+          type: string
+          maxLength: 256
+        toolUseId:
+          type: string
+          maxLength: 256
+        agentSessionId:
+          type: string
+          maxLength: 256
+    WorkerActivityEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, payload]
+      properties:
+        type:
+          type: string
+          const: agent.activity
+        payload:
+          $ref: "#/components/schemas/WorkerActivityPayload"
     WorkerEventInput:
       oneOf:
+        - $ref: "#/components/schemas/WorkerActivityEventInput"
         - $ref: "#/components/schemas/WorkerReadyEventInput"
         - $ref: "#/components/schemas/WorkerOutputEventInput"
       discriminator:
         propertyName: type
         mapping:
+          agent.activity: "#/components/schemas/WorkerActivityEventInput"
           worker.ready: "#/components/schemas/WorkerReadyEventInput"
           chat.assistant_delta: "#/components/schemas/WorkerOutputEventInput"
     WorkerOKResponse:
@@ -2222,7 +2344,7 @@ components:
     CreateWorkerChildInput:
       type: object
       additionalProperties: false
-      required: [harness, displayName]
+      required: [harness, displayName, prompt]
       properties:
         harness:
           type: string
@@ -2234,6 +2356,7 @@ components:
           maxLength: 80
         prompt:
           type: string
+          minLength: 1
           maxLength: 65536
         mode:
           $ref: "#/components/schemas/SessionMode"
@@ -2703,7 +2826,7 @@ components:
           maxLength: 65536
         mode:
           $ref: "#/components/schemas/SessionMode"
-          default: standard
+          default: trusted
         deniedCommands:
           type: array
           items:

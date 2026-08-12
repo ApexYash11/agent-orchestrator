@@ -19,6 +19,8 @@ export type AgentProfile = Schemas["AgentProfile"];
 
 export type Project = Schemas["Project"];
 export type CreateProjectInput = Schemas["CreateProjectInput"];
+export type UpdateProjectInput = Schemas["UpdateProjectInput"];
+export type DeleteProjectResponse = Schemas["DeleteProjectResponse"];
 export type ProjectPage = Schemas["ProjectPage"];
 
 export type GitHubInstallationStatus = Schemas["GitHubInstallationStatus"];
@@ -112,8 +114,10 @@ export type WorkerHeartbeatInput = Schemas["WorkerHeartbeatInput"];
 export type WorkerHeartbeatResponse = Schemas["WorkerHeartbeatResponse"];
 export type WorkerReadyPayload = Schemas["WorkerReadyPayload"];
 export type WorkerOutputPayload = Schemas["WorkerOutputPayload"];
+export type WorkerActivityPayload = Schemas["WorkerActivityPayload"];
 export type WorkerReadyEventInput = Schemas["WorkerReadyEventInput"];
 export type WorkerOutputEventInput = Schemas["WorkerOutputEventInput"];
+export type WorkerActivityEventInput = Schemas["WorkerActivityEventInput"];
 export type WorkerEventInput = Schemas["WorkerEventInput"];
 export type WorkerOKResponse = Schemas["WorkerOKResponse"];
 export type WorkerTurn = Schemas["WorkerTurn"];

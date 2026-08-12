@@ -9,6 +9,7 @@ import type {
   CreateProjectInput,
   CreateSessionInput,
   CurrentAccount,
+  DeleteProjectResponse,
   DeleteSessionResponse,
   ErrorEnvelope,
   EventReplayOptions,
@@ -30,6 +31,7 @@ import type {
   SessionReviewState,
   TerminalKind,
   TerminalTicket,
+  UpdateProjectInput,
   UserMessageEvent,
   WorkerBootstrapInput,
   WorkerBootstrapResponse,
@@ -72,7 +74,7 @@ export interface WorkerClientConfig {
 }
 
 interface JSONRequestOptions extends RequestOptions {
-  method?: "GET" | "POST" | "PUT" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   idempotencyKey?: string;
   cache?: RequestCache;
@@ -152,6 +154,36 @@ export class CloudClient {
       idempotencyKey: options.idempotencyKey,
       signal: options.signal,
     });
+  }
+
+  updateProject(
+    orgId: string,
+    projectId: string,
+    input: UpdateProjectInput,
+    options: RequestOptions = {},
+  ): Promise<{ project: Project }> {
+    return this.request(
+      this.orgPath(orgId, `/projects/${encodeURIComponent(projectId)}`),
+      {
+        method: "PATCH",
+        body: input,
+        signal: options.signal,
+      },
+    );
+  }
+
+  deleteProject(
+    orgId: string,
+    projectId: string,
+    options: RequestOptions = {},
+  ): Promise<DeleteProjectResponse> {
+    return this.request(
+      this.orgPath(orgId, `/projects/${encodeURIComponent(projectId)}`),
+      {
+        method: "DELETE",
+        signal: options.signal,
+      },
+    );
   }
 
   getGitHubUserConnection(
