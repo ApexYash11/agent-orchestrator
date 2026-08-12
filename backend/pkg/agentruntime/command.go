@@ -15,6 +15,7 @@ import (
 // Harness identifies a supported coding-agent CLI.
 type Harness string
 
+// Supported coding-agent harnesses.
 const (
 	HarnessClaudeCode Harness = "claude-code"
 	HarnessCodex      Harness = "codex"
@@ -24,6 +25,7 @@ const (
 // PermissionPolicy is AO's provider-neutral approval policy.
 type PermissionPolicy string
 
+// Provider-neutral permission policies.
 const (
 	PermissionDefault           PermissionPolicy = "default"
 	PermissionAcceptEdits       PermissionPolicy = "accept-edits"
@@ -34,6 +36,7 @@ const (
 // SessionMode is the durable Cloud execution mode.
 type SessionMode string
 
+// Durable Cloud execution modes.
 const (
 	SessionModeReadOnly SessionMode = "read-only"
 	SessionModeStandard SessionMode = "standard"

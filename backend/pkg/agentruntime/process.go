@@ -67,11 +67,12 @@ func StartProcess(ctx context.Context, cfg ProcessConfig) (*Process, error) {
 		grace = defaultShutdownGrace
 	}
 	process := &Process{cmd: cmd, done: make(chan struct{}), shutdownGrace: grace}
+	shutdownContext := context.WithoutCancel(ctx)
 	go process.reap()
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = process.Stop(context.Background())
+			_ = process.Stop(shutdownContext)
 		case <-process.done:
 		}
 	}()
