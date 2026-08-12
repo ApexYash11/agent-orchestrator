@@ -263,7 +263,7 @@ export interface paths {
         get: operations["getSession"];
         put?: never;
         post?: never;
-        delete?: never;
+        delete: operations["deleteSession"];
         options?: never;
         head?: never;
         patch?: never;
@@ -719,6 +719,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/worker/children/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Requests deletion of a direct child owned by the authenticated orchestrator. */
+        delete: operations["deleteWorkerChild"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/worker/children/{sessionId}/messages": {
         parameters: {
             query?: never;
@@ -802,6 +821,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/worker/terminals/agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Returns the epoch-scoped persistent terminal used by the interactive agent TUI. */
+        post: operations["ensureWorkerAgentTerminal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/worker/terminals/{terminalId}/output": {
         parameters: {
             query?: never;
@@ -817,6 +853,25 @@ export interface paths {
          *     The terminal and worker token must have the same current epoch.
          *      */
         post: operations["publishWorkerTerminalOutput"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/terminals/{terminalId}/exit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                terminalId: components["parameters"]["TerminalId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Marks the epoch-scoped agent or workspace terminal process as exited. */
+        post: operations["publishWorkerTerminalExit"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1062,6 +1117,9 @@ export interface components {
             harness: string;
             displayName: string;
             branch: string;
+            prompt: string;
+            mode: components["schemas"]["SessionMode"];
+            deniedCommands: string[];
             /** Format: uri */
             repositoryUrl: string;
             defaultBranch: string;
@@ -1197,6 +1255,8 @@ export interface components {
             /** Format: uuid */
             terminalId: string;
             kind: components["schemas"]["TerminalKind"];
+            columns?: number;
+            rows?: number;
         };
         WorkerTerminalInputPayload: {
             /** Format: uuid */
@@ -1208,6 +1268,12 @@ export interface components {
             /** Format: uuid */
             terminalId: string;
         };
+        WorkerTerminalResizePayload: {
+            /** Format: uuid */
+            terminalId: string;
+            columns: number;
+            rows: number;
+        };
         WorkerTerminalOpenResult: {
             open: boolean;
         };
@@ -1216,6 +1282,9 @@ export interface components {
         };
         WorkerTerminalCloseResult: {
             closed: boolean;
+        };
+        WorkerTerminalResizeResult: {
+            resized: boolean;
         };
         WorkerWorkspaceListTransport: {
             /** Format: uuid */
@@ -1283,6 +1352,17 @@ export interface components {
             kind: "WorkerTerminalInputTransport";
             payload: components["schemas"]["WorkerTerminalInputPayload"];
         };
+        WorkerTerminalResizeTransport: {
+            /** Format: uuid */
+            id: string;
+            attempt: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "WorkerTerminalResizeTransport";
+            payload: components["schemas"]["WorkerTerminalResizePayload"];
+        };
         WorkerTerminalCloseTransport: {
             /** Format: uuid */
             id: string;
@@ -1294,7 +1374,7 @@ export interface components {
             kind: "WorkerTerminalCloseTransport";
             payload: components["schemas"]["WorkerTerminalClosePayload"];
         };
-        WorkerTransportRequest: components["schemas"]["WorkerWorkspaceListTransport"] | components["schemas"]["WorkerWorkspaceReadTransport"] | components["schemas"]["WorkerWorkspaceWriteTransport"] | components["schemas"]["WorkerWorkspaceDiffTransport"] | components["schemas"]["WorkerTerminalOpenTransport"] | components["schemas"]["WorkerTerminalInputTransport"] | components["schemas"]["WorkerTerminalCloseTransport"];
+        WorkerTransportRequest: components["schemas"]["WorkerWorkspaceListTransport"] | components["schemas"]["WorkerWorkspaceReadTransport"] | components["schemas"]["WorkerWorkspaceWriteTransport"] | components["schemas"]["WorkerWorkspaceDiffTransport"] | components["schemas"]["WorkerTerminalOpenTransport"] | components["schemas"]["WorkerTerminalInputTransport"] | components["schemas"]["WorkerTerminalResizeTransport"] | components["schemas"]["WorkerTerminalCloseTransport"];
         WorkerClaimTransportResponse: {
             request: components["schemas"]["WorkerTransportRequest"] | null;
         };
@@ -1316,6 +1396,13 @@ export interface components {
             /** @description Worker-safe failure message, limited by the server to 4 KiB. */
             message: string;
         };
+        WorkerAgentTerminalResponse: {
+            /** Format: uuid */
+            terminalId: string;
+        };
+        WorkerTerminalExitInput: {
+            exitCode: number;
+        };
         WorkerTerminalOutputInput: {
             /** @description Base64-encoded output frame, at most 16 KiB after decoding. */
             data: string;
@@ -1323,6 +1410,14 @@ export interface components {
         WorkerTerminalOutputResponse: {
             /** Format: int64 */
             sequence: number;
+        };
+        DeleteSessionResponse: {
+            session: {
+                /** Format: uuid */
+                id: string;
+                /** @constant */
+                desiredState: "deleted";
+            };
         };
         Session: {
             /** Format: uuid */
@@ -1609,7 +1704,7 @@ export interface components {
             nextAfter: number;
         };
         /** @enum {string} */
-        TerminalKind: "workspace";
+        TerminalKind: "agent" | "workspace";
         /** @enum {string} */
         TerminalScope: "terminal:read" | "terminal:operate";
         TerminalTicket: {
@@ -2272,6 +2367,30 @@ export interface operations {
                     "application/json": {
                         session: components["schemas"]["Session"];
                     };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session sandbox deletion was requested; durable history is retained. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteSessionResponse"];
                 };
             };
             default: components["responses"]["Error"];
@@ -3018,6 +3137,31 @@ export interface operations {
             500: components["responses"]["Error"];
         };
     };
+    deleteWorkerChild: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Child sandbox deletion was requested. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteSessionResponse"];
+                };
+            };
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["Error"];
+        };
+    };
     sendWorkerChildMessage: {
         parameters: {
             query?: never;
@@ -3146,6 +3290,29 @@ export interface operations {
             422: components["responses"]["ValidationError"];
         };
     };
+    ensureWorkerAgentTerminal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The agent terminal is ready for process attachment. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerAgentTerminalResponse"];
+                };
+            };
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            409: components["responses"]["Error"];
+        };
+    };
     publishWorkerTerminalOutput: {
         parameters: {
             query?: never;
@@ -3176,6 +3343,36 @@ export interface operations {
             /** @description The terminal is closed, expired, over quota, or no longer current. */
             409: components["responses"]["Error"];
             422: components["responses"]["ValidationError"];
+        };
+    };
+    publishWorkerTerminalExit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                terminalId: components["parameters"]["TerminalId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerTerminalExitInput"];
+            };
+        };
+        responses: {
+            /** @description The terminal exit was recorded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerOKResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            409: components["responses"]["Error"];
         };
     };
 }

@@ -44,6 +44,36 @@ describe("CloudClient", () => {
     );
   });
 
+  it("requests durable deletion on the session resource", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse(
+          {
+            session: {
+              id: "a9dc6493-bd04-4c03-bb45-55733ed83784",
+              desiredState: "deleted",
+            },
+          },
+          202,
+        ),
+    );
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await client.deleteSession(
+      "4165753c-c6ad-4ac2-8f12-e0cbb24d9750",
+      "a9dc6493-bd04-4c03-bb45-55733ed83784",
+    );
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://cloud.example.com/api/cloud/v1/orgs/4165753c-c6ad-4ac2-8f12-e0cbb24d9750/sessions/a9dc6493-bd04-4c03-bb45-55733ed83784",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("DELETE");
+  });
+
   it("lists runtime-supplied agent profiles for an organization", async () => {
     const profile: AgentProfile = {
       id: "runtime-agent",
@@ -761,10 +791,18 @@ describe("WorkerClient", () => {
       .mockResolvedValueOnce(jsonResponse({ items: [], page: { hasMore: false } }))
       .mockResolvedValueOnce(jsonResponse({ session: { id: "child" } }, 201))
       .mockResolvedValueOnce(jsonResponse({ event: { sequence: 1 } }, 202))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { session: { id: "child", desiredState: "deleted" } },
+          202,
+        ),
+      )
       .mockResolvedValueOnce(jsonResponse({ request: transport }))
       .mockResolvedValueOnce(jsonResponse({ ok: true }))
       .mockResolvedValueOnce(jsonResponse({ ok: true }))
-      .mockResolvedValueOnce(jsonResponse({ sequence: 7 }, 202));
+      .mockResolvedValueOnce(jsonResponse({ terminalId: "agent-terminal" }))
+      .mockResolvedValueOnce(jsonResponse({ sequence: 7 }, 202))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
     const client = createWorkerClient({
       baseUrl: "https://cloud.example.com",
       getWorkerToken: () => "worker-token",
@@ -806,6 +844,7 @@ describe("WorkerClient", () => {
     await client.sendChildMessage("child one", "Report status", {
       idempotencyKey: "message-1",
     });
+    await client.deleteChild("child one");
     await expect(client.claimTransport()).resolves.toEqual(transport);
     await client.completeTransport(transport.id, {
       attempt: transport.attempt,
@@ -816,7 +855,11 @@ describe("WorkerClient", () => {
       code: "WORKER_OPERATION_FAILED",
       message: "Operation failed.",
     });
+    await expect(client.ensureAgentTerminal()).resolves.toEqual({
+      terminalId: "agent-terminal",
+    });
     await client.publishTerminalOutput("terminal one", { data: "b2sK" });
+    await client.publishTerminalExit("terminal one", { exitCode: 0 });
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "https://cloud.example.com/api/cloud/v1/worker/bootstrap",
@@ -831,10 +874,13 @@ describe("WorkerClient", () => {
       "https://cloud.example.com/api/cloud/v1/worker/children?cursor=next+page&limit=25",
       "https://cloud.example.com/api/cloud/v1/worker/children",
       "https://cloud.example.com/api/cloud/v1/worker/children/child%20one/messages",
+      "https://cloud.example.com/api/cloud/v1/worker/children/child%20one",
       "https://cloud.example.com/api/cloud/v1/worker/transport/claim",
       `https://cloud.example.com/api/cloud/v1/worker/transport/${transport.id}/complete`,
       "https://cloud.example.com/api/cloud/v1/worker/transport/request%20one/fail",
+      "https://cloud.example.com/api/cloud/v1/worker/terminals/agent",
       "https://cloud.example.com/api/cloud/v1/worker/terminals/terminal%20one/output",
+      "https://cloud.example.com/api/cloud/v1/worker/terminals/terminal%20one/exit",
     ]);
     expect(requestHeaders(fetchMock, 0).has("Authorization")).toBe(false);
     for (let index = 1; index < fetchMock.mock.calls.length; index += 1) {
@@ -853,11 +899,11 @@ describe("WorkerClient", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))).toEqual({
       attempt: 2,
     });
-    expect(JSON.parse(String(fetchMock.mock.calls[13]?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetchMock.mock.calls[14]?.[1]?.body))).toEqual({
       attempt: 2,
       response: { path: "README.md", content: "# API", size: 5 },
     });
-    expect(JSON.parse(String(fetchMock.mock.calls[14]?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetchMock.mock.calls[15]?.[1]?.body))).toEqual({
       attempt: 3,
       code: "WORKER_OPERATION_FAILED",
       message: "Operation failed.",

@@ -9,6 +9,7 @@ import type {
   CreateProjectInput,
   CreateSessionInput,
   CurrentAccount,
+  DeleteSessionResponse,
   ErrorEnvelope,
   EventReplayOptions,
   GitHubInstallation,
@@ -43,7 +44,9 @@ import type {
   WorkerFinishTurnResponse,
   WorkerHeartbeatInput,
   WorkerHeartbeatResponse,
+  WorkerAgentTerminalResponse,
   WorkerOKResponse,
+  WorkerTerminalExitInput,
   WorkerTerminalOutputInput,
   WorkerTerminalOutputResponse,
   WorkerTransportRequest,
@@ -296,6 +299,17 @@ export class CloudClient {
       idempotencyKey: options.idempotencyKey,
       signal: options.signal,
     });
+  }
+
+  deleteSession(
+    orgId: string,
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<DeleteSessionResponse> {
+    return this.request(
+      this.orgPath(orgId, `/sessions/${encodeURIComponent(sessionId)}`),
+      { method: "DELETE", signal: options.signal },
+    );
   }
 
   listSessionPullRequests(
@@ -843,6 +857,16 @@ export class WorkerClient {
     );
   }
 
+  deleteChild(
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<DeleteSessionResponse> {
+    return this.request(
+      `/api/cloud/v1/worker/children/${encodeURIComponent(sessionId)}`,
+      { method: "DELETE", signal: options.signal },
+    );
+  }
+
   async claimTransport(
     options: RequestOptions = {},
   ): Promise<WorkerTransportRequest | null> {
@@ -878,6 +902,16 @@ export class WorkerClient {
     );
   }
 
+  ensureAgentTerminal(
+    options: RequestOptions = {},
+  ): Promise<WorkerAgentTerminalResponse> {
+    return this.request("/api/cloud/v1/worker/terminals/agent", {
+      method: "POST",
+      body: {},
+      signal: options.signal,
+    });
+  }
+
   publishTerminalOutput(
     terminalId: string,
     input: WorkerTerminalOutputInput,
@@ -885,6 +919,17 @@ export class WorkerClient {
   ): Promise<WorkerTerminalOutputResponse> {
     return this.request(
       `/api/cloud/v1/worker/terminals/${encodeURIComponent(terminalId)}/output`,
+      { method: "POST", body: input, signal: options.signal },
+    );
+  }
+
+  publishTerminalExit(
+    terminalId: string,
+    input: WorkerTerminalExitInput,
+    options: RequestOptions = {},
+  ): Promise<WorkerOKResponse> {
+    return this.request(
+      `/api/cloud/v1/worker/terminals/${encodeURIComponent(terminalId)}/exit`,
       { method: "POST", body: input, signal: options.signal },
     );
   }

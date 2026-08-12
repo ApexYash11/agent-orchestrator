@@ -377,6 +377,18 @@ paths:
                     $ref: "#/components/schemas/Session"
         default:
           $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteSession
+      tags: [Sessions]
+      responses:
+        "202":
+          description: Session sandbox deletion was requested; durable history is retained.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteSessionResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/pull-requests:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -1062,6 +1074,28 @@ paths:
           $ref: "#/components/responses/ValidationError"
         "500":
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/children/{sessionId}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    delete:
+      operationId: deleteWorkerChild
+      tags: [Worker Orchestration]
+      security:
+        - workerAuth: []
+      description: Requests deletion of a direct child owned by the authenticated orchestrator.
+      responses:
+        "202":
+          description: Child sandbox deletion was requested.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteSessionResponse"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/worker/children/{sessionId}/messages:
     parameters:
       - $ref: "#/components/parameters/SessionId"
@@ -1200,6 +1234,26 @@ paths:
           $ref: "#/components/responses/Error"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/terminals/agent:
+    post:
+      operationId: ensureWorkerAgentTerminal
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: Returns the epoch-scoped persistent terminal used by the interactive agent TUI.
+      responses:
+        "200":
+          description: The agent terminal is ready for process attachment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerAgentTerminalResponse"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/worker/terminals/{terminalId}/output:
     parameters:
       - $ref: "#/components/parameters/TerminalId"
@@ -1235,6 +1289,36 @@ paths:
           $ref: "#/components/responses/Error"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/terminals/{terminalId}/exit:
+    parameters:
+      - $ref: "#/components/parameters/TerminalId"
+    post:
+      operationId: publishWorkerTerminalExit
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: Marks the epoch-scoped agent or workspace terminal process as exited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerTerminalExitInput"
+      responses:
+        "200":
+          description: The terminal exit was recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     bearerAuth:
@@ -1891,6 +1975,9 @@ components:
         - harness
         - displayName
         - branch
+        - prompt
+        - mode
+        - deniedCommands
         - repositoryUrl
         - defaultBranch
       properties:
@@ -1908,6 +1995,14 @@ components:
           type: string
         branch:
           type: string
+        prompt:
+          type: string
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+        deniedCommands:
+          type: array
+          items:
+            type: string
         repositoryUrl:
           type: string
           format: uri
@@ -2211,6 +2306,14 @@ components:
           format: uuid
         kind:
           $ref: "#/components/schemas/TerminalKind"
+        columns:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        rows:
+          type: integer
+          minimum: 1
+          maximum: 65535
     WorkerTerminalInputPayload:
       type: object
       additionalProperties: false
@@ -2232,6 +2335,22 @@ components:
         terminalId:
           type: string
           format: uuid
+    WorkerTerminalResizePayload:
+      type: object
+      additionalProperties: false
+      required: [terminalId, columns, rows]
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+        columns:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        rows:
+          type: integer
+          minimum: 1
+          maximum: 65535
     WorkerTerminalOpenResult:
       type: object
       additionalProperties: false
@@ -2252,6 +2371,13 @@ components:
       required: [closed]
       properties:
         closed:
+          type: boolean
+    WorkerTerminalResizeResult:
+      type: object
+      additionalProperties: false
+      required: [resized]
+      properties:
+        resized:
           type: boolean
     WorkerWorkspaceListTransport:
       type: object
@@ -2349,6 +2475,22 @@ components:
           const: terminal.input
         payload:
           $ref: "#/components/schemas/WorkerTerminalInputPayload"
+    WorkerTerminalResizeTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, attempt, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          const: terminal.resize
+        payload:
+          $ref: "#/components/schemas/WorkerTerminalResizePayload"
     WorkerTerminalCloseTransport:
       type: object
       additionalProperties: false
@@ -2373,6 +2515,7 @@ components:
         - $ref: "#/components/schemas/WorkerWorkspaceDiffTransport"
         - $ref: "#/components/schemas/WorkerTerminalOpenTransport"
         - $ref: "#/components/schemas/WorkerTerminalInputTransport"
+        - $ref: "#/components/schemas/WorkerTerminalResizeTransport"
         - $ref: "#/components/schemas/WorkerTerminalCloseTransport"
       discriminator:
         propertyName: kind
@@ -2419,6 +2562,21 @@ components:
           type: string
           minLength: 1
           description: Worker-safe failure message, limited by the server to 4 KiB.
+    WorkerAgentTerminalResponse:
+      type: object
+      additionalProperties: false
+      required: [terminalId]
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+    WorkerTerminalExitInput:
+      type: object
+      additionalProperties: false
+      required: [exitCode]
+      properties:
+        exitCode:
+          type: integer
     WorkerTerminalOutputInput:
       type: object
       additionalProperties: false
@@ -2439,6 +2597,22 @@ components:
           format: int64
           minimum: 0
           maximum: 9007199254740991
+    DeleteSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [session]
+      properties:
+        session:
+          type: object
+          additionalProperties: false
+          required: [id, desiredState]
+          properties:
+            id:
+              type: string
+              format: uuid
+            desiredState:
+              type: string
+              const: deleted
     Session:
       type: object
       additionalProperties: false
@@ -3081,7 +3255,7 @@ components:
           description: Highest sequence returned, or the supplied after cursor when the page is empty.
     TerminalKind:
       type: string
-      enum: [workspace]
+      enum: [agent, workspace]
     TerminalScope:
       type: string
       enum: [terminal:read, terminal:operate]

@@ -46,6 +46,7 @@ export type SessionActivityState = Schemas["SessionActivityState"];
 export type SessionStatus = Schemas["SessionStatus"];
 export type Turn = Schemas["Turn"];
 export type CreateSessionInput = Schemas["CreateSessionInput"];
+export type DeleteSessionResponse = Schemas["DeleteSessionResponse"];
 export type SessionPage = Schemas["SessionPage"];
 
 export type PullRequestState = Schemas["PullRequestState"];
@@ -139,12 +140,16 @@ export type WorkerTerminalOpenPayload =
   Schemas["WorkerTerminalOpenPayload"];
 export type WorkerTerminalInputPayload =
   Schemas["WorkerTerminalInputPayload"];
+export type WorkerTerminalResizePayload =
+  Schemas["WorkerTerminalResizePayload"];
 export type WorkerTerminalClosePayload =
   Schemas["WorkerTerminalClosePayload"];
 export type WorkerTerminalOpenResult =
   Schemas["WorkerTerminalOpenResult"];
 export type WorkerTerminalInputResult =
   Schemas["WorkerTerminalInputResult"];
+export type WorkerTerminalResizeResult =
+  Schemas["WorkerTerminalResizeResult"];
 export type WorkerTerminalCloseResult =
   Schemas["WorkerTerminalCloseResult"];
 export type WorkerWorkspaceListTransport =
@@ -159,6 +164,8 @@ export type WorkerTerminalOpenTransport =
   Schemas["WorkerTerminalOpenTransport"];
 export type WorkerTerminalInputTransport =
   Schemas["WorkerTerminalInputTransport"];
+export type WorkerTerminalResizeTransport =
+  Schemas["WorkerTerminalResizeTransport"];
 export type WorkerTerminalCloseTransport =
   Schemas["WorkerTerminalCloseTransport"];
 export type WorkerTransportRequest = Schemas["WorkerTransportRequest"];
@@ -168,6 +175,9 @@ export type WorkerTransportResult = Schemas["WorkerTransportResult"];
 export type WorkerCompleteTransportInput =
   Schemas["WorkerCompleteTransportInput"];
 export type WorkerFailTransportInput = Schemas["WorkerFailTransportInput"];
+export type WorkerAgentTerminalResponse =
+  Schemas["WorkerAgentTerminalResponse"];
+export type WorkerTerminalExitInput = Schemas["WorkerTerminalExitInput"];
 export type WorkerTerminalOutputInput =
   Schemas["WorkerTerminalOutputInput"];
 export type WorkerTerminalOutputResponse =
