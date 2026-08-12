@@ -40,6 +40,65 @@ paths:
                 $ref: "#/components/schemas/CurrentAccount"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/github/user:
+    get:
+      operationId: getGitHubUserConnection
+      tags: [GitHub]
+      responses:
+        "200":
+          description: The authenticated user's account-wide GitHub connection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubUserConnection"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: disconnectGitHubUser
+      tags: [GitHub]
+      responses:
+        "204":
+          description: The account-wide GitHub authorization was revoked.
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/github/user/authorize:
+    post:
+      operationId: startGitHubUserAuthorization
+      tags: [GitHub]
+      responses:
+        "201":
+          description: A short-lived account-wide GitHub authorization attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubUserAuthorizationStart"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/github/user/callback:
+    get:
+      operationId: completeGitHubUserAuthorization
+      tags: [GitHub]
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: GitHub authorization completion page.
+          content:
+            text/html:
+              schema:
+                type: string
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/agents:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -227,6 +286,29 @@ paths:
                 properties:
                   project:
                     $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/projects/scratch:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      operationId: createGitHubScratchProject
+      tags: [GitHub, Projects, Sessions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGitHubScratchProjectInput"
+      responses:
+        "201":
+          description: GitHub repository, AO project, and first orchestrator created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateGitHubScratchProjectResponse"
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions:
@@ -1561,6 +1643,62 @@ components:
         expiresAt:
           type: string
           format: date-time
+    GitHubUserInstallation:
+      type: object
+      additionalProperties: false
+      required:
+        - githubInstallationId
+        - accountLogin
+        - accountType
+        - repositorySelection
+        - canCreateRepository
+      properties:
+        githubInstallationId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+          description: GitHub's integer installation ID encoded as a decimal string to preserve precision.
+        accountLogin:
+          type: string
+        accountType:
+          type: string
+          enum: [User, Organization, Enterprise]
+        repositorySelection:
+          type: string
+          enum: [all, selected]
+        canCreateRepository:
+          type: boolean
+        unavailableReason:
+          type: string
+    GitHubUserConnection:
+      type: object
+      additionalProperties: false
+      required: [connected, installations]
+      properties:
+        connected:
+          type: boolean
+        login:
+          type: string
+        avatarUrl:
+          type: string
+          format: uri
+        installations:
+          type: array
+          items:
+            $ref: "#/components/schemas/GitHubUserInstallation"
+        lastSyncedAt:
+          type: string
+          format: date-time
+    GitHubUserAuthorizationStart:
+      type: object
+      additionalProperties: false
+      required: [authorizeUrl, expiresAt]
+      properties:
+        authorizeUrl:
+          type: string
+          format: uri
+        expiresAt:
+          type: string
+          format: date-time
     GitHubRepositoryAccessState:
       type: string
       enum: [active, revoked]
@@ -1631,6 +1769,43 @@ components:
         config:
           type: object
           additionalProperties: true
+    CreateGitHubScratchProjectInput:
+      type: object
+      additionalProperties: false
+      required: [displayName, githubInstallationId, orchestrator]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        githubInstallationId:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+        private:
+          type: boolean
+          default: true
+        orchestrator:
+          type: object
+          additionalProperties: false
+          required: [harness]
+          properties:
+            harness:
+              type: string
+              enum: [claude-code, codex, cursor]
+            prompt:
+              type: string
+              maxLength: 65536
+    CreateGitHubScratchProjectResponse:
+      type: object
+      additionalProperties: false
+      required: [project, repository, session]
+      properties:
+        project:
+          $ref: "#/components/schemas/Project"
+        repository:
+          $ref: "#/components/schemas/GitHubRepository"
+        session:
+          $ref: "#/components/schemas/Session"
     SessionKind:
       type: string
       enum: [worker, orchestrator]

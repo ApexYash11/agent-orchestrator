@@ -149,6 +149,69 @@ describe("CloudClient", () => {
     );
   });
 
+  it("manages user GitHub authorization and scratch project creation", async () => {
+    const connection = {
+      connected: true,
+      login: "octocat",
+      installations: [
+        {
+          githubInstallationId: "12345",
+          accountLogin: "octocat",
+          accountType: "User",
+          repositorySelection: "all",
+          canCreateRepository: true,
+        },
+      ],
+    } as const;
+    const fetchMock = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(jsonResponse(connection))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          authorizeUrl: "https://github.com/login/oauth/authorize",
+          expiresAt: "2026-08-12T12:10:00Z",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          project: { id: "project-1" },
+          repository: { githubRepositoryId: "98765" },
+          session: { id: "session-1" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(client.getGitHubUserConnection()).resolves.toEqual(connection);
+    await client.startGitHubUserAuthorization();
+    await client.createGitHubScratchProject(
+      "tenant one",
+      {
+        displayName: "Scratch project",
+        githubInstallationId: "12345",
+        private: true,
+        orchestrator: { harness: "claude-code", prompt: "Start here" },
+      },
+      { idempotencyKey: "scratch-project-1" },
+    );
+    await expect(client.disconnectGitHubUser()).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://cloud.example.com/api/cloud/v1/github/user",
+      "https://cloud.example.com/api/cloud/v1/github/user/authorize",
+      "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/projects/scratch",
+      "https://cloud.example.com/api/cloud/v1/github/user",
+    ]);
+    expect(requestHeaders(fetchMock, 2).get("Idempotency-Key")).toBe(
+      "scratch-project-1",
+    );
+    expect(fetchMock.mock.calls[3]?.[1]?.method).toBe("DELETE");
+  });
+
   it("scopes and encodes organization and session URLs", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>

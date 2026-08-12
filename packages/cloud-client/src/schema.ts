@@ -20,6 +20,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/github/user": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getGitHubUserConnection"];
+        put?: never;
+        post?: never;
+        delete: operations["disconnectGitHubUser"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/github/user/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["startGitHubUserAuthorization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/github/user/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["completeGitHubUserAuthorization"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/orgs/{orgId}/agents": {
         parameters: {
             query?: never;
@@ -160,6 +208,24 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["createProjectFromGitHub"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/projects/scratch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createGitHubScratchProject"];
         delete?: never;
         options?: never;
         head?: never;
@@ -883,6 +949,32 @@ export interface components {
             /** Format: date-time */
             expiresAt: string;
         };
+        GitHubUserInstallation: {
+            /** @description GitHub's integer installation ID encoded as a decimal string to preserve precision. */
+            githubInstallationId: string;
+            accountLogin: string;
+            /** @enum {string} */
+            accountType: "User" | "Organization" | "Enterprise";
+            /** @enum {string} */
+            repositorySelection: "all" | "selected";
+            canCreateRepository: boolean;
+            unavailableReason?: string;
+        };
+        GitHubUserConnection: {
+            connected: boolean;
+            login?: string;
+            /** Format: uri */
+            avatarUrl?: string;
+            installations: components["schemas"]["GitHubUserInstallation"][];
+            /** Format: date-time */
+            lastSyncedAt?: string;
+        };
+        GitHubUserAuthorizationStart: {
+            /** Format: uri */
+            authorizeUrl: string;
+            /** Format: date-time */
+            expiresAt: string;
+        };
         /** @enum {string} */
         GitHubRepositoryAccessState: "active" | "revoked";
         GitHubRepository: {
@@ -912,6 +1004,22 @@ export interface components {
             config?: {
                 [key: string]: unknown;
             };
+        };
+        CreateGitHubScratchProjectInput: {
+            displayName: string;
+            githubInstallationId: string;
+            /** @default true */
+            private: boolean;
+            orchestrator: {
+                /** @enum {string} */
+                harness: "claude-code" | "codex" | "cursor";
+                prompt?: string;
+            };
+        };
+        CreateGitHubScratchProjectResponse: {
+            project: components["schemas"]["Project"];
+            repository: components["schemas"]["GitHubRepository"];
+            session: components["schemas"]["Session"];
         };
         /** @enum {string} */
         SessionKind: "worker" | "orchestrator";
@@ -1720,6 +1828,91 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getGitHubUserConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The authenticated user's account-wide GitHub connection. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubUserConnection"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    disconnectGitHubUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account-wide GitHub authorization was revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    startGitHubUserAuthorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A short-lived account-wide GitHub authorization attempt. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubUserAuthorizationStart"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    completeGitHubUserAuthorization: {
+        parameters: {
+            query: {
+                state: string;
+                code: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description GitHub authorization completion page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     listAgents: {
         parameters: {
             query?: never;
@@ -1960,6 +2153,38 @@ export interface operations {
                     "application/json": {
                         project: components["schemas"]["Project"];
                     };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createGitHubScratchProject: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Reusing a key with the same command returns the original result.
+                 *     Reusing it with a different command returns an IDEMPOTENCY_CONFLICT.
+                 *      */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                orgId: components["parameters"]["OrgId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateGitHubScratchProjectInput"];
+            };
+        };
+        responses: {
+            /** @description GitHub repository, AO project, and first orchestrator created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateGitHubScratchProjectResponse"];
                 };
             };
             default: components["responses"]["Error"];

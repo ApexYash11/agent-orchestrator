@@ -4,6 +4,8 @@ import type {
   ClientEventPage,
   CreateWorkerChildInput,
   CreateGitHubProjectInput,
+  CreateGitHubScratchProjectInput,
+  CreateGitHubScratchProjectResponse,
   CreateProjectInput,
   CreateSessionInput,
   CurrentAccount,
@@ -12,6 +14,8 @@ import type {
   GitHubInstallation,
   GitHubInstallationStart,
   GitHubRepositoryPage,
+  GitHubUserAuthorizationStart,
+  GitHubUserConnection,
   IdempotentRequestOptions,
   PaginationOptions,
   Project,
@@ -147,6 +151,28 @@ export class CloudClient {
     });
   }
 
+  getGitHubUserConnection(
+    options: RequestOptions = {},
+  ): Promise<GitHubUserConnection> {
+    return this.request("/api/cloud/v1/github/user", options);
+  }
+
+  startGitHubUserAuthorization(
+    options: RequestOptions = {},
+  ): Promise<GitHubUserAuthorizationStart> {
+    return this.request("/api/cloud/v1/github/user/authorize", {
+      method: "POST",
+      signal: options.signal,
+    });
+  }
+
+  disconnectGitHubUser(options: RequestOptions = {}): Promise<void> {
+    return this.request("/api/cloud/v1/github/user", {
+      method: "DELETE",
+      signal: options.signal,
+    });
+  }
+
   async listGitHubInstallations(
     orgId: string,
     options: RequestOptions = {},
@@ -214,6 +240,19 @@ export class CloudClient {
     options: IdempotentRequestOptions,
   ): Promise<{ project: Project }> {
     return this.request(this.orgPath(orgId, "/github/projects"), {
+      method: "POST",
+      body: input,
+      idempotencyKey: options.idempotencyKey,
+      signal: options.signal,
+    });
+  }
+
+  createGitHubScratchProject(
+    orgId: string,
+    input: CreateGitHubScratchProjectInput,
+    options: IdempotentRequestOptions,
+  ): Promise<CreateGitHubScratchProjectResponse> {
+    return this.request(this.orgPath(orgId, "/projects/scratch"), {
       method: "POST",
       body: input,
       idempotencyKey: options.idempotencyKey,
@@ -594,6 +633,7 @@ export class CloudClient {
       signal: options.signal,
     });
     await this.throwIfError(response);
+    if (response.status === 204) return undefined as T;
 
     try {
       return (await response.json()) as T;
