@@ -22,9 +22,15 @@ import type {
   SessionPage,
   SessionPullRequests,
   SessionReviewState,
+  SCMCheckoutGrant,
   TerminalKind,
   TerminalTicket,
+  Turn,
   UserMessageEvent,
+  WorkerAgentCredential,
+  WorkerTurnCancellation,
+  WorkerTurnLease,
+  WorkerTurnResultInput,
   WorkspaceDiff,
   WorkspaceEntryPage,
   WorkspaceFile,
@@ -35,6 +41,12 @@ type MaybePromise<T> = T | Promise<T>;
 export interface CloudClientConfig {
   baseUrl: string;
   getAccessToken: () => MaybePromise<string | null | undefined>;
+  fetch?: typeof globalThis.fetch;
+}
+
+export interface WorkerClientConfig {
+  baseUrl: string;
+  getWorkerToken: () => MaybePromise<string | null | undefined>;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -274,6 +286,25 @@ export class CloudClient {
       {
         method: "POST",
         body: { text },
+        idempotencyKey: options.idempotencyKey,
+        signal: options.signal,
+      },
+    );
+  }
+
+  cancelTurn(
+    orgId: string,
+    sessionId: string,
+    turnId: string,
+    options: IdempotentRequestOptions,
+  ): Promise<{ turn: Turn }> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/cancel`,
+      ),
+      {
+        method: "POST",
         idempotencyKey: options.idempotencyKey,
         signal: options.signal,
       },
@@ -590,6 +621,120 @@ export function createCloudClient(config: CloudClientConfig): CloudClient {
   return new CloudClient(config);
 }
 
+export class WorkerClient {
+  readonly baseUrl: string;
+
+  private readonly getWorkerToken: WorkerClientConfig["getWorkerToken"];
+  private readonly fetch: typeof globalThis.fetch;
+
+  constructor(config: WorkerClientConfig) {
+    const baseUrl = new URL(config.baseUrl);
+    if (baseUrl.search || baseUrl.hash) {
+      throw new TypeError("Cloud API baseUrl must not contain a query or fragment.");
+    }
+    this.baseUrl = baseUrl.toString().replace(/\/+$/, "");
+    this.getWorkerToken = config.getWorkerToken;
+    this.fetch = config.fetch ?? globalThis.fetch.bind(globalThis);
+  }
+
+  async leaseTurn(
+    options: RequestOptions & { waitSeconds?: number } = {},
+  ): Promise<WorkerTurnLease | null> {
+    const query = new URLSearchParams();
+    if (options.waitSeconds !== undefined) {
+      query.set("waitSeconds", String(options.waitSeconds));
+    }
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const response = await this.authorizedFetch(`/api/cloud/v1/worker/turns/lease${suffix}`, {
+      method: "POST",
+      headers: new Headers({ Accept: "application/json" }),
+      signal: options.signal,
+    });
+    await throwIfErrorResponse(response);
+    if (response.status === 204) return null;
+    return readJSONResponse<WorkerTurnLease>(response);
+  }
+
+  submitTurnResult(
+    turnId: string,
+    input: WorkerTurnResultInput,
+    options: RequestOptions = {},
+  ): Promise<{ turn: Turn }> {
+    return this.request(
+      `/api/cloud/v1/worker/turns/${encodeURIComponent(turnId)}/result`,
+      { method: "POST", body: input, signal: options.signal },
+    );
+  }
+
+  getTurnCancellation(
+    turnId: string,
+    leaseId: string,
+    options: RequestOptions = {},
+  ): Promise<WorkerTurnCancellation> {
+    const query = new URLSearchParams({ leaseId });
+    return this.request(
+      `/api/cloud/v1/worker/turns/${encodeURIComponent(turnId)}/cancel?${query.toString()}`,
+      { signal: options.signal },
+    );
+  }
+
+  getAgentCredential(
+    options: RequestOptions = {},
+  ): Promise<WorkerAgentCredential> {
+    return this.request("/api/cloud/v1/worker/credentials/agent", options);
+  }
+
+  createSCMCheckoutGrant(
+    options: RequestOptions = {},
+  ): Promise<SCMCheckoutGrant> {
+    return this.request("/api/cloud/v1/worker/scm/checkout-grant", {
+      method: "POST",
+      signal: options.signal,
+    });
+  }
+
+  private async request<T>(
+    path: string,
+    options: JSONRequestOptions = {},
+  ): Promise<T> {
+    const headers = new Headers({ Accept: "application/json" });
+    if (options.body !== undefined) {
+      headers.set("Content-Type", "application/json");
+    }
+    const response = await this.authorizedFetch(path, {
+      method: options.method ?? "GET",
+      headers,
+      body:
+        options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal,
+    });
+    await throwIfErrorResponse(response);
+    return readJSONResponse<T>(response);
+  }
+
+  private async authorizedFetch(
+    path: string,
+    init: RequestInit,
+  ): Promise<Response> {
+    const token = (await this.getWorkerToken())?.trim();
+    if (!token) {
+      throw new CloudApiError(401, {
+        error: "Unauthorized",
+        code: "WORKER_AUTH_REQUIRED",
+        message: "A worker credential is required.",
+        requestId: "",
+      });
+    }
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Worker ${token}`);
+    return this.fetch(`${this.baseUrl}${path}`, { ...init, headers });
+  }
+}
+
+export function createWorkerClient(config: WorkerClientConfig): WorkerClient {
+  return new WorkerClient(config);
+}
+
 function validateIdempotencyKey(value: string): string {
   const key = value.trim();
   if (!key || key.length > 200) {
@@ -653,6 +798,30 @@ function toErrorEnvelope(response: Response, value: unknown): ErrorEnvelope {
         : response.headers.get("x-request-id") ?? "",
     ...(isRecord(object.details) ? { details: object.details } : {}),
   };
+}
+
+async function throwIfErrorResponse(response: Response): Promise<void> {
+  if (response.ok) return;
+  let value: unknown;
+  try {
+    value = await response.json();
+  } catch {
+    value = undefined;
+  }
+  throw new CloudApiError(response.status, toErrorEnvelope(response, value));
+}
+
+async function readJSONResponse<T>(response: Response): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new CloudApiError(response.status, {
+      error: "Invalid Response",
+      code: "INVALID_RESPONSE",
+      message: "Cloud API returned an invalid JSON response.",
+      requestId: "",
+    });
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -16,14 +16,16 @@ const cloud = createCloudClient({
 const sessions = await cloud.listSessions(orgId, { limit: 50 });
 ```
 
-The caller owns authentication and token refresh. This package only asks for an
-access token immediately before a request; it never accepts or stores refresh
+The caller owns authentication and token refresh. `createCloudClient` asks for
+an access token immediately before a user request. `createWorkerClient` does the
+same for a session-scoped worker token and exposes only durable turn,
+credential, and checkout-grant operations. Neither client stores refresh
 tokens.
 
 The source contract is `contracts/cloud/openapi.yaml`. Run `npm run generate`
 from this directory after changing it. The generated `src/schema.ts` file is
 committed so consumers do not need an OpenAPI toolchain.
 
-This boundary intentionally excludes sign-in flows, worker bootstrap and
-commands, provisioning, database details, provider secrets, and local daemon
-routes.
+This boundary intentionally excludes sign-in flows, worker provisioning,
+bootstrap and heartbeat transport, database details, secret storage, and local
+daemon routes.

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CloudApiError,
   createCloudClient,
+  createWorkerClient,
   type AgentProfile,
   type ClientEvent,
   type PullRequestSummary,
@@ -550,6 +551,117 @@ describe("CloudClient", () => {
       code: "unauthorized",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("durably requests turn cancellation with an idempotency key", async () => {
+    const fetchMock = vi.fn<
+      (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    >(async () => jsonResponse({ turn: { id: "turn-1" } }, 202));
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await client.cancelTurn("tenant", "session", "turn one", {
+      idempotencyKey: "cancel-turn-1",
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://cloud.example.com/api/cloud/v1/orgs/tenant/sessions/session/turns/turn%20one/cancel",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(requestHeaders(fetchMock, 0).get("Idempotency-Key")).toBe(
+      "cancel-turn-1",
+    );
+  });
+});
+
+describe("WorkerClient", () => {
+  it("uses worker authentication for durable execution operations", async () => {
+    const lease = {
+      leaseId: "lease-1",
+      expiresAt: "2026-08-12T12:00:00Z",
+      turn: { id: "turn-1" },
+      input: { payload: { text: "fix auth" } },
+      mode: "standard",
+      deniedCommands: [],
+    };
+    const fetchMock = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(jsonResponse(lease))
+      .mockResolvedValueOnce(
+        jsonResponse({ cancelRequested: false, turnId: "turn-1" }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ turn: { id: "turn-1", state: "completed" } }, 202),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          provider: "claude-code",
+          credentialType: "api_key",
+          secret: "worker-secret",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            provider: "github",
+            repositoryUrl: "https://github.com/acme/api.git",
+            username: "x-access-token",
+            password: "checkout-token",
+            expiresAt: "2026-08-12T12:00:00Z",
+          },
+          201,
+        ),
+      );
+    const client = createWorkerClient({
+      baseUrl: "https://cloud.example.com",
+      getWorkerToken: () => "worker-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(client.leaseTurn({ waitSeconds: 10 })).resolves.toEqual(lease);
+    await client.getTurnCancellation("turn-1", "lease one");
+    await client.submitTurnResult("turn-1", {
+      leaseId: "lease-1",
+      status: "completed",
+      nativeSessionId: "native-1",
+    });
+    await client.getAgentCredential();
+    await client.createSCMCheckoutGrant();
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://cloud.example.com/api/cloud/v1/worker/turns/lease?waitSeconds=10",
+      "https://cloud.example.com/api/cloud/v1/worker/turns/turn-1/cancel?leaseId=lease+one",
+      "https://cloud.example.com/api/cloud/v1/worker/turns/turn-1/result",
+      "https://cloud.example.com/api/cloud/v1/worker/credentials/agent",
+      "https://cloud.example.com/api/cloud/v1/worker/scm/checkout-grant",
+    ]);
+    for (let index = 0; index < fetchMock.mock.calls.length; index += 1) {
+      expect(requestHeaders(fetchMock, index).get("Authorization")).toBe(
+        "Worker worker-token",
+      );
+    }
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(fetchMock.mock.calls[4]?.[1]?.method).toBe("POST");
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      leaseId: "lease-1",
+      status: "completed",
+      nativeSessionId: "native-1",
+    });
+  });
+
+  it("returns null when no turn can be leased", async () => {
+    const client = createWorkerClient({
+      baseUrl: "https://cloud.example.com",
+      getWorkerToken: () => "worker-token",
+      fetch: vi.fn(
+        async () => new Response(null, { status: 204 }),
+      ) as typeof fetch,
+    });
+
+    await expect(client.leaseTurn()).resolves.toBeNull();
   });
 });
 

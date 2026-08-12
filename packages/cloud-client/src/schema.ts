@@ -260,6 +260,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/turns/{turnId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/chat-events": {
         parameters: {
             query?: never;
@@ -423,6 +443,90 @@ export interface paths {
         put: operations["putAgentProviderConnection"];
         post?: never;
         delete: operations["deleteAgentProviderConnection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/turns/lease": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["leaseWorkerTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/turns/{turnId}/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["submitWorkerTurnResult"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/turns/{turnId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getWorkerTurnCancellation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/credentials/agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getWorkerAgentCredential"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/scm/checkout-grant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createWorkerSCMCheckoutGrant"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -608,6 +712,35 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        WorkerTurnLease: {
+            /** @description Opaque fencing token that must accompany result and cancellation checks. */
+            leaseId: string;
+            /** Format: date-time */
+            expiresAt: string;
+            turn: components["schemas"]["Turn"];
+            input: components["schemas"]["UserMessageEvent"];
+            mode: components["schemas"]["SessionMode"];
+            deniedCommands: string[];
+            model?: string;
+            /** @description Provider-native conversation identity to resume when present. */
+            nativeSessionId?: string;
+        };
+        /** @enum {string} */
+        WorkerTurnResultStatus: "completed" | "failed" | "interrupted";
+        WorkerTurnResultInput: {
+            leaseId: string;
+            status: components["schemas"]["WorkerTurnResultStatus"];
+            /** @description Provider-native conversation identity observed during this attempt. */
+            nativeSessionId?: string;
+            error?: string;
+        };
+        WorkerTurnCancellation: {
+            /** Format: uuid */
+            turnId: string;
+            cancelRequested: boolean;
+            /** Format: date-time */
+            requestedAt?: string;
         };
         Session: {
             /** Format: uuid */
@@ -962,6 +1095,25 @@ export interface components {
             credentialType: "oauth_token" | "api_key" | "access_token";
             secret: string;
         };
+        WorkerAgentCredential: {
+            /** @enum {string} */
+            provider: "claude-code" | "codex" | "cursor";
+            /** @enum {string} */
+            credentialType: "oauth_token" | "api_key" | "access_token";
+            readonly secret: string;
+            /** Format: date-time */
+            expiresAt?: string;
+        };
+        SCMCheckoutGrant: {
+            /** @enum {string} */
+            provider: "github";
+            /** Format: uri */
+            repositoryUrl: string;
+            username: string;
+            readonly password: string;
+            /** Format: date-time */
+            expiresAt: string;
+        };
         RedactedProviderConnection: {
             id: string;
             provider: components["schemas"]["ProviderName"];
@@ -991,6 +1143,7 @@ export interface components {
     parameters: {
         OrgId: string;
         SessionId: string;
+        TurnId: string;
         InstallationId: string;
         Cursor: string;
         Limit: number;
@@ -1446,6 +1599,38 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    cancelTurn: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Reusing a key with the same command returns the original result.
+                 *     Reusing it with a different command returns an IDEMPOTENCY_CONFLICT.
+                 *      */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation was durably requested for the turn. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        turn: components["schemas"]["Turn"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     replayClientEvents: {
         parameters: {
             query?: {
@@ -1707,6 +1892,132 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    leaseWorkerTurn: {
+        parameters: {
+            query?: {
+                waitSeconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A fenced lease for the next queued turn owned by this worker's session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerTurnLease"];
+                };
+            };
+            /** @description No turn is currently available. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    submitWorkerTurnResult: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerTurnResultInput"];
+            };
+        };
+        responses: {
+            /** @description The fenced turn result was durably recorded. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        turn: components["schemas"]["Turn"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getWorkerTurnCancellation: {
+        parameters: {
+            query: {
+                leaseId: string;
+            };
+            header?: never;
+            path: {
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current durable cancellation state for the leased turn. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerTurnCancellation"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getWorkerAgentCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session-scoped coding-agent credential. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerAgentCredential"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createWorkerSCMCheckoutGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A short-lived grant for cloning and pushing the session repository. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SCMCheckoutGrant"];
+                };
             };
             default: components["responses"]["Error"];
         };

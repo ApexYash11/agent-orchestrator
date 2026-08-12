@@ -37,6 +37,10 @@ export type SessionMode = Schemas["SessionMode"];
 export type SessionActivityState = Schemas["SessionActivityState"];
 export type SessionStatus = Schemas["SessionStatus"];
 export type Turn = Schemas["Turn"];
+export type WorkerTurnLease = Schemas["WorkerTurnLease"];
+export type WorkerTurnResultStatus = Schemas["WorkerTurnResultStatus"];
+export type WorkerTurnResultInput = Schemas["WorkerTurnResultInput"];
+export type WorkerTurnCancellation = Schemas["WorkerTurnCancellation"];
 export type CreateSessionInput = Schemas["CreateSessionInput"];
 export type SessionPage = Schemas["SessionPage"];
 
@@ -94,6 +98,8 @@ export type RedactedProviderConnection =
   Schemas["RedactedProviderConnection"];
 export type PutAgentProviderConnectionInput =
   Schemas["PutAgentProviderConnectionInput"];
+export type WorkerAgentCredential = Schemas["WorkerAgentCredential"];
+export type SCMCheckoutGrant = Schemas["SCMCheckoutGrant"];
 
 export interface PaginationOptions {
   cursor?: string;

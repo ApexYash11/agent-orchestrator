@@ -13,6 +13,7 @@ sequence, see [cloud-development.md](cloud-development.md).
 | Boundary | Owns | Does not own |
 | --- | --- | --- |
 | `backend/pkg/contract` | Session/PR facts, stack positions, and pure status derivation | Local durable records, stores, runtime ports, provider payloads |
+| `backend/pkg/agentruntime` | Claude Code, Codex, and Cursor command/restore policy plus process-group lifecycle | Worker orchestration, credentials, leases, persistence, provider installation |
 | `contracts/cloud` | Authenticated, organization-scoped HTTP contract and client-visible event schemas | Route implementation, authorization policy, persistence |
 | `packages/cloud-client` | Handwritten typed Cloud client over generated OpenAPI schema types, auth injection, errors, pagination, replay cursors | Refresh-token storage, Electron, React, worker RPC |
 | `packages/product-ui` | Semantic view models, pure presentation logic, and portable board/composer/inspector React views | Electron bridges, loopback API calls, native BrowserView, daemon lifecycle |
@@ -56,6 +57,8 @@ model to those DTOs.
 
 - `backend/pkg/contract`: Go facts, agent/SCM vocabulary, and deterministic
   status/stack rules.
+- `backend/pkg/agentruntime`: Linux-worker-facing command construction, native
+  restore identity, approval-policy mapping, and child process lifecycle.
 - `contracts/cloud/openapi.yaml`: source of truth for the hosted client API.
 - `packages/cloud-client/src/schema.ts`: generated OpenAPI types.
 - `packages/cloud-client/src/client.ts`: fetch, bearer auth, pagination, SSE, and
@@ -104,7 +107,8 @@ model to those DTOs.
 - PostgreSQL schemas, migrations, RLS, and tenant persistence.
 - Hosted route handlers, WorkOS token validation, organization authorization.
 - Reconciliation, queues, leases, retries, provisioning, warm pools, and images.
-- Worker bootstrap, heartbeats, terminal/workspace RPC, and worker protocol.
+- Worker provisioning, bootstrap, heartbeats, terminal transport, and
+  workspace RPC implementation.
 - GitHub secrets/webhooks/token brokering, sharing policy implementation, billing,
   infrastructure, deployments, observability, and backups.
 - Release-pairing/version-policy machinery beyond stable contract shapes.
