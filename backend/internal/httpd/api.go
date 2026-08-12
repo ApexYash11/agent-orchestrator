@@ -38,6 +38,7 @@ type APIDeps struct {
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
+<<<<<<< HEAD
 	ShellTerminals     controllers.ShellTerminalService
 	// Conversations is nil until a Chat driver is wired; the controller then
 	// answers 501 rather than panicking, matching the other optional surfaces.
@@ -52,6 +53,12 @@ type APIDeps struct {
 	Browser             controllers.BrowserService
 	PreviewServer       controllers.ManagedPreviewServer
 	SessionCapabilities controllers.SessionCapabilityValidator
+=======
+	Metrics            controllers.MetricsService
+	CDC                cdc.Source
+	Events             cdcSubscriber
+	Telemetry          ports.EventSink
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 }
 
 // API owns one controller per resource and is the single Register call the
@@ -67,11 +74,15 @@ type API struct {
 	notifications *controllers.NotificationsController
 	push          *controllers.PushController
 	imports       *controllers.ImportController
+<<<<<<< HEAD
 	shellTerms    *controllers.ShellTerminalsController
 	conversations *controllers.ConversationsController
 	settings      *controllers.SettingsController
 	dev           *controllers.DevController
 	browser       *controllers.BrowserController
+=======
+	metrics       *controllers.MetricsController
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 	events        *EventsController
 }
 
@@ -88,11 +99,17 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 			Mgr: deps.Projects,
 		},
 		sessions: &controllers.SessionsController{
+<<<<<<< HEAD
 			Svc:           deps.Sessions,
 			Activity:      deps.Activity,
 			Usage:         deps.UsageHooks,
 			PreviewServer: deps.PreviewServer,
 			Capabilities:  deps.SessionCapabilities,
+=======
+			Svc:      deps.Sessions,
+			Activity: deps.Activity,
+			Metrics:  deps.Metrics,
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 		},
 		usage:         &controllers.UsageController{Svc: deps.UsageSummary},
 		prs:           &controllers.PRsController{Svc: deps.PRs},
@@ -100,11 +117,15 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
+<<<<<<< HEAD
 		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
 		conversations: &controllers.ConversationsController{Svc: deps.Conversations},
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
+=======
+		metrics:       &controllers.MetricsController{Svc: deps.Metrics},
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
 	}
 }
@@ -136,12 +157,16 @@ func (a *API) Register(root chi.Router) {
 			a.notifications.Register(r)
 			a.push.Register(r)
 			a.imports.Register(r)
+<<<<<<< HEAD
 			a.shellTerms.Register(r)
 			a.conversations.Register(r)
 			a.settings.Register(r)
 			a.dev.Register(r)
 			a.browser.Register(r)
 			// Sibling REST controllers plug in here.
+=======
+			a.metrics.Register(r)
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 		})
 		// Agent switching synchronously collects a handoff, starts the target,
 		// waits for provider readiness, and confirms delivery. Give that bounded

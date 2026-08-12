@@ -805,6 +805,7 @@ function SecondaryLaneSection({
 				</div>
 				<span className="ml-auto font-mono text-2xs leading-none text-passive">{sessions.length}</span>
 			</div>
+<<<<<<< HEAD
 			<div className="flex flex-col gap-2.5 pt-3">
 				{sessions.map((session) => (
 					<SessionCard
@@ -815,6 +816,46 @@ function SecondaryLaneSection({
 						usage={usageBySession.get(session.id)}
 					/>
 				))}
+=======
+			<div
+				className={cn(
+					"px-[13px] text-[13px] font-medium leading-[1.42] tracking-[-0.01em] text-foreground",
+					showBranch ? "pb-2" : "pb-3",
+					"line-clamp-2 overflow-hidden",
+				)}
+			>
+				{session.title}
+			</div>
+			{showBranch && <div className="px-[13px] pb-2.5 font-mono text-[10.5px] text-passive">{branch}</div>}
+			<div className="border-t border-border px-[13px] py-2 font-mono text-[10.5px] text-passive">
+				{prSummaries.length > 0 ? (
+					<div className="flex flex-col gap-2">
+						{prSummaries.map((prSummary, index) => (
+							<BoardPRSummary
+								className={cn(index > 0 && "border-t border-border pt-2")}
+								key={prSummary.number}
+								pr={prSummary}
+							/>
+						))}
+					</div>
+				) : (
+					"no PR yet"
+				)}
+				{session.metrics ? (
+					<div className="mt-2 flex items-center gap-2 border-t border-border pt-2 text-[10px]">
+						{session.metrics.estimatedCost ? (
+							<span className="inline-flex items-center gap-1 rounded bg-raised px-1.5 py-0.5">
+								$ {session.metrics.estimatedCost.toFixed(4)}
+							</span>
+						) : null}
+						{session.metrics.totalTokens ? (
+							<span className="text-passive">
+								{formatTokenCount(session.metrics.totalTokens)} tokens
+							</span>
+						) : null}
+					</div>
+				) : null}
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 			</div>
 		</div>
 	);
@@ -989,6 +1030,7 @@ function SessionCard({
 	);
 }
 
+<<<<<<< HEAD
 function ArchiveSessionItem({
 	session,
 	restoreAction,
@@ -1176,6 +1218,12 @@ function prLifecycleStatus(pr: SessionPRSummary): BoardPRLifecycleStatus {
 	if (pr.state === "merged") return { label: "merged", className: "text-status-merged" };
 	if (pr.state === "closed") return { label: "closed", className: "text-error" };
 	return { label: "open", className: "text-success" };
+=======
+function formatTokenCount(count: number): string {
+	if (count >= 1_000_000) return (count / 1_000_000).toFixed(1) + "M";
+	if (count >= 1_000) return (count / 1_000).toFixed(1) + "K";
+	return String(count);
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 }
 
 function sameLabel(a: string, b: string): boolean {

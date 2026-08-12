@@ -181,6 +181,25 @@ export type WorkspaceSession = {
 	 * done server-side, so {@link status} already reflects all of these.
 	 */
 	prs: PullRequestFacts[];
+<<<<<<< HEAD
+=======
+	/**
+	 * Display status as derived by the daemon at read time. Optional override; when
+	 * absent it is derived from {@link SessionStatus} via {@link workerDisplayStatus}.
+	 */
+	displayStatus?: WorkerDisplayStatus;
+	/**
+	 * Aggregated token/cost metrics from the daemon, populated on session-list
+	 * reads when the collector has produced a session_metrics_current row.
+	 */
+	metrics?: {
+		estimatedCost?: number;
+		totalTokens?: number;
+		model?: string;
+		contextUtilization?: number;
+		retryCount?: number;
+	};
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 };
 
 // Tracker providers whose ids the intake daemon stamps sessions with, in

@@ -75,12 +75,17 @@ func Build() ([]byte, error) {
 			"Server-sent CDC event stream with durable replay"),
 		*(&openapi31.Tag{Name: "import"}).WithDescription(
 			"Legacy AO project import (availability probe and run)"),
+<<<<<<< HEAD
 		*(&openapi31.Tag{Name: "dev"}).WithDescription(
 			"Developer-only maintenance operations"),
 		*(&openapi31.Tag{Name: "mobile"}).WithDescription(
 			"Connect Mobile LAN bridge control (loopback/desktop only)"),
 		*(&openapi31.Tag{Name: "browser"}).WithDescription(
 			"Target-isolated desktop browser runtime (loopback only)"),
+=======
+		*(&openapi31.Tag{Name: "metrics"}).WithDescription(
+			"Per-session agent-usage metrics (token counts, cost, context utilization)"),
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 	}
 
 	for _, op := range operations() {
@@ -135,7 +140,7 @@ func schemaName(_ reflect.Type, defaultName string) string {
 }
 
 // schemaNames is the exhaustive default→clean mapping for every type reflected
-// by projectOperations(). Add an entry when a new contract type is introduced;
+// by metricsOperations(). Add an entry when a new contract type is introduced;
 // the drift test fails until the spec is regenerated, which flags the gap.
 var schemaNames = map[string]string{
 	"ControllersSettingsResponse":                     "SettingsResponse",
@@ -333,6 +338,13 @@ var schemaNames = map[string]string{
 	"ControllersUnregisterPushDeviceResponse": "UnregisterPushDeviceResponse",
 	// legacyimport report
 	"LegacyimportReport": "ImportReport",
+	// httpd/controllers — metrics wire envelopes
+	"ControllersSessionMetricsSummary":            "SessionMetricsSummary",
+	"ControllersSessionMetricsDetail":             "SessionMetricsDetail",
+	"ControllersSessionMetricsPoint":              "SessionMetricsPoint",
+	"ControllersGetSessionMetricsResponse":        "GetSessionMetricsResponse",
+	"ControllersGetSessionMetricsHistoryResponse": "GetSessionMetricsHistoryResponse",
+	"ControllersGetSessionMetricsHistoryQuery":    "GetSessionMetricsHistoryQuery",
 	// service/project entities + DTOs
 	"ProjectProject":                    "Project",
 	"ProjectSummary":                    "ProjectSummary",
@@ -431,10 +443,14 @@ func operations() []operation {
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
+<<<<<<< HEAD
 	ops = append(ops, devOperations()...)
 	ops = append(ops, mobileOperations()...)
 	ops = append(ops, browserOperations()...)
 	ops = append(ops, shellTerminalOperations()...)
+=======
+	ops = append(ops, metricsOperations()...)
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 	return ops
 }
 
@@ -935,6 +951,7 @@ func importOperations() []operation {
 	}
 }
 
+<<<<<<< HEAD
 // devOperations declares developer-only API operations. Must stay 1:1 with
 // the routes DevController.Register mounts (enforced by the parity test).
 func devOperations() []operation {
@@ -946,6 +963,28 @@ func devOperations() []operation {
 			resps: []respUnit{
 				{http.StatusOK, controllers.DevImportProjectsResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+=======
+func metricsOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/metrics", id: "getSessionMetrics", tag: "metrics",
+			summary:    "Fetch the current aggregated metrics for a session",
+			pathParams: []any{controllers.SessionIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.GetSessionMetricsResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/metrics/history", id: "getSessionMetricsHistory", tag: "metrics",
+			summary:    "List historical usage points for a session",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.GetSessionMetricsHistoryQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.GetSessionMetricsHistoryResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},

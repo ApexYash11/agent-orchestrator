@@ -2931,6 +2931,7 @@ paths:
       summary: Mark a session terminated and tear down runtime/workspace resources
       tags:
       - sessions
+<<<<<<< HEAD
   /api/v1/sessions/{sessionId}/merge-policy:
     patch:
       operationId: setSessionMergePolicy
@@ -2985,6 +2986,11 @@ paths:
   /api/v1/sessions/{sessionId}/pin:
     delete:
       operationId: unpinSession
+=======
+  /api/v1/sessions/{sessionId}/metrics:
+    get:
+      operationId: getSessionMetrics
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
       parameters:
       - description: Session identifier, e.g. project-1.
         in: path
@@ -2998,7 +3004,11 @@ paths:
           content:
             application/json:
               schema:
+<<<<<<< HEAD
                 $ref: '#/components/schemas/SessionResponse'
+=======
+                $ref: '#/components/schemas/GetSessionMetricsResponse'
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
           description: OK
         "404":
           content:
@@ -3018,11 +3028,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
+<<<<<<< HEAD
       summary: Unpin a session
       tags:
       - sessions
     post:
       operationId: pinSession
+=======
+      summary: Fetch the current aggregated metrics for a session
+      tags:
+      - metrics
+  /api/v1/sessions/{sessionId}/metrics/history:
+    get:
+      operationId: getSessionMetricsHistory
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
       parameters:
       - description: Session identifier, e.g. project-1.
         in: path
@@ -3031,12 +3050,27 @@ paths:
         schema:
           description: Session identifier, e.g. project-1.
           type: string
+<<<<<<< HEAD
+=======
+      - description: RFC 3339 timestamp. Return points recorded on or after this time.
+          When omitted, returns all available history.
+        in: query
+        name: since
+        schema:
+          description: RFC 3339 timestamp. Return points recorded on or after this
+            time. When omitted, returns all available history.
+          type: string
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
       responses:
         "200":
           content:
             application/json:
               schema:
+<<<<<<< HEAD
                 $ref: '#/components/schemas/SessionResponse'
+=======
+                $ref: '#/components/schemas/GetSessionMetricsHistoryResponse'
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
           description: OK
         "404":
           content:
@@ -3056,9 +3090,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
+<<<<<<< HEAD
       summary: Pin a session
       tags:
       - sessions
+=======
+      summary: List historical usage points for a session
+      tags:
+      - metrics
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
   /api/v1/sessions/{sessionId}/pr:
     get:
       operationId: listSessionPRs
@@ -5001,6 +5041,7 @@ components:
           type: string
         kind:
           type: string
+<<<<<<< HEAD
         mode:
           enum:
           - chat
@@ -5011,6 +5052,10 @@ components:
           type:
           - "null"
           - string
+=======
+        metrics:
+          $ref: '#/components/schemas/SessionMetricsSummary'
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
         previewRevision:
           format: int64
           type: integer
@@ -5877,6 +5922,7 @@ components:
       required:
       - harness
       type: object
+<<<<<<< HEAD
     EditConversationMessageRequest:
       properties:
         clientMessageId:
@@ -5907,6 +5953,23 @@ components:
       required:
       - sourceBranchId
       - activeBranchId
+=======
+    GetSessionMetricsHistoryResponse:
+      properties:
+        metrics:
+          items:
+            $ref: '#/components/schemas/SessionMetricsPoint'
+          type: array
+      required:
+      - metrics
+      type: object
+    GetSessionMetricsResponse:
+      properties:
+        metrics:
+          $ref: '#/components/schemas/SessionMetricsDetail'
+      required:
+      - metrics
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
       type: object
     ImportReport:
       properties:
@@ -6839,6 +6902,7 @@ components:
       - sessionId
       - message
       type: object
+<<<<<<< HEAD
     SessionInterfaceTransition:
       properties:
         completedAt:
@@ -6917,6 +6981,68 @@ components:
       required:
       - supported
       - targetMode
+=======
+    SessionMetricsDetail:
+      properties:
+        contextUtilization:
+          format: double
+          type: number
+        estimatedCost:
+          format: double
+          type: number
+        lastActivityAt:
+          format: date-time
+          type: string
+        model:
+          type: string
+        retryCount:
+          type: integer
+        totalInputTokens:
+          format: int64
+          type: integer
+        totalOutputTokens:
+          format: int64
+          type: integer
+      required:
+      - totalInputTokens
+      - totalOutputTokens
+      - retryCount
+      type: object
+    SessionMetricsPoint:
+      properties:
+        cost:
+          format: double
+          type: number
+        inputTokens:
+          format: int64
+          type: integer
+        outputTokens:
+          format: int64
+          type: integer
+        recordedAt:
+          format: date-time
+          type: string
+      required:
+      - inputTokens
+      - outputTokens
+      - recordedAt
+      type: object
+    SessionMetricsSummary:
+      properties:
+        contextUtilization:
+          format: double
+          type: number
+        estimatedCost:
+          format: double
+          type: number
+        model:
+          type: string
+        retryCount:
+          type: integer
+        totalTokens:
+          format: int64
+          type: integer
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
       type: object
     SessionPRCISummary:
       properties:
@@ -8030,9 +8156,14 @@ tags:
   name: events
 - description: Legacy AO project import (availability probe and run)
   name: import
+<<<<<<< HEAD
 - description: Developer-only maintenance operations
   name: dev
 - description: Connect Mobile LAN bridge control (loopback/desktop only)
   name: mobile
 - description: Target-isolated desktop browser runtime (loopback only)
   name: browser
+=======
+- description: Per-session agent-usage metrics (token counts, cost, context utilization)
+  name: metrics
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc

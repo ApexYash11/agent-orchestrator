@@ -982,36 +982,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+<<<<<<< HEAD
     "/api/v1/sessions/{sessionId}/merge-policy": {
+=======
+    "/api/v1/sessions/{sessionId}/metrics": {
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
+<<<<<<< HEAD
         get?: never;
+=======
+        /** Fetch the current aggregated metrics for a session */
+        get: operations["getSessionMetrics"];
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
+<<<<<<< HEAD
         /** Configure whether PR completion terminates the session */
         patch: operations["setSessionMergePolicy"];
         trace?: never;
     };
     "/api/v1/sessions/{sessionId}/pin": {
+=======
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/metrics/history": {
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
+<<<<<<< HEAD
         get?: never;
         put?: never;
         /** Pin a session */
         post: operations["pinSession"];
         /** Unpin a session */
         delete: operations["unpinSession"];
+=======
+        /** List historical usage points for a session */
+        get: operations["getSessionMetricsHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
         options?: never;
         head?: never;
         patch?: never;
@@ -1670,10 +1694,14 @@ export interface components {
             isTerminated: boolean;
             issueId?: string;
             kind: string;
+<<<<<<< HEAD
             /** @enum {string} */
             mode: "chat" | "tui";
             /** Format: date-time */
             pinnedAt?: null | string;
+=======
+            metrics?: components["schemas"]["SessionMetricsSummary"];
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
             /** Format: int64 */
             previewRevision?: number;
             previewUrl?: string;
@@ -1978,6 +2006,7 @@ export interface components {
         DomainReviewerConfig: {
             harness: string;
         };
+<<<<<<< HEAD
         EditConversationMessageRequest: {
             clientMessageId?: string;
             text: string;
@@ -1989,6 +2018,13 @@ export interface components {
             /** @enum {string} */
             state?: "queued" | "running" | "completed" | "interrupted" | "failed";
             turnId?: string;
+=======
+        GetSessionMetricsHistoryResponse: {
+            metrics: components["schemas"]["SessionMetricsPoint"][];
+        };
+        GetSessionMetricsResponse: {
+            metrics: components["schemas"]["SessionMetricsDetail"];
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
         };
         ImportReport: {
             dryRun: boolean;
@@ -2354,6 +2390,7 @@ export interface components {
             ok: boolean;
             sessionId: string;
         };
+<<<<<<< HEAD
         SessionInterfaceTransition: {
             /** Format: date-time */
             completedAt?: null | string;
@@ -2381,6 +2418,41 @@ export interface components {
             /** @enum {string} */
             targetMode: "chat" | "tui";
             transition?: components["schemas"]["SessionInterfaceTransition"];
+=======
+        SessionMetricsDetail: {
+            /** Format: double */
+            contextUtilization?: number;
+            /** Format: double */
+            estimatedCost?: number;
+            /** Format: date-time */
+            lastActivityAt?: string;
+            model?: string;
+            retryCount: number;
+            /** Format: int64 */
+            totalInputTokens: number;
+            /** Format: int64 */
+            totalOutputTokens: number;
+        };
+        SessionMetricsPoint: {
+            /** Format: double */
+            cost?: number;
+            /** Format: int64 */
+            inputTokens: number;
+            /** Format: int64 */
+            outputTokens: number;
+            /** Format: date-time */
+            recordedAt: string;
+        };
+        SessionMetricsSummary: {
+            /** Format: double */
+            contextUtilization?: number;
+            /** Format: double */
+            estimatedCost?: number;
+            model?: string;
+            retryCount?: number;
+            /** Format: int64 */
+            totalTokens?: number;
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
         };
         SessionPRCISummary: {
             failingChecks: components["schemas"]["SessionPRFailingCheck"][];
@@ -6484,6 +6556,7 @@ export interface operations {
             };
         };
     };
+<<<<<<< HEAD
     setSessionMergePolicy: {
         parameters: {
             query?: never;
@@ -6548,6 +6621,9 @@ export interface operations {
         };
     };
     pinSession: {
+=======
+    getSessionMetrics: {
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
         parameters: {
             query?: never;
             header?: never;
@@ -6565,7 +6641,11 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
+<<<<<<< HEAD
                     "application/json": components["schemas"]["SessionResponse"];
+=======
+                    "application/json": components["schemas"]["GetSessionMetricsResponse"];
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
                 };
             };
             /** @description Not Found */
@@ -6597,9 +6677,18 @@ export interface operations {
             };
         };
     };
+<<<<<<< HEAD
     unpinSession: {
         parameters: {
             query?: never;
+=======
+    getSessionMetricsHistory: {
+        parameters: {
+            query?: {
+                /** @description RFC 3339 timestamp. Return points recorded on or after this time. When omitted, returns all available history. */
+                since?: string;
+            };
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
             header?: never;
             path: {
                 /** @description Session identifier, e.g. project-1. */
@@ -6615,7 +6704,11 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
+<<<<<<< HEAD
                     "application/json": components["schemas"]["SessionResponse"];
+=======
+                    "application/json": components["schemas"]["GetSessionMetricsHistoryResponse"];
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
                 };
             };
             /** @description Not Found */

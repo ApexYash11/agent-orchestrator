@@ -148,8 +148,9 @@ type SessionView struct {
 	// unchanged) so the desktop browser panel can re-navigate / refresh on a
 	// repeated preview of the same target. Pulled from the json:"-" domain
 	// Metadata.
-	PreviewRevision int64            `json:"previewRevision,omitempty"`
-	PRs             []SessionPRFacts `json:"prs"`
+	PreviewRevision int64                  `json:"previewRevision,omitempty"`
+	PRs             []SessionPRFacts       `json:"prs"`
+	Metrics         *SessionMetricsSummary `json:"metrics,omitempty"`
 }
 
 // ListSessionsResponse is the body of GET /api/v1/sessions.
@@ -1103,6 +1104,7 @@ type ResolveCommentsResponse struct {
 	Resolved int  `json:"resolved"`
 }
 
+<<<<<<< HEAD
 // MobileStatusResponse is the body of the Connect Mobile status/enable/disable/
 // regenerate endpoints. Password is populated only transiently, on enable and
 // regenerate responses (empty otherwise) — it is never persisted in plaintext.
@@ -1763,4 +1765,51 @@ func capabilityNames(caps ports.ChatCapabilities) []string {
 // cannot change what another session in the project runs.
 type TriggerReviewRequest struct {
 	Harness domain.ReviewerHarness `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,qwen,agy,continue,goose,vibe,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+=======
+// SessionMetricsSummary is the concise card-badge shape embedded on
+// SessionView so the Kanban board shows per-session cost/tokens without
+// an extra fetch. Populated from session_metrics_current.
+type SessionMetricsSummary struct {
+	EstimatedCost      float64 `json:"estimatedCost,omitempty"`
+	TotalTokens        int64   `json:"totalTokens,omitempty"`
+	Model              string  `json:"model,omitempty"`
+	ContextUtilization float64 `json:"contextUtilization,omitempty"`
+	RetryCount         int     `json:"retryCount,omitempty"`
+}
+
+// SessionMetricsDetail is the full current metrics snapshot for one session
+// returned by GET /sessions/{sessionId}/metrics.
+type SessionMetricsDetail struct {
+	TotalInputTokens   int64     `json:"totalInputTokens"`
+	TotalOutputTokens  int64     `json:"totalOutputTokens"`
+	EstimatedCost      float64   `json:"estimatedCost,omitempty"`
+	Model              string    `json:"model,omitempty"`
+	ContextUtilization float64   `json:"contextUtilization,omitempty"`
+	RetryCount         int       `json:"retryCount"`
+	LastActivityAt     time.Time `json:"lastActivityAt,omitempty"`
+}
+
+// SessionMetricsPoint is one historical usage point from the append-only
+// session_metrics table, returned by GET /sessions/{sessionId}/metrics/history.
+type SessionMetricsPoint struct {
+	InputTokens  int64     `json:"inputTokens"`
+	OutputTokens int64     `json:"outputTokens"`
+	Cost         float64   `json:"cost,omitempty"`
+	RecordedAt   time.Time `json:"recordedAt"`
+}
+
+// GetSessionMetricsResponse is the body of GET /sessions/{sessionId}/metrics (200).
+type GetSessionMetricsResponse struct {
+	Metrics *SessionMetricsDetail `json:"metrics"`
+}
+
+// GetSessionMetricsHistoryResponse is the body of GET /sessions/{sessionId}/metrics/history (200).
+type GetSessionMetricsHistoryResponse struct {
+	Metrics []SessionMetricsPoint `json:"metrics"`
+}
+
+// GetSessionMetricsHistoryQuery is the query string accepted by GET /sessions/{sessionId}/metrics/history.
+type GetSessionMetricsHistoryQuery struct {
+	Since string `query:"since,omitempty" description:"RFC 3339 timestamp. Return points recorded on or after this time. When omitted, returns all available history."`
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 }

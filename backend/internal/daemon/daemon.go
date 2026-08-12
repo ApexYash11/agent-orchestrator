@@ -27,7 +27,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
 	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
+<<<<<<< HEAD
 	usagepipeline "github.com/aoagents/agent-orchestrator/backend/internal/observe/usage"
+=======
+	metricscollector "github.com/aoagents/agent-orchestrator/backend/internal/observe/metrics"
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/preview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/previewserver"
@@ -38,6 +42,7 @@ import (
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	devimportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/devimport"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
+	metricssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/metrics"
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
@@ -248,6 +253,7 @@ func Run() error {
 		}
 		return fmt.Errorf("wire session service: %w", err)
 	}
+<<<<<<< HEAD
 	sessMgr.SetTerminalInputGate(termMgr)
 	lifecycleMessenger.Bind(sessionLifecycleMessenger{sessMgr})
 	lcStack.LCM.SetCompletionTerminator(sessMgr)
@@ -256,6 +262,34 @@ func Run() error {
 	termMgr.SetSessionInputLease(sessMgr)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink})
 	if err := seedScratchProjectOnBoot(ctx, cfg, projectSvc); err != nil {
+=======
+	previewDone := preview.NewPoller(store, sessionSvc, "http://"+cfg.Addr(), preview.PollerConfig{Logger: log}).Start(ctx)
+
+	metricsSvc := metricssvc.NewService(store)
+	metricsResolved, metricsErr := buildAgentResolver(cfg.Agent, log)
+	if metricsErr != nil {
+		log.Warn("metrics collector: agent resolver unavailable, collector disabled", "err", metricsErr)
+	} else {
+		collector := metricscollector.NewCollector(store, metricsResolved, store, log, 60*time.Second)
+		collectorDone := collector.Start(ctx)
+		_ = collectorDone
+	}
+
+	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
+		Projects:           projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, Telemetry: telemetrySink}),
+		Sessions:           sessionSvc,
+		Metrics:            metricsSvc,
+		Reviews:            reviewSvc,
+		Notifications:      notifier,
+		NotificationStream: notificationHub,
+		Import:             importsvc.New(importsvc.Deps{Store: store}),
+		CDC:                store,
+		Events:             cdcPipe.Broadcaster,
+		Activity:           lcStack.LCM,
+		Telemetry:          telemetrySink,
+	})
+	if err != nil {
+>>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 		stop()
 		lcStack.Stop()
 		if cdcErr := cdcPipe.Stop(); cdcErr != nil {
