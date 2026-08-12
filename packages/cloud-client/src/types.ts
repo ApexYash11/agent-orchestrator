@@ -37,10 +37,6 @@ export type SessionMode = Schemas["SessionMode"];
 export type SessionActivityState = Schemas["SessionActivityState"];
 export type SessionStatus = Schemas["SessionStatus"];
 export type Turn = Schemas["Turn"];
-export type WorkerTurnLease = Schemas["WorkerTurnLease"];
-export type WorkerTurnResultStatus = Schemas["WorkerTurnResultStatus"];
-export type WorkerTurnResultInput = Schemas["WorkerTurnResultInput"];
-export type WorkerTurnCancellation = Schemas["WorkerTurnCancellation"];
 export type CreateSessionInput = Schemas["CreateSessionInput"];
 export type SessionPage = Schemas["SessionPage"];
 
@@ -99,8 +95,75 @@ export type RedactedProviderConnection =
   Schemas["RedactedProviderConnection"];
 export type PutAgentProviderConnectionInput =
   Schemas["PutAgentProviderConnectionInput"];
-export type WorkerAgentCredential = Schemas["WorkerAgentCredential"];
-export type SCMCheckoutGrant = Schemas["SCMCheckoutGrant"];
+
+export type WorkerBootstrapInput = Schemas["WorkerBootstrapInput"];
+export type WorkerLaunchContext = Schemas["WorkerLaunchContext"];
+export type WorkerBootstrapResponse = Schemas["WorkerBootstrapResponse"];
+export type WorkerHeartbeatInput = Schemas["WorkerHeartbeatInput"];
+export type WorkerHeartbeatResponse = Schemas["WorkerHeartbeatResponse"];
+export type WorkerReadyPayload = Schemas["WorkerReadyPayload"];
+export type WorkerOutputPayload = Schemas["WorkerOutputPayload"];
+export type WorkerReadyEventInput = Schemas["WorkerReadyEventInput"];
+export type WorkerOutputEventInput = Schemas["WorkerOutputEventInput"];
+export type WorkerEventInput = Schemas["WorkerEventInput"];
+export type WorkerOKResponse = Schemas["WorkerOKResponse"];
+export type WorkerTurn = Schemas["WorkerTurn"];
+export type WorkerClaimTurnResponse = Schemas["WorkerClaimTurnResponse"];
+export type WorkerCancellationResponse =
+  Schemas["WorkerCancellationResponse"];
+export type WorkerCompleteTurnInput = Schemas["WorkerCompleteTurnInput"];
+export type WorkerFailTurnInput = Schemas["WorkerFailTurnInput"];
+export type WorkerFinishTurnResponse = Schemas["WorkerFinishTurnResponse"];
+export type WorkerCredentialResponse = Schemas["WorkerCredentialResponse"];
+export type WorkerCheckoutGrantResponse =
+  Schemas["WorkerCheckoutGrantResponse"];
+export type CreateWorkerChildInput = Schemas["CreateWorkerChildInput"];
+export type SendMessageInput = Schemas["SendMessageInput"];
+export type WorkerWorkspaceListPayload =
+  Schemas["WorkerWorkspaceListPayload"];
+export type WorkerWorkspaceReadPayload =
+  Schemas["WorkerWorkspaceReadPayload"];
+export type WorkerWorkspaceWritePayload =
+  Schemas["WorkerWorkspaceWritePayload"];
+export type WorkerWorkspaceEntryPage =
+  Schemas["WorkerWorkspaceEntryPage"];
+export type WorkerTerminalOpenPayload =
+  Schemas["WorkerTerminalOpenPayload"];
+export type WorkerTerminalInputPayload =
+  Schemas["WorkerTerminalInputPayload"];
+export type WorkerTerminalClosePayload =
+  Schemas["WorkerTerminalClosePayload"];
+export type WorkerTerminalOpenResult =
+  Schemas["WorkerTerminalOpenResult"];
+export type WorkerTerminalInputResult =
+  Schemas["WorkerTerminalInputResult"];
+export type WorkerTerminalCloseResult =
+  Schemas["WorkerTerminalCloseResult"];
+export type WorkerWorkspaceListTransport =
+  Schemas["WorkerWorkspaceListTransport"];
+export type WorkerWorkspaceReadTransport =
+  Schemas["WorkerWorkspaceReadTransport"];
+export type WorkerWorkspaceWriteTransport =
+  Schemas["WorkerWorkspaceWriteTransport"];
+export type WorkerWorkspaceDiffTransport =
+  Schemas["WorkerWorkspaceDiffTransport"];
+export type WorkerTerminalOpenTransport =
+  Schemas["WorkerTerminalOpenTransport"];
+export type WorkerTerminalInputTransport =
+  Schemas["WorkerTerminalInputTransport"];
+export type WorkerTerminalCloseTransport =
+  Schemas["WorkerTerminalCloseTransport"];
+export type WorkerTransportRequest = Schemas["WorkerTransportRequest"];
+export type WorkerClaimTransportResponse =
+  Schemas["WorkerClaimTransportResponse"];
+export type WorkerTransportResult = Schemas["WorkerTransportResult"];
+export type WorkerCompleteTransportInput =
+  Schemas["WorkerCompleteTransportInput"];
+export type WorkerFailTransportInput = Schemas["WorkerFailTransportInput"];
+export type WorkerTerminalOutputInput =
+  Schemas["WorkerTerminalOutputInput"];
+export type WorkerTerminalOutputResponse =
+  Schemas["WorkerTerminalOutputResponse"];
 
 export interface PaginationOptions {
   cursor?: string;

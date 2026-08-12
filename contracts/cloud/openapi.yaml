@@ -4,9 +4,10 @@ info:
   version: 1.0.0
   description: |
     Client-facing contract for a separate AO Cloud implementation. This
-    repository does not serve these routes. The durable worker execution
-    surface is included; provisioning, bootstrap, heartbeat, and raw transport
-    protocols remain implementation-private.
+    repository does not serve these routes. The worker surface documents the
+    exact outbound HTTP protocol used by sandbox workers, including one-time
+    bootstrap, rotating credentials, fenced turn execution, orchestration, and
+    durable workspace and terminal transport.
 security:
   - bearerAuth: []
 tags:
@@ -21,7 +22,10 @@ tags:
   - name: Terminal
   - name: Workspace
   - name: Providers
+  - name: Worker Lifecycle
   - name: Worker Execution
+  - name: Worker Orchestration
+  - name: Worker Transport
 paths:
   /api/cloud/v1/me:
     get:
@@ -373,12 +377,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required: [turn]
-                properties:
-                  turn:
-                    $ref: "#/components/schemas/Turn"
+                $ref: "#/components/schemas/WorkerOKResponse"
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/chat-events:
@@ -468,6 +467,7 @@ paths:
             default: 0
         - name: kind
           in: query
+          required: true
           schema:
             $ref: "#/components/schemas/TerminalKind"
       responses:
@@ -616,60 +616,141 @@ paths:
           description: The coding-agent credential was disconnected.
         default:
           $ref: "#/components/responses/Error"
-  /api/cloud/v1/worker/turns/lease:
+  /api/cloud/v1/worker/bootstrap:
     post:
-      operationId: leaseWorkerTurn
-      tags: [Worker Execution]
-      security:
-        - workerAuth: []
-      parameters:
-        - name: waitSeconds
-          in: query
-          schema:
-            type: integer
-            minimum: 0
-            maximum: 30
-            default: 0
-      responses:
-        "200":
-          description: A fenced lease for the next queued turn owned by this worker's session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WorkerTurnLease"
-        "204":
-          description: No turn is currently available.
-        default:
-          $ref: "#/components/responses/Error"
-  /api/cloud/v1/worker/turns/{turnId}/result:
-    parameters:
-      - $ref: "#/components/parameters/TurnId"
-    post:
-      operationId: submitWorkerTurnResult
-      tags: [Worker Execution]
-      security:
-        - workerAuth: []
+      operationId: bootstrapWorker
+      tags: [Worker Lifecycle]
+      security: []
+      summary: Redeem a one-time bootstrap ticket.
+      description: |
+        The bootstrap token is consumed atomically and cannot be replayed. A
+        successful response assigns the worker epoch and returns the first
+        short-lived worker token. The token carries the ticket's scopes and
+        must never be logged or persisted.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/WorkerTurnResultInput"
+              $ref: "#/components/schemas/WorkerBootstrapInput"
       responses:
-        "202":
-          description: The fenced turn result was durably recorded.
+        "200":
+          description: Bootstrap succeeded and the one-time ticket was consumed.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required: [turn]
-                properties:
-                  turn:
-                    $ref: "#/components/schemas/Turn"
-        default:
+                $ref: "#/components/schemas/WorkerBootstrapResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: The bootstrap token is missing, invalid, expired, or already used.
           $ref: "#/components/responses/Error"
-  /api/cloud/v1/worker/turns/{turnId}/cancel:
+        "404":
+          description: Worker bootstrap is not enabled on this deployment.
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/heartbeat:
+    post:
+      operationId: heartbeatWorker
+      tags: [Worker Lifecycle]
+      security:
+        - workerAuth: []
+      description: |
+        Records worker liveness, promotes a bootstrapping sandbox to running,
+        and returns a newly issued token for the same worker identity, epoch,
+        and scopes. The prior token is not revoked by renewal and remains valid
+        until it expires unless the worker epoch is replaced.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerHeartbeatInput"
+      responses:
+        "200":
+          description: Liveness was recorded and a replacement token was issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerHeartbeatResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/WorkerRoutesDisabled"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/events:
+    post:
+      operationId: publishWorkerEvent
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Publishes one allowlisted event. `worker.ready` must identify the
+        authenticated worker and epoch. `chat.assistant_delta` is fenced by
+        both the token epoch and the claimed turn attempt.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerEventInput"
+      responses:
+        "202":
+          description: The event was durably accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: The turn has finished or another epoch or attempt owns it.
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/turns/claim:
+    post:
+      operationId: claimWorkerTurn
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Atomically claims the oldest queued turn for the authenticated worker's
+        session. Reclaiming work from an older worker epoch increments
+        `attempt`. No server lease identifier or expiry is returned. An empty
+        queue is represented by HTTP 200 with `turn: null`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmptyObject"
+      responses:
+        "200":
+          description: The claimed turn, or null when no turn is available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerClaimTurnResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/WorkerRoutesDisabled"
+  /api/cloud/v1/worker/turns/{turnId}/cancellation:
     parameters:
       - $ref: "#/components/parameters/TurnId"
     get:
@@ -677,52 +758,402 @@ paths:
       tags: [Worker Execution]
       security:
         - workerAuth: []
+      description: |
+        Returns cancellation intent only if the token epoch and supplied
+        positive attempt still own the active turn.
       parameters:
-        - name: leaseId
-          in: query
-          required: true
-          schema:
-            type: string
-            minLength: 1
+        - $ref: "#/components/parameters/WorkerTurnAttempt"
       responses:
         "200":
-          description: Current durable cancellation state for the leased turn.
+          description: Current cancellation state for this fenced attempt.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WorkerTurnCancellation"
-        default:
+                $ref: "#/components/schemas/WorkerCancellationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
           $ref: "#/components/responses/Error"
-  /api/cloud/v1/worker/credentials/agent:
-    get:
-      operationId: getWorkerAgentCredential
-      tags: [Worker Execution]
-      security:
-        - workerAuth: []
-      responses:
-        "200":
-          description: The session-scoped coding-agent credential.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WorkerAgentCredential"
-        default:
+        "409":
+          description: The turn has finished or another epoch or attempt owns it.
           $ref: "#/components/responses/Error"
-  /api/cloud/v1/worker/scm/checkout-grant:
+  /api/cloud/v1/worker/turns/{turnId}/complete:
+    parameters:
+      - $ref: "#/components/parameters/TurnId"
     post:
-      operationId: createWorkerSCMCheckoutGrant
+      operationId: completeWorkerTurn
       tags: [Worker Execution]
       security:
         - workerAuth: []
+      description: |
+        Completes the exact claimed attempt. `cancelled: true` records an
+        interrupted completion. Repeating the same callback after that attempt
+        has finished succeeds with `alreadyFinished: true`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerCompleteTurnInput"
+      responses:
+        "200":
+          description: The fenced completion was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerFinishTurnResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: Another epoch or attempt owns the turn.
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/turns/{turnId}/fail:
+    parameters:
+      - $ref: "#/components/parameters/TurnId"
+    post:
+      operationId: failWorkerTurn
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Fails the exact claimed attempt with a non-empty error message. A
+        repeated callback for the same finished attempt is idempotent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerFailTurnInput"
+      responses:
+        "200":
+          description: The fenced failure was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerFinishTurnResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: Another epoch or attempt owns the turn.
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/credential:
+    get:
+      operationId: getWorkerCredential
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Returns the valid default coding-agent credential selected by the
+        session harness. The secret must never be logged or persisted.
+      responses:
+        "200":
+          description: The decrypted session-scoped coding-agent credential.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerCredentialResponse"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/checkout-grant:
+    post:
+      operationId: createWorkerCheckoutGrant
+      tags: [Worker Execution]
+      security:
+        - workerAuth: []
+      description: |
+        Brokers a fresh repository-scoped GitHub installation token. Repository
+        identity is derived from the worker session and cannot be supplied by
+        the sandbox. The token must never be logged or persisted.
+      responses:
+        "200":
+          description: A short-lived checkout grant.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerCheckoutGrantResponse"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/WorkerRoutesDisabled"
+        "502":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/children:
+    get:
+      operationId: listWorkerChildren
+      tags: [Worker Orchestration]
+      security:
+        - workerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of direct child sessions owned by this orchestrator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createWorkerChild
+      tags: [Worker Orchestration]
+      security:
+        - workerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkerChildInput"
       responses:
         "201":
-          description: A short-lived grant for cloning and pushing the session repository.
+          description: A worker child was created under this orchestrator.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SCMCheckoutGrant"
-        default:
+                type: object
+                additionalProperties: false
+                required: [session]
+                properties:
+                  session:
+                    $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
           $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/children/{sessionId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: sendWorkerChildMessage
+      tags: [Worker Orchestration]
+      security:
+        - workerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageInput"
+      responses:
+        "202":
+          description: The message was durably appended to the direct child.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [event]
+                properties:
+                  event:
+                    $ref: "#/components/schemas/UserMessageEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/transport/claim:
+    post:
+      operationId: claimWorkerTransport
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: |
+        Claims the next durable workspace or terminal command for the token's
+        session and epoch. The internal claim lasts 10 seconds and may be
+        reclaimed up to three times, but neither lease expiry nor claim attempt
+        is exposed on the wire. No work is represented by HTTP 200 with
+        `request: null`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmptyObject"
+      responses:
+        "200":
+          description: The claimed command, or null when none is available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerClaimTransportResponse"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "404":
+          $ref: "#/components/responses/WorkerRoutesDisabled"
+  /api/cloud/v1/worker/transport/{requestId}/complete:
+    parameters:
+      - $ref: "#/components/parameters/WorkerRequestId"
+    post:
+      operationId: completeWorkerTransport
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: |
+        Completes a claimed durable command. The worker token epoch, request
+        status, and request expiry are checked. The claim attempt is not sent
+        or checked.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerCompleteTransportInput"
+      responses:
+        "200":
+          description: The command result was durably recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          description: The command is no longer claimed or has expired.
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/worker/transport/{requestId}/fail:
+    parameters:
+      - $ref: "#/components/parameters/WorkerRequestId"
+    post:
+      operationId: failWorkerTransport
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: |
+        Records a bounded machine-readable error for a claimed command. The
+        token epoch, request status, and expiry are checked; claim attempt is
+        not part of the wire fence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerFailTransportInput"
+      responses:
+        "200":
+          description: The command failure was durably recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          description: The command is no longer claimed or has expired.
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/cloud/v1/worker/terminals/{terminalId}/output:
+    parameters:
+      - $ref: "#/components/parameters/TerminalId"
+    post:
+      operationId: publishWorkerTerminalOutput
+      tags: [Worker Transport]
+      security:
+        - workerAuth: []
+      description: |
+        Appends one base64-encoded output frame to a live workspace terminal.
+        The terminal and worker token must have the same current epoch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerTerminalOutputInput"
+      responses:
+        "202":
+          description: The output frame was appended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerTerminalOutputResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/WorkerUnauthorized"
+        "403":
+          $ref: "#/components/responses/WorkerScopeRequired"
+        "409":
+          description: The terminal is closed, expired, over quota, or no longer current.
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 components:
   securitySchemes:
     bearerAuth:
@@ -733,7 +1164,18 @@ components:
       type: apiKey
       in: header
       name: Authorization
-      description: Session-scoped worker credential formatted as `Worker <token>`.
+      description: |
+        Session-scoped credential formatted as `Worker <token>`. Every
+        authenticated route verifies both the token signature and that its
+        worker ID and epoch are still current. Replacing a sandbox therefore
+        fences an otherwise unexpired token with `STALE_WORKER_TOKEN`.
+
+        Route scopes are `worker:connect` for heartbeat, `worker:event` for
+        events, `worker:turn:claim`, `worker:turn:poll`, and
+        `worker:turn:complete` for turn execution,
+        `worker:credential:read` for the agent secret, `worker:git` for a
+        checkout grant, `worker:orchestrate` for child controls, and
+        `worker:transport` for workspace and terminal transport.
   parameters:
     OrgId:
       name: orgId
@@ -756,6 +1198,31 @@ components:
       schema:
         type: string
         format: uuid
+    WorkerRequestId:
+      name: requestId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TerminalId:
+      name: terminalId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    WorkerTurnAttempt:
+      name: attempt
+      in: query
+      required: true
+      description: |
+        Positive claim attempt returned with the turn. Together with the epoch
+        in the worker token, this fences cancellation checks, output, and the
+        terminal turn callback.
+      schema:
+        type: integer
+        minimum: 1
     InstallationId:
       name: installationId
       in: path
@@ -812,7 +1279,42 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
+    BadRequest:
+      description: The JSON body, path value, query value, or required header is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ValidationError:
+      description: The request is syntactically valid but violates a resource constraint.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    WorkerUnauthorized:
+      description: |
+        The `Worker` credential is absent, invalid, expired, or belongs to a
+        worker epoch that has been replaced.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    WorkerScopeRequired:
+      description: The worker token does not contain the scope required by this operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    WorkerRoutesDisabled:
+      description: Worker routes are not enabled on this deployment.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    EmptyObject:
+      type: object
+      additionalProperties: false
     AuthProvider:
       type: string
       enum: [workos, local]
@@ -1189,65 +1691,553 @@ components:
         updatedAt:
           type: string
           format: date-time
-    WorkerTurnLease:
+    WorkerBootstrapInput:
       type: object
       additionalProperties: false
-      required: [leaseId, expiresAt, turn, input, mode, deniedCommands]
+      required: [bootstrapToken]
       properties:
-        leaseId:
+        bootstrapToken:
           type: string
           minLength: 1
-          description: Opaque fencing token that must accompany result and cancellation checks.
-        expiresAt:
+          writeOnly: true
+          description: One-time bootstrap ticket. Never log or persist this value.
+        version:
           type: string
-          format: date-time
-        turn:
-          $ref: "#/components/schemas/Turn"
-        input:
-          $ref: "#/components/schemas/UserMessageEvent"
+        capabilities:
+          type: array
+          items:
+            type: string
+    WorkerLaunchContext:
+      type: object
+      additionalProperties: false
+      required:
+        - sessionId
+        - projectId
+        - kind
+        - harness
+        - displayName
+        - branch
+        - repositoryUrl
+        - defaultBranch
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/SessionKind"
+        harness:
+          type: string
+        displayName:
+          type: string
+        branch:
+          type: string
+        repositoryUrl:
+          type: string
+          format: uri
+        defaultBranch:
+          type: string
+    WorkerBootstrapResponse:
+      type: object
+      additionalProperties: false
+      required: [workerToken, workerId, epoch, expiresIn, sessionId, launch]
+      properties:
+        workerToken:
+          type: string
+          format: password
+          minLength: 1
+          readOnly: true
+          description: Short-lived worker token. Never log or persist this value.
+        workerId:
+          type: string
+        epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        expiresIn:
+          type: integer
+          minimum: 1
+          description: Worker token lifetime in seconds.
+        sessionId:
+          type: string
+          format: uuid
+        launch:
+          $ref: "#/components/schemas/WorkerLaunchContext"
+    WorkerHeartbeatInput:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+    WorkerHeartbeatResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, workerToken, expiresIn]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        workerToken:
+          type: string
+          format: password
+          minLength: 1
+          readOnly: true
+          description: Newly issued worker token. Never log or persist this value.
+        expiresIn:
+          type: integer
+          minimum: 1
+          description: New worker token lifetime in seconds.
+    WorkerReadyPayload:
+      type: object
+      additionalProperties: false
+      required: [workerId, epoch, version, capabilities]
+      properties:
+        workerId:
+          type: string
+        epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        version:
+          type: string
+          minLength: 1
+          maxLength: 100
+        capabilities:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+    WorkerOutputPayload:
+      type: object
+      additionalProperties: false
+      required: [turnId, attempt, stream, text]
+      properties:
+        turnId:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+        stream:
+          type: string
+          enum: [stdout, stderr]
+        text:
+          type: string
+          minLength: 1
+          description: Assistant output frame, limited by the server to 16 KiB.
+    WorkerReadyEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, payload]
+      properties:
+        type:
+          type: string
+          const: worker.ready
+        payload:
+          $ref: "#/components/schemas/WorkerReadyPayload"
+    WorkerOutputEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, payload]
+      properties:
+        type:
+          type: string
+          const: chat.assistant_delta
+        payload:
+          $ref: "#/components/schemas/WorkerOutputPayload"
+    WorkerEventInput:
+      oneOf:
+        - $ref: "#/components/schemas/WorkerReadyEventInput"
+        - $ref: "#/components/schemas/WorkerOutputEventInput"
+      discriminator:
+        propertyName: type
+        mapping:
+          worker.ready: "#/components/schemas/WorkerReadyEventInput"
+          chat.assistant_delta: "#/components/schemas/WorkerOutputEventInput"
+    WorkerOKResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+    WorkerTurn:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - prompt
+        - mode
+        - deniedCommands
+        - harness
+        - attempt
+        - cancelRequested
+      properties:
+        id:
+          type: string
+          format: uuid
+        prompt:
+          type: string
         mode:
           $ref: "#/components/schemas/SessionMode"
         deniedCommands:
           type: array
           items:
             type: string
-        model:
+        harness:
           type: string
-        nativeSessionId:
-          type: string
-          description: Provider-native conversation identity to resume when present.
-    WorkerTurnResultStatus:
-      type: string
-      enum: [completed, failed, interrupted]
-    WorkerTurnResultInput:
-      type: object
-      additionalProperties: false
-      required: [leaseId, status]
-      properties:
-        leaseId:
-          type: string
-          minLength: 1
-        status:
-          $ref: "#/components/schemas/WorkerTurnResultStatus"
-        nativeSessionId:
-          type: string
-          description: Provider-native conversation identity observed during this attempt.
-        error:
-          type: string
-          maxLength: 65536
-    WorkerTurnCancellation:
-      type: object
-      additionalProperties: false
-      required: [turnId, cancelRequested]
-      properties:
-        turnId:
-          type: string
-          format: uuid
+        attempt:
+          type: integer
+          minimum: 1
+          description: Claim attempt used with the token epoch as the turn fence.
         cancelRequested:
           type: boolean
-        requestedAt:
+        agentSessionId:
           type: string
-          format: date-time
+          description: Provider-native conversation identity to resume when present.
+    WorkerClaimTurnResponse:
+      type: object
+      additionalProperties: false
+      required: [turn]
+      properties:
+        turn:
+          oneOf:
+            - $ref: "#/components/schemas/WorkerTurn"
+            - type: "null"
+    WorkerCancellationResponse:
+      type: object
+      additionalProperties: false
+      required: [requested]
+      properties:
+        requested:
+          type: boolean
+    WorkerCompleteTurnInput:
+      type: object
+      additionalProperties: false
+      required: [attempt]
+      properties:
+        attempt:
+          type: integer
+          minimum: 1
+        cancelled:
+          type: boolean
+    WorkerFailTurnInput:
+      type: object
+      additionalProperties: false
+      required: [attempt, error]
+      properties:
+        attempt:
+          type: integer
+          minimum: 1
+        error:
+          type: string
+          minLength: 1
+          description: Failure message, limited by the server to 4 KiB.
+    WorkerFinishTurnResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, alreadyFinished]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        alreadyFinished:
+          type: boolean
+    CreateWorkerChildInput:
+      type: object
+      additionalProperties: false
+      required: [harness, displayName]
+      properties:
+        harness:
+          type: string
+          minLength: 1
+          maxLength: 120
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        prompt:
+          type: string
+          maxLength: 65536
+        mode:
+          $ref: "#/components/schemas/SessionMode"
+        deniedCommands:
+          type: array
+          maxItems: 128
+          items:
+            type: string
+            minLength: 1
+            maxLength: 512
+        sandboxProviderConnectionId:
+          type: string
+          format: uuid
+    SendMessageInput:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 65536
+    WorkerWorkspaceListPayload:
+      type: object
+      additionalProperties: false
+      required: [path, limit]
+      properties:
+        path:
+          type: string
+          maxLength: 4096
+        cursor:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+    WorkerWorkspaceReadPayload:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    WorkerWorkspaceWritePayload:
+      $ref: "#/components/schemas/WorkspaceFileWriteInput"
+    WorkerWorkspaceEntryPage:
+      type: object
+      additionalProperties: false
+      required: [path, items, hasMore]
+      properties:
+        path:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceEntry"
+        hasMore:
+          type: boolean
+        nextCursor:
+          type: string
+    WorkerTerminalOpenPayload:
+      type: object
+      additionalProperties: false
+      required: [terminalId, kind]
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/TerminalKind"
+    WorkerTerminalInputPayload:
+      type: object
+      additionalProperties: false
+      required: [terminalId, data]
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+        data:
+          type: string
+          contentEncoding: base64
+          minLength: 1
+          description: Base64-encoded terminal input, at most 16 KiB after decoding.
+    WorkerTerminalClosePayload:
+      type: object
+      additionalProperties: false
+      required: [terminalId]
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+    WorkerTerminalOpenResult:
+      type: object
+      additionalProperties: false
+      required: [open]
+      properties:
+        open:
+          type: boolean
+    WorkerTerminalInputResult:
+      type: object
+      additionalProperties: false
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+    WorkerTerminalCloseResult:
+      type: object
+      additionalProperties: false
+      required: [closed]
+      properties:
+        closed:
+          type: boolean
+    WorkerWorkspaceListTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          const: workspace.list
+        payload:
+          $ref: "#/components/schemas/WorkerWorkspaceListPayload"
+    WorkerWorkspaceReadTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          const: workspace.read
+        payload:
+          $ref: "#/components/schemas/WorkerWorkspaceReadPayload"
+    WorkerWorkspaceWriteTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          const: workspace.write
+        payload:
+          $ref: "#/components/schemas/WorkerWorkspaceWritePayload"
+    WorkerWorkspaceDiffTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          const: workspace.diff
+        payload:
+          $ref: "#/components/schemas/EmptyObject"
+    WorkerTerminalOpenTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          const: terminal.open
+        payload:
+          $ref: "#/components/schemas/WorkerTerminalOpenPayload"
+    WorkerTerminalInputTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          const: terminal.input
+        payload:
+          $ref: "#/components/schemas/WorkerTerminalInputPayload"
+    WorkerTerminalCloseTransport:
+      type: object
+      additionalProperties: false
+      required: [id, kind, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          const: terminal.close
+        payload:
+          $ref: "#/components/schemas/WorkerTerminalClosePayload"
+    WorkerTransportRequest:
+      oneOf:
+        - $ref: "#/components/schemas/WorkerWorkspaceListTransport"
+        - $ref: "#/components/schemas/WorkerWorkspaceReadTransport"
+        - $ref: "#/components/schemas/WorkerWorkspaceWriteTransport"
+        - $ref: "#/components/schemas/WorkerWorkspaceDiffTransport"
+        - $ref: "#/components/schemas/WorkerTerminalOpenTransport"
+        - $ref: "#/components/schemas/WorkerTerminalInputTransport"
+        - $ref: "#/components/schemas/WorkerTerminalCloseTransport"
+      discriminator:
+        propertyName: kind
+    WorkerClaimTransportResponse:
+      type: object
+      additionalProperties: false
+      required: [request]
+      properties:
+        request:
+          oneOf:
+            - $ref: "#/components/schemas/WorkerTransportRequest"
+            - type: "null"
+    WorkerTransportResult:
+      type: object
+      additionalProperties: true
+      description: |
+        The server accepts any non-null JSON object. Built-in workers return a
+        WorkerWorkspaceEntryPage, WorkspaceFile, WorkspaceDiff,
+        WorkerTerminalOpenResult, WorkerTerminalInputResult, or
+        WorkerTerminalCloseResult appropriate to the claimed command.
+    WorkerCompleteTransportInput:
+      type: object
+      additionalProperties: false
+      required: [response]
+      properties:
+        response:
+          $ref: "#/components/schemas/WorkerTransportResult"
+    WorkerFailTransportInput:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 100
+        message:
+          type: string
+          minLength: 1
+          description: Worker-safe failure message, limited by the server to 4 KiB.
+    WorkerTerminalOutputInput:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: string
+          contentEncoding: base64
+          minLength: 1
+          description: Base64-encoded output frame, at most 16 KiB after decoding.
+    WorkerTerminalOutputResponse:
+      type: object
+      additionalProperties: false
+      required: [sequence]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
     Session:
       type: object
       additionalProperties: false
@@ -1720,12 +2710,7 @@ components:
         type:
           const: chat.assistant_delta
         payload:
-          type: object
-          additionalProperties: false
-          required: [text]
-          properties:
-            text:
-              type: string
+          $ref: "#/components/schemas/WorkerOutputPayload"
         createdAt:
           type: string
           format: date-time
@@ -1745,11 +2730,18 @@ components:
         payload:
           type: object
           additionalProperties: false
+          required: [turnId, attempt, workerEpoch]
           properties:
-            requestSequence:
+            turnId:
+              type: string
+              format: uuid
+            attempt:
+              type: integer
+              minimum: 1
+            workerEpoch:
               type: integer
               format: int64
-              maximum: 9007199254740991
+              minimum: 1
         createdAt:
           type: string
           format: date-time
@@ -1769,15 +2761,14 @@ components:
         payload:
           type: object
           additionalProperties: false
+          required: [turnId, attempt]
           properties:
-            requestSequence:
-              type: integer
-              format: int64
-              maximum: 9007199254740991
-            isError:
-              type: boolean
-            error:
+            turnId:
               type: string
+              format: uuid
+            attempt:
+              type: integer
+              minimum: 1
         createdAt:
           type: string
           format: date-time
@@ -1797,12 +2788,14 @@ components:
         payload:
           type: object
           additionalProperties: false
-          required: [requestSequence]
+          required: [turnId, attempt]
           properties:
-            requestSequence:
+            turnId:
+              type: string
+              format: uuid
+            attempt:
               type: integer
-              format: int64
-              maximum: 9007199254740991
+              minimum: 1
         createdAt:
           type: string
           format: date-time
@@ -1822,11 +2815,14 @@ components:
         payload:
           type: object
           additionalProperties: false
+          required: [turnId, attempt, error]
           properties:
-            requestSequence:
+            turnId:
+              type: string
+              format: uuid
+            attempt:
               type: integer
-              format: int64
-              maximum: 9007199254740991
+              minimum: 1
             error:
               type: string
         createdAt:
@@ -1848,9 +2844,11 @@ components:
         payload:
           type: object
           additionalProperties: false
+          required: [turnId]
           properties:
-            source:
+            turnId:
               type: string
+              format: uuid
         createdAt:
           type: string
           format: date-time
@@ -1882,10 +2880,10 @@ components:
           description: Highest sequence returned, or the supplied after cursor when the page is empty.
     TerminalKind:
       type: string
-      enum: [agent, workspace]
+      enum: [workspace]
     TerminalScope:
       type: string
-      enum: [terminal:read, terminal:operate, terminal:dangerous-input-block]
+      enum: [terminal:read, terminal:operate]
     TerminalTicket:
       type: object
       additionalProperties: false
@@ -2046,7 +3044,7 @@ components:
           minLength: 1
           maxLength: 65536
           writeOnly: true
-    WorkerAgentCredential:
+    WorkerCredentialResponse:
       type: object
       additionalProperties: false
       required: [provider, credentialType, secret]
@@ -2060,28 +3058,23 @@ components:
         secret:
           type: string
           minLength: 1
+          format: password
           readOnly: true
-        expiresAt:
-          type: string
-          format: date-time
-    SCMCheckoutGrant:
+          description: Decrypted coding-agent secret. Never log or persist this value.
+    WorkerCheckoutGrantResponse:
       type: object
       additionalProperties: false
-      required: [provider, repositoryUrl, username, password, expiresAt]
+      required: [cloneUrl, token, expiresAt]
       properties:
-        provider:
-          type: string
-          enum: [github]
-        repositoryUrl:
+        cloneUrl:
           type: string
           format: uri
-        username:
+        token:
           type: string
           minLength: 1
-        password:
-          type: string
-          minLength: 1
+          format: password
           readOnly: true
+          description: Repository-scoped GitHub installation token. Never log or persist this value.
         expiresAt:
           type: string
           format: date-time

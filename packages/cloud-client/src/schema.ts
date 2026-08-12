@@ -448,7 +448,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cloud/v1/worker/turns/lease": {
+    "/api/cloud/v1/worker/bootstrap": {
         parameters: {
             query?: never;
             header?: never;
@@ -457,32 +457,84 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["leaseWorkerTurn"];
+        /**
+         * Redeem a one-time bootstrap ticket.
+         * @description The bootstrap token is consumed atomically and cannot be replayed. A
+         *     successful response assigns the worker epoch and returns the first
+         *     short-lived worker token. The token carries the ticket's scopes and
+         *     must never be logged or persisted.
+         *
+         */
+        post: operations["bootstrapWorker"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/cloud/v1/worker/turns/{turnId}/result": {
+    "/api/cloud/v1/worker/heartbeat": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                turnId: components["parameters"]["TurnId"];
-            };
+            path?: never;
             cookie?: never;
         };
         get?: never;
         put?: never;
-        post: operations["submitWorkerTurnResult"];
+        /** @description Records worker liveness, promotes a bootstrapping sandbox to running,
+         *     and returns a newly issued token for the same worker identity, epoch,
+         *     and scopes. The prior token is not revoked by renewal and remains valid
+         *     until it expires unless the worker epoch is replaced.
+         *      */
+        post: operations["heartbeatWorker"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/cloud/v1/worker/turns/{turnId}/cancel": {
+    "/api/cloud/v1/worker/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Publishes one allowlisted event. `worker.ready` must identify the
+         *     authenticated worker and epoch. `chat.assistant_delta` is fenced by
+         *     both the token epoch and the claimed turn attempt.
+         *      */
+        post: operations["publishWorkerEvent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/turns/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Atomically claims the oldest queued turn for the authenticated worker's
+         *     session. Reclaiming work from an older worker epoch increments
+         *     `attempt`. No server lease identifier or expiry is returned. An empty
+         *     queue is represented by HTTP 200 with `turn: null`.
+         *      */
+        post: operations["claimWorkerTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/turns/{turnId}/cancellation": {
         parameters: {
             query?: never;
             header?: never;
@@ -491,6 +543,9 @@ export interface paths {
             };
             cookie?: never;
         };
+        /** @description Returns cancellation intent only if the token epoch and supplied
+         *     positive attempt still own the active turn.
+         *      */
         get: operations["getWorkerTurnCancellation"];
         put?: never;
         post?: never;
@@ -500,14 +555,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cloud/v1/worker/credentials/agent": {
+    "/api/cloud/v1/worker/turns/{turnId}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Completes the exact claimed attempt. `cancelled: true` records an
+         *     interrupted completion. Repeating the same callback after that attempt
+         *     has finished succeeds with `alreadyFinished: true`.
+         *      */
+        post: operations["completeWorkerTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/turns/{turnId}/fail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Fails the exact claimed attempt with a non-empty error message. A
+         *     repeated callback for the same finished attempt is idempotent.
+         *      */
+        post: operations["failWorkerTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/credential": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getWorkerAgentCredential"];
+        /** @description Returns the valid default coding-agent credential selected by the
+         *     session harness. The secret must never be logged or persisted.
+         *      */
+        get: operations["getWorkerCredential"];
         put?: never;
         post?: never;
         delete?: never;
@@ -516,7 +617,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cloud/v1/worker/scm/checkout-grant": {
+    "/api/cloud/v1/worker/checkout-grant": {
         parameters: {
             query?: never;
             header?: never;
@@ -525,7 +626,132 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["createWorkerSCMCheckoutGrant"];
+        /** @description Brokers a fresh repository-scoped GitHub installation token. Repository
+         *     identity is derived from the worker session and cannot be supplied by
+         *     the sandbox. The token must never be logged or persisted.
+         *      */
+        post: operations["createWorkerCheckoutGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/children": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listWorkerChildren"];
+        put?: never;
+        post: operations["createWorkerChild"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/children/{sessionId}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["sendWorkerChildMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/transport/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Claims the next durable workspace or terminal command for the token's
+         *     session and epoch. The internal claim lasts 10 seconds and may be
+         *     reclaimed up to three times, but neither lease expiry nor claim attempt
+         *     is exposed on the wire. No work is represented by HTTP 200 with
+         *     `request: null`.
+         *      */
+        post: operations["claimWorkerTransport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/transport/{requestId}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                requestId: components["parameters"]["WorkerRequestId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Completes a claimed durable command. The worker token epoch, request
+         *     status, and request expiry are checked. The claim attempt is not sent
+         *     or checked.
+         *      */
+        post: operations["completeWorkerTransport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/transport/{requestId}/fail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                requestId: components["parameters"]["WorkerRequestId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Records a bounded machine-readable error for a claimed command. The
+         *     token epoch, request status, and expiry are checked; claim attempt is
+         *     not part of the wire fence.
+         *      */
+        post: operations["failWorkerTransport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/worker/terminals/{terminalId}/output": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                terminalId: components["parameters"]["TerminalId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Appends one base64-encoded output frame to a live workspace terminal.
+         *     The terminal and worker token must have the same current epoch.
+         *      */
+        post: operations["publishWorkerTerminalOutput"];
         delete?: never;
         options?: never;
         head?: never;
@@ -536,6 +762,7 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        EmptyObject: Record<string, never>;
         /** @enum {string} */
         AuthProvider: "workos" | "local";
         /** @enum {string} */
@@ -713,34 +940,273 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
-        WorkerTurnLease: {
-            /** @description Opaque fencing token that must accompany result and cancellation checks. */
-            leaseId: string;
-            /** Format: date-time */
-            expiresAt: string;
-            turn: components["schemas"]["Turn"];
-            input: components["schemas"]["UserMessageEvent"];
-            mode: components["schemas"]["SessionMode"];
-            deniedCommands: string[];
-            model?: string;
-            /** @description Provider-native conversation identity to resume when present. */
-            nativeSessionId?: string;
+        WorkerBootstrapInput: {
+            /** @description One-time bootstrap ticket. Never log or persist this value. */
+            bootstrapToken: string;
+            version?: string;
+            capabilities?: string[];
         };
-        /** @enum {string} */
-        WorkerTurnResultStatus: "completed" | "failed" | "interrupted";
-        WorkerTurnResultInput: {
-            leaseId: string;
-            status: components["schemas"]["WorkerTurnResultStatus"];
-            /** @description Provider-native conversation identity observed during this attempt. */
-            nativeSessionId?: string;
-            error?: string;
+        WorkerLaunchContext: {
+            /** Format: uuid */
+            sessionId: string;
+            /** Format: uuid */
+            projectId: string;
+            kind: components["schemas"]["SessionKind"];
+            harness: string;
+            displayName: string;
+            branch: string;
+            /** Format: uri */
+            repositoryUrl: string;
+            defaultBranch: string;
         };
-        WorkerTurnCancellation: {
+        WorkerBootstrapResponse: {
+            /**
+             * Format: password
+             * @description Short-lived worker token. Never log or persist this value.
+             */
+            readonly workerToken: string;
+            workerId: string;
+            /** Format: int64 */
+            epoch: number;
+            /** @description Worker token lifetime in seconds. */
+            expiresIn: number;
+            /** Format: uuid */
+            sessionId: string;
+            launch: components["schemas"]["WorkerLaunchContext"];
+        };
+        WorkerHeartbeatInput: {
+            version?: string;
+            capabilities?: string[];
+        };
+        WorkerHeartbeatResponse: {
+            /** @constant */
+            ok: true;
+            /**
+             * Format: password
+             * @description Newly issued worker token. Never log or persist this value.
+             */
+            readonly workerToken: string;
+            /** @description New worker token lifetime in seconds. */
+            expiresIn: number;
+        };
+        WorkerReadyPayload: {
+            workerId: string;
+            /** Format: int64 */
+            epoch: number;
+            version: string;
+            capabilities: string[];
+        };
+        WorkerOutputPayload: {
             /** Format: uuid */
             turnId: string;
+            attempt: number;
+            /** @enum {string} */
+            stream: "stdout" | "stderr";
+            /** @description Assistant output frame, limited by the server to 16 KiB. */
+            text: string;
+        };
+        WorkerReadyEventInput: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "worker.ready";
+            payload: components["schemas"]["WorkerReadyPayload"];
+        };
+        WorkerOutputEventInput: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "chat.assistant_delta";
+            payload: components["schemas"]["WorkerOutputPayload"];
+        };
+        WorkerEventInput: components["schemas"]["WorkerReadyEventInput"] | components["schemas"]["WorkerOutputEventInput"];
+        WorkerOKResponse: {
+            /** @constant */
+            ok: true;
+        };
+        WorkerTurn: {
+            /** Format: uuid */
+            id: string;
+            prompt: string;
+            mode: components["schemas"]["SessionMode"];
+            deniedCommands: string[];
+            harness: string;
+            /** @description Claim attempt used with the token epoch as the turn fence. */
+            attempt: number;
             cancelRequested: boolean;
-            /** Format: date-time */
-            requestedAt?: string;
+            /** @description Provider-native conversation identity to resume when present. */
+            agentSessionId?: string;
+        };
+        WorkerClaimTurnResponse: {
+            turn: components["schemas"]["WorkerTurn"] | null;
+        };
+        WorkerCancellationResponse: {
+            requested: boolean;
+        };
+        WorkerCompleteTurnInput: {
+            attempt: number;
+            cancelled?: boolean;
+        };
+        WorkerFailTurnInput: {
+            attempt: number;
+            /** @description Failure message, limited by the server to 4 KiB. */
+            error: string;
+        };
+        WorkerFinishTurnResponse: {
+            /** @constant */
+            ok: true;
+            alreadyFinished: boolean;
+        };
+        CreateWorkerChildInput: {
+            harness: string;
+            displayName: string;
+            prompt?: string;
+            mode?: components["schemas"]["SessionMode"];
+            deniedCommands?: string[];
+            /** Format: uuid */
+            sandboxProviderConnectionId?: string;
+        };
+        SendMessageInput: {
+            text: string;
+        };
+        WorkerWorkspaceListPayload: {
+            path: string;
+            cursor?: string;
+            limit: number;
+        };
+        WorkerWorkspaceReadPayload: {
+            path: string;
+        };
+        WorkerWorkspaceWritePayload: components["schemas"]["WorkspaceFileWriteInput"];
+        WorkerWorkspaceEntryPage: {
+            path: string;
+            items: components["schemas"]["WorkspaceEntry"][];
+            hasMore: boolean;
+            nextCursor?: string;
+        };
+        WorkerTerminalOpenPayload: {
+            /** Format: uuid */
+            terminalId: string;
+            kind: components["schemas"]["TerminalKind"];
+        };
+        WorkerTerminalInputPayload: {
+            /** Format: uuid */
+            terminalId: string;
+            /** @description Base64-encoded terminal input, at most 16 KiB after decoding. */
+            data: string;
+        };
+        WorkerTerminalClosePayload: {
+            /** Format: uuid */
+            terminalId: string;
+        };
+        WorkerTerminalOpenResult: {
+            open: boolean;
+        };
+        WorkerTerminalInputResult: {
+            accepted: boolean;
+        };
+        WorkerTerminalCloseResult: {
+            closed: boolean;
+        };
+        WorkerWorkspaceListTransport: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "WorkerWorkspaceListTransport";
+            payload: components["schemas"]["WorkerWorkspaceListPayload"];
+        };
+        WorkerWorkspaceReadTransport: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "WorkerWorkspaceReadTransport";
+            payload: components["schemas"]["WorkerWorkspaceReadPayload"];
+        };
+        WorkerWorkspaceWriteTransport: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "WorkerWorkspaceWriteTransport";
+            payload: components["schemas"]["WorkerWorkspaceWritePayload"];
+        };
+        WorkerWorkspaceDiffTransport: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "WorkerWorkspaceDiffTransport";
+            payload: components["schemas"]["EmptyObject"];
+        };
+        WorkerTerminalOpenTransport: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "WorkerTerminalOpenTransport";
+            payload: components["schemas"]["WorkerTerminalOpenPayload"];
+        };
+        WorkerTerminalInputTransport: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "WorkerTerminalInputTransport";
+            payload: components["schemas"]["WorkerTerminalInputPayload"];
+        };
+        WorkerTerminalCloseTransport: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "WorkerTerminalCloseTransport";
+            payload: components["schemas"]["WorkerTerminalClosePayload"];
+        };
+        WorkerTransportRequest: components["schemas"]["WorkerWorkspaceListTransport"] | components["schemas"]["WorkerWorkspaceReadTransport"] | components["schemas"]["WorkerWorkspaceWriteTransport"] | components["schemas"]["WorkerWorkspaceDiffTransport"] | components["schemas"]["WorkerTerminalOpenTransport"] | components["schemas"]["WorkerTerminalInputTransport"] | components["schemas"]["WorkerTerminalCloseTransport"];
+        WorkerClaimTransportResponse: {
+            request: components["schemas"]["WorkerTransportRequest"] | null;
+        };
+        /** @description The server accepts any non-null JSON object. Built-in workers return a
+         *     WorkerWorkspaceEntryPage, WorkspaceFile, WorkspaceDiff,
+         *     WorkerTerminalOpenResult, WorkerTerminalInputResult, or
+         *     WorkerTerminalCloseResult appropriate to the claimed command.
+         *      */
+        WorkerTransportResult: {
+            [key: string]: unknown;
+        };
+        WorkerCompleteTransportInput: {
+            response: components["schemas"]["WorkerTransportResult"];
+        };
+        WorkerFailTransportInput: {
+            code: string;
+            /** @description Worker-safe failure message, limited by the server to 4 KiB. */
+            message: string;
+        };
+        WorkerTerminalOutputInput: {
+            /** @description Base64-encoded output frame, at most 16 KiB after decoding. */
+            data: string;
+        };
+        WorkerTerminalOutputResponse: {
+            /** Format: int64 */
+            sequence: number;
         };
         Session: {
             /** Format: uuid */
@@ -940,9 +1406,7 @@ export interface components {
             sequence: number;
             /** @constant */
             type: "chat.assistant_delta";
-            payload: {
-                text: string;
-            };
+            payload: components["schemas"]["WorkerOutputPayload"];
             /** Format: date-time */
             createdAt: string;
         };
@@ -953,8 +1417,11 @@ export interface components {
             /** @constant */
             type: "chat.turn_started";
             payload: {
+                /** Format: uuid */
+                turnId: string;
+                attempt: number;
                 /** Format: int64 */
-                requestSequence?: number;
+                workerEpoch: number;
             };
             /** Format: date-time */
             createdAt: string;
@@ -966,10 +1433,9 @@ export interface components {
             /** @constant */
             type: "chat.turn_completed";
             payload: {
-                /** Format: int64 */
-                requestSequence?: number;
-                isError?: boolean;
-                error?: string;
+                /** Format: uuid */
+                turnId: string;
+                attempt: number;
             };
             /** Format: date-time */
             createdAt: string;
@@ -981,8 +1447,9 @@ export interface components {
             /** @constant */
             type: "chat.turn_interrupted";
             payload: {
-                /** Format: int64 */
-                requestSequence: number;
+                /** Format: uuid */
+                turnId: string;
+                attempt: number;
             };
             /** Format: date-time */
             createdAt: string;
@@ -994,9 +1461,10 @@ export interface components {
             /** @constant */
             type: "chat.turn_aborted";
             payload: {
-                /** Format: int64 */
-                requestSequence?: number;
-                error?: string;
+                /** Format: uuid */
+                turnId: string;
+                attempt: number;
+                error: string;
             };
             /** Format: date-time */
             createdAt: string;
@@ -1008,7 +1476,8 @@ export interface components {
             /** @constant */
             type: "chat.interrupt_requested";
             payload: {
-                source?: string;
+                /** Format: uuid */
+                turnId: string;
             };
             /** Format: date-time */
             createdAt: string;
@@ -1024,9 +1493,9 @@ export interface components {
             nextAfter: number;
         };
         /** @enum {string} */
-        TerminalKind: "agent" | "workspace";
+        TerminalKind: "workspace";
         /** @enum {string} */
-        TerminalScope: "terminal:read" | "terminal:operate" | "terminal:dangerous-input-block";
+        TerminalScope: "terminal:read" | "terminal:operate";
         TerminalTicket: {
             ticket: string;
             /** @description Lifetime in seconds. */
@@ -1099,22 +1568,25 @@ export interface components {
             credentialType: "oauth_token" | "api_key" | "access_token";
             secret: string;
         };
-        WorkerAgentCredential: {
+        WorkerCredentialResponse: {
             /** @enum {string} */
             provider: "claude-code" | "codex" | "cursor";
             /** @enum {string} */
             credentialType: "oauth_token" | "api_key" | "access_token";
+            /**
+             * Format: password
+             * @description Decrypted coding-agent secret. Never log or persist this value.
+             */
             readonly secret: string;
-            /** Format: date-time */
-            expiresAt?: string;
         };
-        SCMCheckoutGrant: {
-            /** @enum {string} */
-            provider: "github";
+        WorkerCheckoutGrantResponse: {
             /** Format: uri */
-            repositoryUrl: string;
-            username: string;
-            readonly password: string;
+            cloneUrl: string;
+            /**
+             * Format: password
+             * @description Repository-scoped GitHub installation token. Never log or persist this value.
+             */
+            readonly token: string;
             /** Format: date-time */
             expiresAt: string;
         };
@@ -1143,11 +1615,65 @@ export interface components {
                 "application/json": components["schemas"]["ErrorEnvelope"];
             };
         };
+        /** @description The JSON body, path value, query value, or required header is invalid. */
+        BadRequest: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description The request is syntactically valid but violates a resource constraint. */
+        ValidationError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description The `Worker` credential is absent, invalid, expired, or belongs to a
+         *     worker epoch that has been replaced.
+         *      */
+        WorkerUnauthorized: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description The worker token does not contain the scope required by this operation. */
+        WorkerScopeRequired: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description Worker routes are not enabled on this deployment. */
+        WorkerRoutesDisabled: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
     };
     parameters: {
         OrgId: string;
         SessionId: string;
         TurnId: string;
+        WorkerRequestId: string;
+        TerminalId: string;
+        /** @description Positive claim attempt returned with the turn. Together with the epoch
+         *     in the worker token, this fences cancellation checks, output, and the
+         *     terminal turn callback.
+         *      */
+        WorkerTurnAttempt: number;
         InstallationId: string;
         Cursor: string;
         Limit: number;
@@ -1627,9 +2153,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        turn: components["schemas"]["Turn"];
-                    };
+                    "application/json": components["schemas"]["WorkerOKResponse"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1727,7 +2251,7 @@ export interface operations {
             query: {
                 ticket: string;
                 after?: number;
-                kind?: components["schemas"]["TerminalKind"];
+                kind: components["schemas"]["TerminalKind"];
             };
             header?: never;
             path?: never;
@@ -1928,37 +2452,158 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    leaseWorkerTurn: {
+    bootstrapWorker: {
         parameters: {
-            query?: {
-                waitSeconds?: number;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerBootstrapInput"];
+            };
+        };
         responses: {
-            /** @description A fenced lease for the next queued turn owned by this worker's session. */
+            /** @description Bootstrap succeeded and the one-time ticket was consumed. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkerTurnLease"];
+                    "application/json": components["schemas"]["WorkerBootstrapResponse"];
                 };
             };
-            /** @description No turn is currently available. */
-            204: {
+            400: components["responses"]["BadRequest"];
+            /** @description The bootstrap token is missing, invalid, expired, or already used. */
+            401: components["responses"]["Error"];
+            /** @description Worker bootstrap is not enabled on this deployment. */
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    heartbeatWorker: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerHeartbeatInput"];
+            };
+        };
+        responses: {
+            /** @description Liveness was recorded and a replacement token was issued. */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WorkerHeartbeatResponse"];
+                };
             };
-            default: components["responses"]["Error"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["WorkerRoutesDisabled"];
+            500: components["responses"]["Error"];
         };
     };
-    submitWorkerTurnResult: {
+    publishWorkerEvent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerEventInput"];
+            };
+        };
+        responses: {
+            /** @description The event was durably accepted. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerOKResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["Error"];
+            /** @description The turn has finished or another epoch or attempt owns it. */
+            409: components["responses"]["Error"];
+        };
+    };
+    claimWorkerTurn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmptyObject"];
+            };
+        };
+        responses: {
+            /** @description The claimed turn, or null when no turn is available. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerClaimTurnResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["WorkerRoutesDisabled"];
+        };
+    };
+    getWorkerTurnCancellation: {
+        parameters: {
+            query: {
+                /** @description Positive claim attempt returned with the turn. Together with the epoch
+                 *     in the worker token, this fences cancellation checks, output, and the
+                 *     terminal turn callback.
+                 *      */
+                attempt: components["parameters"]["WorkerTurnAttempt"];
+            };
+            header?: never;
+            path: {
+                turnId: components["parameters"]["TurnId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current cancellation state for this fenced attempt. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerCancellationResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["Error"];
+            /** @description The turn has finished or another epoch or attempt owns it. */
+            409: components["responses"]["Error"];
+        };
+    };
+    completeWorkerTurn: {
         parameters: {
             query?: never;
             header?: never;
@@ -1969,50 +2614,62 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WorkerTurnResultInput"];
+                "application/json": components["schemas"]["WorkerCompleteTurnInput"];
             };
         };
         responses: {
-            /** @description The fenced turn result was durably recorded. */
-            202: {
+            /** @description The fenced completion was accepted. */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        turn: components["schemas"]["Turn"];
-                    };
+                    "application/json": components["schemas"]["WorkerFinishTurnResponse"];
                 };
             };
-            default: components["responses"]["Error"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["Error"];
+            /** @description Another epoch or attempt owns the turn. */
+            409: components["responses"]["Error"];
+            422: components["responses"]["ValidationError"];
         };
     };
-    getWorkerTurnCancellation: {
+    failWorkerTurn: {
         parameters: {
-            query: {
-                leaseId: string;
-            };
+            query?: never;
             header?: never;
             path: {
                 turnId: components["parameters"]["TurnId"];
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerFailTurnInput"];
+            };
+        };
         responses: {
-            /** @description Current durable cancellation state for the leased turn. */
+            /** @description The fenced failure was accepted. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkerTurnCancellation"];
+                    "application/json": components["schemas"]["WorkerFinishTurnResponse"];
                 };
             };
-            default: components["responses"]["Error"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["Error"];
+            /** @description Another epoch or attempt owns the turn. */
+            409: components["responses"]["Error"];
+            422: components["responses"]["ValidationError"];
         };
     };
-    getWorkerAgentCredential: {
+    getWorkerCredential: {
         parameters: {
             query?: never;
             header?: never;
@@ -2021,19 +2678,24 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The session-scoped coding-agent credential. */
+            /** @description The decrypted session-scoped coding-agent credential. */
             200: {
                 headers: {
+                    "Cache-Control"?: "no-store";
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkerAgentCredential"];
+                    "application/json": components["schemas"]["WorkerCredentialResponse"];
                 };
             };
-            default: components["responses"]["Error"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["Error"];
+            422: components["responses"]["ValidationError"];
+            503: components["responses"]["Error"];
         };
     };
-    createWorkerSCMCheckoutGrant: {
+    createWorkerCheckoutGrant: {
         parameters: {
             query?: never;
             header?: never;
@@ -2042,16 +2704,245 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A short-lived grant for cloning and pushing the session repository. */
+            /** @description A short-lived checkout grant. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerCheckoutGrantResponse"];
+                };
+            };
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["WorkerRoutesDisabled"];
+            502: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listWorkerChildren: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of direct child sessions owned by this orchestrator. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["Error"];
+        };
+    };
+    createWorkerChild: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Reusing a key with the same command returns the original result.
+                 *     Reusing it with a different command returns an IDEMPOTENCY_CONFLICT.
+                 *      */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWorkerChildInput"];
+            };
+        };
+        responses: {
+            /** @description A worker child was created under this orchestrator. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SCMCheckoutGrant"];
+                    "application/json": {
+                        session: components["schemas"]["Session"];
+                    };
                 };
             };
-            default: components["responses"]["Error"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["Error"];
+        };
+    };
+    sendWorkerChildMessage: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Reusing a key with the same command returns the original result.
+                 *     Reusing it with a different command returns an IDEMPOTENCY_CONFLICT.
+                 *      */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendMessageInput"];
+            };
+        };
+        responses: {
+            /** @description The message was durably appended to the direct child. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        event: components["schemas"]["UserMessageEvent"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["Error"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    claimWorkerTransport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmptyObject"];
+            };
+        };
+        responses: {
+            /** @description The claimed command, or null when none is available. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerClaimTransportResponse"];
+                };
+            };
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            404: components["responses"]["WorkerRoutesDisabled"];
+        };
+    };
+    completeWorkerTransport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                requestId: components["parameters"]["WorkerRequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerCompleteTransportInput"];
+            };
+        };
+        responses: {
+            /** @description The command result was durably recorded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerOKResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            /** @description The command is no longer claimed or has expired. */
+            409: components["responses"]["Error"];
+        };
+    };
+    failWorkerTransport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                requestId: components["parameters"]["WorkerRequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerFailTransportInput"];
+            };
+        };
+        responses: {
+            /** @description The command failure was durably recorded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerOKResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            /** @description The command is no longer claimed or has expired. */
+            409: components["responses"]["Error"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    publishWorkerTerminalOutput: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                terminalId: components["parameters"]["TerminalId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerTerminalOutputInput"];
+            };
+        };
+        responses: {
+            /** @description The output frame was appended. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerTerminalOutputResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["WorkerUnauthorized"];
+            403: components["responses"]["WorkerScopeRequired"];
+            /** @description The terminal is closed, expired, over quota, or no longer current. */
+            409: components["responses"]["Error"];
+            422: components["responses"]["ValidationError"];
         };
     };
 }

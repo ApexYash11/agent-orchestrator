@@ -2,6 +2,7 @@ import type {
   AgentProfile,
   ClientEvent,
   ClientEventPage,
+  CreateWorkerChildInput,
   CreateGitHubProjectInput,
   CreateProjectInput,
   CreateSessionInput,
@@ -22,15 +23,27 @@ import type {
   SessionPage,
   SessionPullRequests,
   SessionReviewState,
-  SCMCheckoutGrant,
   TerminalKind,
   TerminalTicket,
-  Turn,
   UserMessageEvent,
-  WorkerAgentCredential,
-  WorkerTurnCancellation,
-  WorkerTurnLease,
-  WorkerTurnResultInput,
+  WorkerBootstrapInput,
+  WorkerBootstrapResponse,
+  WorkerCancellationResponse,
+  WorkerCheckoutGrantResponse,
+  WorkerCompleteTransportInput,
+  WorkerCompleteTurnInput,
+  WorkerCredentialResponse,
+  WorkerEventInput,
+  WorkerFailTransportInput,
+  WorkerFailTurnInput,
+  WorkerFinishTurnResponse,
+  WorkerHeartbeatInput,
+  WorkerHeartbeatResponse,
+  WorkerOKResponse,
+  WorkerTerminalOutputInput,
+  WorkerTerminalOutputResponse,
+  WorkerTransportRequest,
+  WorkerTurn,
   WorkspaceDiff,
   WorkspaceEntryPage,
   WorkspaceFile,
@@ -55,6 +68,7 @@ interface JSONRequestOptions extends RequestOptions {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   body?: unknown;
   idempotencyKey?: string;
+  cache?: RequestCache;
 }
 
 export class CloudApiError extends Error {
@@ -298,7 +312,7 @@ export class CloudClient {
     sessionId: string,
     turnId: string,
     options: IdempotentRequestOptions,
-  ): Promise<{ turn: Turn }> {
+  ): Promise<WorkerOKResponse> {
     return this.request(
       this.orgPath(
         orgId,
@@ -407,7 +421,7 @@ export class CloudClient {
   createTerminalTicket(
     orgId: string,
     sessionId: string,
-    kind: TerminalKind = "agent",
+    kind: TerminalKind = "workspace",
     options: RequestOptions = {},
   ): Promise<TerminalTicket> {
     return this.request(
@@ -427,7 +441,7 @@ export class CloudClient {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("ticket", ticket);
     url.searchParams.set("after", String(options.after ?? 0));
-    url.searchParams.set("kind", options.kind ?? "agent");
+    url.searchParams.set("kind", options.kind ?? "workspace");
     return url.toString();
   }
 
@@ -653,60 +667,186 @@ export class WorkerClient {
     this.fetch = config.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
-  async leaseTurn(
-    options: RequestOptions & { waitSeconds?: number } = {},
-  ): Promise<WorkerTurnLease | null> {
-    const query = new URLSearchParams();
-    if (options.waitSeconds !== undefined) {
-      query.set("waitSeconds", String(options.waitSeconds));
-    }
-    const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    const response = await this.authorizedFetch(`/api/cloud/v1/worker/turns/lease${suffix}`, {
+  bootstrap(
+    input: WorkerBootstrapInput,
+    options: RequestOptions = {},
+  ): Promise<WorkerBootstrapResponse> {
+    return this.unauthenticatedRequest("/api/cloud/v1/worker/bootstrap", {
       method: "POST",
-      headers: new Headers({ Accept: "application/json" }),
+      body: input,
+      cache: "no-store",
       signal: options.signal,
     });
-    await throwIfErrorResponse(response);
-    if (response.status === 204) return null;
-    return readJSONResponse<WorkerTurnLease>(response);
   }
 
-  submitTurnResult(
-    turnId: string,
-    input: WorkerTurnResultInput,
+  heartbeat(
+    input: WorkerHeartbeatInput,
     options: RequestOptions = {},
-  ): Promise<{ turn: Turn }> {
-    return this.request(
-      `/api/cloud/v1/worker/turns/${encodeURIComponent(turnId)}/result`,
-      { method: "POST", body: input, signal: options.signal },
+  ): Promise<WorkerHeartbeatResponse> {
+    return this.request("/api/cloud/v1/worker/heartbeat", {
+      method: "POST",
+      body: input,
+      cache: "no-store",
+      signal: options.signal,
+    });
+  }
+
+  publishEvent(
+    input: WorkerEventInput,
+    options: RequestOptions = {},
+  ): Promise<WorkerOKResponse> {
+    return this.request("/api/cloud/v1/worker/events", {
+      method: "POST",
+      body: input,
+      signal: options.signal,
+    });
+  }
+
+  async claimTurn(options: RequestOptions = {}): Promise<WorkerTurn | null> {
+    const response = await this.request<{ turn: WorkerTurn | null }>(
+      "/api/cloud/v1/worker/turns/claim",
+      { method: "POST", body: {}, signal: options.signal },
     );
+    return response.turn;
   }
 
   getTurnCancellation(
     turnId: string,
-    leaseId: string,
+    attempt: number,
     options: RequestOptions = {},
-  ): Promise<WorkerTurnCancellation> {
-    const query = new URLSearchParams({ leaseId });
+  ): Promise<WorkerCancellationResponse> {
+    const query = new URLSearchParams({ attempt: String(attempt) });
     return this.request(
-      `/api/cloud/v1/worker/turns/${encodeURIComponent(turnId)}/cancel?${query.toString()}`,
+      `/api/cloud/v1/worker/turns/${encodeURIComponent(turnId)}/cancellation?${query.toString()}`,
       { signal: options.signal },
     );
   }
 
-  getAgentCredential(
+  completeTurn(
+    turnId: string,
+    input: WorkerCompleteTurnInput,
     options: RequestOptions = {},
-  ): Promise<WorkerAgentCredential> {
-    return this.request("/api/cloud/v1/worker/credentials/agent", options);
+  ): Promise<WorkerFinishTurnResponse> {
+    return this.request(
+      `/api/cloud/v1/worker/turns/${encodeURIComponent(turnId)}/complete`,
+      { method: "POST", body: input, signal: options.signal },
+    );
   }
 
-  createSCMCheckoutGrant(
+  failTurn(
+    turnId: string,
+    input: WorkerFailTurnInput,
     options: RequestOptions = {},
-  ): Promise<SCMCheckoutGrant> {
-    return this.request("/api/cloud/v1/worker/scm/checkout-grant", {
-      method: "POST",
+  ): Promise<WorkerFinishTurnResponse> {
+    return this.request(
+      `/api/cloud/v1/worker/turns/${encodeURIComponent(turnId)}/fail`,
+      { method: "POST", body: input, signal: options.signal },
+    );
+  }
+
+  getCredential(
+    options: RequestOptions = {},
+  ): Promise<WorkerCredentialResponse> {
+    return this.request("/api/cloud/v1/worker/credential", {
+      cache: "no-store",
       signal: options.signal,
     });
+  }
+
+  createCheckoutGrant(
+    options: RequestOptions = {},
+  ): Promise<WorkerCheckoutGrantResponse> {
+    return this.request("/api/cloud/v1/worker/checkout-grant", {
+      method: "POST",
+      cache: "no-store",
+      signal: options.signal,
+    });
+  }
+
+  listChildren(
+    options: PaginationOptions = {},
+  ): Promise<SessionPage> {
+    const query = new URLSearchParams();
+    if (options.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.request(`/api/cloud/v1/worker/children${suffix}`, {
+      signal: options.signal,
+    });
+  }
+
+  createChild(
+    input: CreateWorkerChildInput,
+    options: IdempotentRequestOptions,
+  ): Promise<{ session: Session }> {
+    return this.request("/api/cloud/v1/worker/children", {
+      method: "POST",
+      body: input,
+      idempotencyKey: options.idempotencyKey,
+      signal: options.signal,
+    });
+  }
+
+  sendChildMessage(
+    sessionId: string,
+    text: string,
+    options: IdempotentRequestOptions,
+  ): Promise<{ event: UserMessageEvent }> {
+    return this.request(
+      `/api/cloud/v1/worker/children/${encodeURIComponent(sessionId)}/messages`,
+      {
+        method: "POST",
+        body: { text },
+        idempotencyKey: options.idempotencyKey,
+        signal: options.signal,
+      },
+    );
+  }
+
+  async claimTransport(
+    options: RequestOptions = {},
+  ): Promise<WorkerTransportRequest | null> {
+    const response = await this.request<{
+      request: WorkerTransportRequest | null;
+    }>("/api/cloud/v1/worker/transport/claim", {
+      method: "POST",
+      body: {},
+      signal: options.signal,
+    });
+    return response.request;
+  }
+
+  completeTransport(
+    requestId: string,
+    input: WorkerCompleteTransportInput,
+    options: RequestOptions = {},
+  ): Promise<WorkerOKResponse> {
+    return this.request(
+      `/api/cloud/v1/worker/transport/${encodeURIComponent(requestId)}/complete`,
+      { method: "POST", body: input, signal: options.signal },
+    );
+  }
+
+  failTransport(
+    requestId: string,
+    input: WorkerFailTransportInput,
+    options: RequestOptions = {},
+  ): Promise<WorkerOKResponse> {
+    return this.request(
+      `/api/cloud/v1/worker/transport/${encodeURIComponent(requestId)}/fail`,
+      { method: "POST", body: input, signal: options.signal },
+    );
+  }
+
+  publishTerminalOutput(
+    terminalId: string,
+    input: WorkerTerminalOutputInput,
+    options: RequestOptions = {},
+  ): Promise<WorkerTerminalOutputResponse> {
+    return this.request(
+      `/api/cloud/v1/worker/terminals/${encodeURIComponent(terminalId)}/output`,
+      { method: "POST", body: input, signal: options.signal },
+    );
   }
 
   private async request<T>(
@@ -717,11 +857,37 @@ export class WorkerClient {
     if (options.body !== undefined) {
       headers.set("Content-Type", "application/json");
     }
+    if (options.idempotencyKey !== undefined) {
+      headers.set(
+        "Idempotency-Key",
+        validateIdempotencyKey(options.idempotencyKey),
+      );
+    }
     const response = await this.authorizedFetch(path, {
       method: options.method ?? "GET",
       headers,
       body:
         options.body === undefined ? undefined : JSON.stringify(options.body),
+      cache: options.cache,
+      signal: options.signal,
+    });
+    await throwIfErrorResponse(response);
+    return readJSONResponse<T>(response);
+  }
+
+  private async unauthenticatedRequest<T>(
+    path: string,
+    options: JSONRequestOptions,
+  ): Promise<T> {
+    const headers = new Headers({
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    });
+    const response = await this.fetch(`${this.baseUrl}${path}`, {
+      method: options.method ?? "POST",
+      headers,
+      body: JSON.stringify(options.body),
+      cache: options.cache,
       signal: options.signal,
     });
     await throwIfErrorResponse(response);

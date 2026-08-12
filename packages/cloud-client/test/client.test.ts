@@ -384,7 +384,12 @@ describe("CloudClient", () => {
       sessionId: "session",
       sequence: 42,
       type: "chat.assistant_delta",
-      payload: { text: "Hello" },
+      payload: {
+        turnId: "00000000-0000-0000-0000-000000000001",
+        attempt: 1,
+        stream: "stdout",
+        text: "Hello",
+      },
       createdAt: "2026-08-09T00:00:00Z",
     };
     const fetchMock = vi.fn(
@@ -453,7 +458,7 @@ describe("CloudClient", () => {
         );
         controller.enqueue(
           encoder.encode(
-            '"type":"chat.assistant_delta","payload":{"text":"Hi"},"createdAt":"2026-08-09T00:00:00Z"}\n\n',
+            '"type":"chat.assistant_delta","payload":{"turnId":"00000000-0000-0000-0000-000000000001","attempt":1,"stream":"stdout","text":"Hi"},"createdAt":"2026-08-09T00:00:00Z"}\n\n',
           ),
         );
         controller.close();
@@ -482,7 +487,12 @@ describe("CloudClient", () => {
       expect.objectContaining({
         sequence: 8,
         type: "chat.assistant_delta",
-        payload: { text: "Hi" },
+        payload: {
+          turnId: "00000000-0000-0000-0000-000000000001",
+          attempt: 1,
+          stream: "stdout",
+          text: "Hi",
+        },
       }),
     ]);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
@@ -502,7 +512,12 @@ describe("CloudClient", () => {
           sessionId: "session",
           sequence: 8,
           type: "chat.assistant_delta",
-          payload: { text: "Hi" },
+          payload: {
+            turnId: "00000000-0000-0000-0000-000000000001",
+            attempt: 1,
+            stream: "stdout",
+            text: "Hi",
+          },
           createdAt: "2026-08-09T00:00:00Z",
         }),
       )
@@ -512,14 +527,22 @@ describe("CloudClient", () => {
             sessionId: "session",
             sequence: 8,
             type: "chat.assistant_delta",
-            payload: { text: "duplicate" },
+            payload: {
+              turnId: "00000000-0000-0000-0000-000000000001",
+              attempt: 1,
+              stream: "stdout",
+              text: "duplicate",
+            },
             createdAt: "2026-08-09T00:00:00Z",
           },
           {
             sessionId: "session",
             sequence: 9,
             type: "chat.turn_completed",
-            payload: {},
+            payload: {
+              turnId: "00000000-0000-0000-0000-000000000001",
+              attempt: 1,
+            },
             createdAt: "2026-08-09T00:00:01Z",
           },
         ),
@@ -607,90 +630,179 @@ describe("CloudClient", () => {
 });
 
 describe("WorkerClient", () => {
-  it("uses worker authentication for durable execution operations", async () => {
-    const lease = {
-      leaseId: "lease-1",
-      expiresAt: "2026-08-12T12:00:00Z",
-      turn: { id: "turn-1" },
-      input: { payload: { text: "fix auth" } },
+  it("matches the worker lifecycle, execution, orchestration, and transport routes", async () => {
+    const turn = {
+      id: "1933df78-7495-492a-bfde-31448c448e12",
+      prompt: "fix auth",
       mode: "standard",
       deniedCommands: [],
+      harness: "claude-code",
+      attempt: 2,
+      cancelRequested: false,
+    };
+    const transport = {
+      id: "3d75e11c-c450-4d7e-8daf-ab2af9087c8f",
+      kind: "workspace.read",
+      payload: { path: "README.md" },
     };
     const fetchMock = vi
       .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
-      .mockResolvedValueOnce(jsonResponse(lease))
       .mockResolvedValueOnce(
-        jsonResponse({ cancelRequested: false, turnId: "turn-1" }),
+        jsonResponse({
+          workerToken: "[redacted-bootstrap-token]",
+          workerId: "session:4",
+          epoch: 4,
+          expiresIn: 900,
+          sessionId: "678ae2c1-d9d3-4f87-be65-338818505299",
+          launch: {
+            sessionId: "678ae2c1-d9d3-4f87-be65-338818505299",
+            projectId: "fb351a69-df93-40ab-8982-bd5ea3a231eb",
+            kind: "worker",
+            harness: "claude-code",
+            displayName: "Auth",
+            branch: "feat/auth",
+            repositoryUrl: "https://github.com/acme/api",
+            defaultBranch: "main",
+          },
+        }),
       )
       .mockResolvedValueOnce(
-        jsonResponse({ turn: { id: "turn-1", state: "completed" } }, 202),
+        jsonResponse({
+          ok: true,
+          workerToken: "[redacted-renewed-token]",
+          expiresIn: 900,
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ ok: true }, 202))
+      .mockResolvedValueOnce(jsonResponse({ turn }))
+      .mockResolvedValueOnce(jsonResponse({ requested: false }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, alreadyFinished: false }))
+      .mockResolvedValueOnce(
+        jsonResponse({ ok: true, alreadyFinished: false }),
       )
       .mockResolvedValueOnce(
         jsonResponse({
           provider: "claude-code",
           credentialType: "api_key",
-          secret: "worker-secret",
+          secret: "[redacted-agent-secret]",
         }),
       )
       .mockResolvedValueOnce(
-        jsonResponse(
-          {
-            provider: "github",
-            repositoryUrl: "https://github.com/acme/api.git",
-            username: "x-access-token",
-            password: "checkout-token",
-            expiresAt: "2026-08-12T12:00:00Z",
-          },
-          201,
-        ),
-      );
+        jsonResponse({
+          cloneUrl: "https://github.com/acme/api.git",
+          token: "[redacted-checkout-token]",
+          expiresAt: "2026-08-12T12:00:00Z",
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ items: [], page: { hasMore: false } }))
+      .mockResolvedValueOnce(jsonResponse({ session: { id: "child" } }, 201))
+      .mockResolvedValueOnce(jsonResponse({ event: { sequence: 1 } }, 202))
+      .mockResolvedValueOnce(jsonResponse({ request: transport }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ sequence: 7 }, 202));
     const client = createWorkerClient({
       baseUrl: "https://cloud.example.com",
       getWorkerToken: () => "worker-token",
       fetch: fetchMock as typeof fetch,
     });
 
-    await expect(client.leaseTurn({ waitSeconds: 10 })).resolves.toEqual(lease);
-    await client.getTurnCancellation("turn-1", "lease one");
-    await client.submitTurnResult("turn-1", {
-      leaseId: "lease-1",
-      status: "completed",
-      nativeSessionId: "native-1",
+    await client.bootstrap({
+      bootstrapToken: "[redacted-one-time-ticket]",
+      version: "0.1.0",
+      capabilities: ["worker.turns"],
     });
-    await client.getAgentCredential();
-    await client.createSCMCheckoutGrant();
+    await client.heartbeat({
+      version: "0.1.0",
+      capabilities: ["worker.turns"],
+    });
+    await client.publishEvent({
+      type: "chat.assistant_delta",
+      payload: {
+        turnId: turn.id,
+        attempt: turn.attempt,
+        stream: "stdout",
+        text: "done",
+      },
+    });
+    await expect(client.claimTurn()).resolves.toEqual(turn);
+    await client.getTurnCancellation(turn.id, turn.attempt);
+    await client.completeTurn(turn.id, { attempt: turn.attempt });
+    await client.failTurn(turn.id, {
+      attempt: turn.attempt,
+      error: "harness exited",
+    });
+    await client.getCredential();
+    await client.createCheckoutGrant();
+    await client.listChildren({ cursor: "next page", limit: 25 });
+    await client.createChild(
+      { harness: "codex", displayName: "Child", prompt: "inspect auth" },
+      { idempotencyKey: "child-1" },
+    );
+    await client.sendChildMessage("child one", "Report status", {
+      idempotencyKey: "message-1",
+    });
+    await expect(client.claimTransport()).resolves.toEqual(transport);
+    await client.completeTransport(transport.id, {
+      response: { path: "README.md", content: "# API", size: 5 },
+    });
+    await client.failTransport("request one", {
+      code: "WORKER_OPERATION_FAILED",
+      message: "Operation failed.",
+    });
+    await client.publishTerminalOutput("terminal one", { data: "b2sK" });
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      "https://cloud.example.com/api/cloud/v1/worker/turns/lease?waitSeconds=10",
-      "https://cloud.example.com/api/cloud/v1/worker/turns/turn-1/cancel?leaseId=lease+one",
-      "https://cloud.example.com/api/cloud/v1/worker/turns/turn-1/result",
-      "https://cloud.example.com/api/cloud/v1/worker/credentials/agent",
-      "https://cloud.example.com/api/cloud/v1/worker/scm/checkout-grant",
+      "https://cloud.example.com/api/cloud/v1/worker/bootstrap",
+      "https://cloud.example.com/api/cloud/v1/worker/heartbeat",
+      "https://cloud.example.com/api/cloud/v1/worker/events",
+      "https://cloud.example.com/api/cloud/v1/worker/turns/claim",
+      `https://cloud.example.com/api/cloud/v1/worker/turns/${turn.id}/cancellation?attempt=2`,
+      `https://cloud.example.com/api/cloud/v1/worker/turns/${turn.id}/complete`,
+      `https://cloud.example.com/api/cloud/v1/worker/turns/${turn.id}/fail`,
+      "https://cloud.example.com/api/cloud/v1/worker/credential",
+      "https://cloud.example.com/api/cloud/v1/worker/checkout-grant",
+      "https://cloud.example.com/api/cloud/v1/worker/children?cursor=next+page&limit=25",
+      "https://cloud.example.com/api/cloud/v1/worker/children",
+      "https://cloud.example.com/api/cloud/v1/worker/children/child%20one/messages",
+      "https://cloud.example.com/api/cloud/v1/worker/transport/claim",
+      `https://cloud.example.com/api/cloud/v1/worker/transport/${transport.id}/complete`,
+      "https://cloud.example.com/api/cloud/v1/worker/transport/request%20one/fail",
+      "https://cloud.example.com/api/cloud/v1/worker/terminals/terminal%20one/output",
     ]);
-    for (let index = 0; index < fetchMock.mock.calls.length; index += 1) {
+    expect(requestHeaders(fetchMock, 0).has("Authorization")).toBe(false);
+    for (let index = 1; index < fetchMock.mock.calls.length; index += 1) {
       expect(requestHeaders(fetchMock, index).get("Authorization")).toBe(
         "Worker worker-token",
       );
     }
-    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
-    expect(fetchMock.mock.calls[4]?.[1]?.method).toBe("POST");
-    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
-      leaseId: "lease-1",
-      status: "completed",
-      nativeSessionId: "native-1",
+    expect(fetchMock.mock.calls[0]?.[1]?.cache).toBe("no-store");
+    expect(fetchMock.mock.calls[1]?.[1]?.cache).toBe("no-store");
+    expect(fetchMock.mock.calls[7]?.[1]?.cache).toBe("no-store");
+    expect(fetchMock.mock.calls[8]?.[1]?.cache).toBe("no-store");
+    expect(requestHeaders(fetchMock, 10).get("Idempotency-Key")).toBe("child-1");
+    expect(requestHeaders(fetchMock, 11).get("Idempotency-Key")).toBe(
+      "message-1",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))).toEqual({
+      attempt: 2,
     });
   });
 
-  it("returns null when no turn can be leased", async () => {
+  it("unwraps empty claims from HTTP 200 response bodies", async () => {
     const client = createWorkerClient({
       baseUrl: "https://cloud.example.com",
       getWorkerToken: () => "worker-token",
-      fetch: vi.fn(
-        async () => new Response(null, { status: 204 }),
-      ) as typeof fetch,
+      fetch: vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ turn: null }))
+        .mockResolvedValueOnce(
+          jsonResponse({ request: null }),
+        ) as typeof fetch,
     });
 
-    await expect(client.leaseTurn()).resolves.toBeNull();
+    await expect(client.claimTurn()).resolves.toBeNull();
+    await expect(client.claimTransport()).resolves.toBeNull();
   });
 });
 
