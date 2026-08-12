@@ -92,6 +92,8 @@ export type ProviderName = Schemas["ProviderName"];
 export type ProviderPublicConfig = Schemas["ProviderPublicConfig"];
 export type RedactedProviderConnection =
   Schemas["RedactedProviderConnection"];
+export type PutAgentProviderConnectionInput =
+  Schemas["PutAgentProviderConnectionInput"];
 
 export interface PaginationOptions {
   cursor?: string;

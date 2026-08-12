@@ -96,8 +96,10 @@ builds and releases still do not initialize or package the private repository.
 
 1. **Local:** `npm run cloud:local` uses email/password local auth, local
    PostgreSQL, the local control-plane container, and the private web app at
-   `http://127.0.0.1:3000`. It does not load WorkOS or GitHub App credentials.
-   Docker workers are intended but are not implemented yet.
+   `http://127.0.0.1:3000`. WorkOS is used only for an optional hosted-account
+   session when managing GitHub; the app itself remains on local auth and never
+   loads GitHub App credentials. Docker workers are intended but are not
+   implemented yet.
 2. **Staging:** `npm run cloud:staging` runs the desktop locally against
    `https://staging-api.aoagents.dev`, the hosted staging database, and the
    shared WorkOS environment. `npm run cloud:web:staging` runs the private web
@@ -107,20 +109,21 @@ builds and releases still do not initialize or package the private repository.
    same WorkOS environment, and the production-owned GitHub App. There is no
    local-desktop-against-production development command.
 
-GitHub App credentials remain disabled outside production. A future broker must
-return signed, environment-scoped repository grants before local or staging UI
-enables GitHub; sharing credentials directly would route callback state to the
-wrong database.
+GitHub App credentials remain disabled outside production. The private web BFF
+brokers GitHub installation and repository requests to the production API using
+the user's WorkOS session, then rechecks active repository access before writing
+a project into the current environment. Callback and webhook state therefore
+stay in production. Worker checkout still needs a short-lived,
+environment-scoped broker grant before execution can be enabled.
 
 ## Private implementation still required
 
 1. **Execution plane:** queues, leases, reconciliation, provisioning, sandbox
    images, workers, heartbeats, terminal transport, and workspace RPC.
-2. **Cloud app completion:** files, terminal, review, settings, GitHub broker
-   controls, and a production web deployment. Worker/orchestrator execution
-   controls remain disabled until the execution plane exists.
-3. **SCM completion:** production GitHub App credentials, an environment broker,
-   personal GitHub OAuth, scoped installation-token brokering for workers,
+2. **Cloud app completion:** files, terminal, review, and a production web
+   deployment. Worker/orchestrator execution controls remain hidden until the
+   execution plane exists.
+3. **SCM completion:** personal GitHub OAuth, scoped installation-token brokering for workers,
    PR/issue/check/review synchronization, and stale-head guards.
 4. **Operations:** retire the empty internal ALBs after observation, move tasks
    to private subnets, configure SNS alarm notifications, and complete billing,
@@ -129,8 +132,7 @@ wrong database.
 ## Recommended implementation order
 
 1. Add provisioning and the worker protocol for real hosted sessions.
-2. Add the production GitHub broker, worker token brokering, and SCM
-   synchronization.
+2. Add worker token brokering and SCM synchronization.
 3. Add terminal/files, sharing, review synchronization, and remaining operations
    hardening.
 

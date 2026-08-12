@@ -15,6 +15,7 @@ import type {
   PaginationOptions,
   Project,
   ProjectPage,
+  PutAgentProviderConnectionInput,
   RedactedProviderConnection,
   RequestOptions,
   Session,
@@ -38,7 +39,7 @@ export interface CloudClientConfig {
 }
 
 interface JSONRequestOptions extends RequestOptions {
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "PUT" | "DELETE";
   body?: unknown;
   idempotencyKey?: string;
 }
@@ -453,6 +454,44 @@ export class CloudClient {
       providerConnections: RedactedProviderConnection[];
     }>(this.orgPath(orgId, "/provider-connections"), options);
     return response.providerConnections;
+  }
+
+  putAgentProviderConnection(
+    orgId: string,
+    provider: "claude-code" | "codex" | "cursor",
+    input: PutAgentProviderConnectionInput,
+    options: RequestOptions = {},
+  ): Promise<{ providerConnection: RedactedProviderConnection }> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/provider-connections/agents/${encodeURIComponent(provider)}`,
+      ),
+      {
+        method: "PUT",
+        body: input,
+        signal: options.signal,
+      },
+    );
+  }
+
+  async deleteAgentProviderConnection(
+    orgId: string,
+    provider: "claude-code" | "codex" | "cursor",
+    options: RequestOptions = {},
+  ): Promise<void> {
+    const response = await this.authorizedFetch(
+      this.orgPath(
+        orgId,
+        `/provider-connections/agents/${encodeURIComponent(provider)}`,
+      ),
+      {
+        method: "DELETE",
+        headers: new Headers({ Accept: "application/json" }),
+        signal: options.signal,
+      },
+    );
+    await this.throwIfError(response);
   }
 
   private orgPath(orgId: string, path: string): string {

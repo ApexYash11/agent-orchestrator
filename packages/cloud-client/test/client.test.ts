@@ -271,6 +271,49 @@ describe("CloudClient", () => {
     );
   });
 
+  it("connects and disconnects coding-agent credentials", async () => {
+    const providerConnection = {
+      id: "connection-1",
+      provider: "claude-code",
+      label: "default",
+      config: { credentialType: "api_key" },
+      validationState: "valid",
+      createdAt: "2026-08-12T00:00:00Z",
+      updatedAt: "2026-08-12T00:00:00Z",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ providerConnection }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(
+      client.putAgentProviderConnection("tenant", "claude-code", {
+        credentialType: "api_key",
+        secret: "secret-value",
+      }),
+    ).resolves.toEqual({ providerConnection });
+    await expect(
+      client.deleteAgentProviderConnection("tenant", "claude-code"),
+    ).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://cloud.example.com/api/cloud/v1/orgs/tenant/provider-connections/agents/claude-code",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: "PUT",
+      body: JSON.stringify({
+        credentialType: "api_key",
+        secret: "secret-value",
+      }),
+    });
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "DELETE" });
+  });
+
   it("throws a typed error with the standard error envelope", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>

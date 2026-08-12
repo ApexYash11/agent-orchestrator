@@ -409,6 +409,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/provider-connections/agents/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                provider: "claude-code" | "codex" | "cursor";
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["putAgentProviderConnection"];
+        post?: never;
+        delete: operations["deleteAgentProviderConnection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -937,6 +956,11 @@ export interface components {
             target?: "us" | "eu";
             /** @enum {string} */
             credentialType?: "oauth_token" | "api_key" | "access_token";
+        };
+        PutAgentProviderConnectionInput: {
+            /** @enum {string} */
+            credentialType: "oauth_token" | "api_key" | "access_token";
+            secret: string;
         };
         RedactedProviderConnection: {
             id: string;
@@ -1631,6 +1655,58 @@ export interface operations {
                         providerConnections: components["schemas"]["RedactedProviderConnection"][];
                     };
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    putAgentProviderConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                provider: "claude-code" | "codex" | "cursor";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutAgentProviderConnectionInput"];
+            };
+        };
+        responses: {
+            /** @description The validated coding-agent credential was encrypted and stored. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        providerConnection: components["schemas"]["RedactedProviderConnection"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteAgentProviderConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                provider: "claude-code" | "codex" | "cursor";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The coding-agent credential was disconnected. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };
