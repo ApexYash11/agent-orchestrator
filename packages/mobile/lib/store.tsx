@@ -7,6 +7,7 @@ import { AppState as RNAppState } from "react-native";
 import { shouldPoll } from "./appStatePoll";
 import {
 	ApiError,
+	delegateTask,
 	getNotifications,
 	getSessions,
 	killSession,
@@ -14,7 +15,6 @@ import {
 	mergePR as apiMergePR,
 	restoreSession,
 	sendMessage,
-	spawnSession,
 	type DashboardPR,
 	type DashboardSession,
 	type DashboardStats,
@@ -28,6 +28,7 @@ import { primeInstallId } from "./installId";
 import { collectPRs } from "./prView";
 import { MOBILE_EVENTS } from "./telemetry/events";
 import { mobileTelemetry, trackFeature } from "./telemetry/runtime";
+import { useConversationEventTransport } from "./chat/conversationEvents";
 
 const ACTIVE_PROJECT_KEY = "ao.activeProject";
 const POLL_INTERVAL_MS = 8000;
@@ -42,9 +43,8 @@ export type SpawnOptions = {
 	/** Falls back to the active project, or the only project. */
 	projectId?: string;
 	prompt?: string;
-	/** The task name. Becomes the session's title — see sessionTitle. */
-	issueId?: string;
 	harness?: string;
+	model?: string;
 	/** Mobile defaults to Chat; TUI remains an explicit compatibility choice. */
 	mode?: SessionMode;
 };
@@ -115,6 +115,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const [errorStatus, setErrorStatus] = useState<number | null>(null);
+	// Start authenticated streaming only after the REST probe succeeds. A stale
+	// password must cost one failed request, not a poll plus a parallel SSE attempt.
+	useConversationEventTransport(connection === "open" ? config : null);
 
 	const cfgRef = useRef<ServerConfig | null>(null);
 	// Gate for the connected event: emit only on the not-open -> open transition,
@@ -283,12 +286,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	}, [activeProjectId, projects]);
 
 	const spawn = useCallback(
-		async ({ projectId, prompt, issueId, harness, mode }: SpawnOptions) =>
+		async ({ projectId, prompt, harness, model, mode }: SpawnOptions) =>
 			trackFeature("spawn", async () => {
 				const c = cfgRef.current;
 				const proj = projectId ?? targetProject();
 				if (!c || !proj) throw new Error("Pick a project first");
-				const session = await spawnSession(c, { projectId: proj, prompt, issueId, harness, mode: mode ?? "chat" });
+				const session = await delegateTask(c, {
+					projectId: proj,
+					brief: prompt ?? "",
+					agent: harness,
+					model,
+					mode: mode ?? "chat",
+				});
 				await fetchAll();
 				return session;
 			}),
