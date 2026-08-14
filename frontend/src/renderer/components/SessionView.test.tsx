@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { SessionView } from "./SessionView";
+import { TooltipProvider } from "./ui/tooltip";
 import { useUiStore } from "../stores/ui-store";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 
@@ -131,7 +132,16 @@ const { workspaces, workspaceQueryState, panels, shellTerminalsState } = vi.hois
 // The terminal and inspector body pull in xterm/SSE machinery irrelevant to
 // the split under test. (ShellTopbar is shell-owned on Win/Linux; when the
 // platform hides the shell topbar, SessionView mounts it in-panel.)
-vi.mock("./ShellTopbar", () => ({ ShellTopbar: () => null }));
+vi.mock("./ShellTopbar", () => ({
+	ShellTopbar: ({ sessionAction }: { sessionAction?: ReactNode }) => (
+		<div data-testid="mock-session-topbar">{sessionAction}</div>
+	),
+}));
+vi.mock("./TerminalSwitchAgentButton", () => ({
+	TerminalSwitchAgentButton: () => (
+		<button aria-label="Switch agent" type="button" />
+	),
+}));
 vi.mock("./chat/SessionChatSurface", () => ({
 	SessionChatSurface: ({
 		onOpenShell,
@@ -166,7 +176,6 @@ vi.mock("./CenterPane", () => ({
 		onSelectShellTerminal,
 		onSelectSessionTerminal,
 		onSelectReviewerTerminal,
-		onNewShellTerminal,
 		topbarActions,
 		reviewerTerminal,
 		terminalTarget,
@@ -177,7 +186,6 @@ vi.mock("./CenterPane", () => ({
 		onSelectShellTerminal?: (handleId: string) => void;
 		onSelectSessionTerminal?: () => void;
 		onSelectReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
-		onNewShellTerminal?: () => void;
 		topbarActions?: ReactNode;
 		reviewerTerminal?: { handleId: string; harness: string };
 		terminalTarget?: { kind: string; handleId?: string };
@@ -208,9 +216,6 @@ vi.mock("./CenterPane", () => ({
 			))}
 			<button type="button" onClick={() => onSelectSessionTerminal?.()}>
 				select agent tab
-			</button>
-			<button type="button" onClick={() => onNewShellTerminal?.()}>
-				new terminal
 			</button>
 		</div>
 	),
@@ -424,7 +429,11 @@ function render(ui: ReactNode) {
 	});
 	return {
 		...rtlRender(ui, {
-			wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+			wrapper: ({ children }) => (
+				<QueryClientProvider client={client}>
+					<TooltipProvider>{children}</TooltipProvider>
+				</QueryClientProvider>
+			),
 		}),
 		client,
 	};
@@ -562,8 +571,16 @@ describe("SessionView", () => {
 	it("opens new terminals in the on-screen session's worktree", () => {
 		render(<SessionView sessionId="sess-2" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "new terminal" }));
+		const newTerminalButton = screen.getByRole("button", { name: "New terminal" });
+		expect(newTerminalButton).toHaveAttribute("title", "New terminal (Ctrl+T)");
+		fireEvent.click(newTerminalButton);
 		expect(openShellTerminalMock).toHaveBeenCalledWith({ projectId: "proj-1", sessionId: "sess-2" }, expect.anything());
+	});
+
+	it("does not offer a new terminal for orchestrator sessions", () => {
+		render(<SessionView sessionId="sess-orch" />);
+
+		expect(screen.queryByRole("button", { name: "New terminal" })).not.toBeInTheDocument();
 	});
 
 	it("shows a shell opened from chat and returns to the chat agent tab", () => {

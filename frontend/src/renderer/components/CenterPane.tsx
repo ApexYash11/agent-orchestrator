@@ -1,4 +1,4 @@
-import { ArrowRight, Plus, TriangleAlert } from "lucide-react";
+import { ArrowRight, TriangleAlert } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import {
 	useCallback,
@@ -11,7 +11,6 @@ import {
 	type WheelEvent as ReactWheelEvent,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { defaultShortcutBindings, shortcutBindingLabel } from "../../shared/shortcuts";
 import {
 	findActiveAgentSwitch,
 	findRecoveryRequiredAgentSwitch,
@@ -34,9 +33,6 @@ import { AgentAvatar } from "./AgentAvatar";
 import { ShellTerminalTab } from "./ShellTerminalTab";
 import { TerminalPane } from "./TerminalPane";
 import { SessionTopbarPortal } from "./SessionTopbarPortal";
-import { TerminalSwitchAgentButton } from "./TerminalSwitchAgentButton";
-import { Button } from "./ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type CenterPaneProps = {
 	session?: WorkspaceSession;
@@ -51,8 +47,6 @@ type CenterPaneProps = {
 	onSelectShellTerminal?: (handleId: string) => void;
 	onCloseShellTerminal?: (handleId: string) => void;
 	onRenameShellTerminal?: (handleId: string, title: string) => void;
-	/** Opens a new shell tab in this session's worktree (the button at the end of the tab bar). */
-	onNewShellTerminal?: () => void;
 	/** Session actions consolidated into the terminal bar by SessionView. */
 	topbarActions?: ReactNode;
 	/** Stop forwarding the agent pane's keystrokes while its controller drains. */
@@ -70,7 +64,6 @@ const WHEEL_ZOOM_THRESHOLD = 80;
 const WHEEL_ZOOM_RESET_MS = 250;
 const isMac = isMacPlatform();
 const isLinux = isLinuxPlatform();
-const newTerminalShortcutLabel = shortcutBindingLabel(defaultShortcutBindings("new-shell-terminal", isMac)[0], isMac);
 
 function DraggableTerminalTab({ children, value }: { children: ReactNode; value: string }) {
 	const dragControls = useDragControls();
@@ -119,7 +112,6 @@ export function CenterPane({
 	onSelectShellTerminal,
 	onCloseShellTerminal,
 	onRenameShellTerminal,
-	onNewShellTerminal,
 	topbarActions,
 	agentInputDisabled = false,
 }: CenterPaneProps) {
@@ -463,24 +455,6 @@ export function CenterPane({
 									))}
 								</Reorder.Group>
 							</div>
-						{!session || !isOrchestratorSession(session) ? (
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Button
-										aria-label={t("shortcut.new-shell-terminal")}
-										className="shrink-0 text-muted-foreground"
-										disabled={!onNewShellTerminal}
-										onClick={onNewShellTerminal}
-										size="icon-sm"
-										type="button"
-										variant="outline"
-									>
-										<Plus aria-hidden="true" className="size-icon-md" />
-									</Button>
-								</TooltipTrigger>
-								<TooltipContent>{t("terminal.newWithShortcut", { shortcut: newTerminalShortcutLabel })}</TooltipContent>
-							</Tooltip>
-						) : null}
 					</div>
 				</div>
 				{isFullscreen ? null : (
@@ -715,7 +689,6 @@ function SessionPaneTab({
 					</span>
 				) : null}
 			</button>
-			{session ? <TerminalSwitchAgentButton key={session.id} session={session} /> : null}
 		</span>
 	);
 }
