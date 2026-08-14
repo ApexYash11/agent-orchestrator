@@ -152,14 +152,14 @@ var (
 
 // wrapSpawnStage annotates a spawn failure with a stage sentinel. The original
 // error stays in the chain so errors.Is still matches inner sentinels.
-func wrapSpawnStage(id domain.SessionID, stage error, err error) error {
+func wrapSpawnStage(id domain.SessionID, stage, err error) error {
 	if err == nil {
 		return fmt.Errorf("spawn %s: %w", id, stage)
 	}
 	return fmt.Errorf("spawn %s: %w: %w", id, stage, err)
 }
 
-func wrapSpawnStageEarly(stage error, err error) error {
+func wrapSpawnStageEarly(stage, err error) error {
 	if err == nil {
 		return fmt.Errorf("spawn: %w", stage)
 	}
