@@ -2,49 +2,29 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "../stores/ui-store";
+import type { ProjectSettingsSaveState } from "./ProjectSettingsForm";
 import { SettingsDialog } from "./SettingsDialog";
-
-const { navigateMock } = vi.hoisted(() => ({
-	navigateMock: vi.fn(),
-}));
-
-vi.mock("@tanstack/react-router", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("@tanstack/react-router")>();
-	return {
-		...actual,
-		useNavigate: () => navigateMock,
-	};
-});
 
 vi.mock("./ProjectSettingsForm", () => ({
 	ProjectSettingsForm: ({
 		onSaveState,
 	}: {
-		onSaveState?: (state: {
-			isPending: boolean;
-			showSaving: boolean;
-			validationError: string | null;
-			mutationError: string | null;
-			saved: boolean;
-			replacementError: string | null;
-			replacementSessionId: string | null;
-		}) => void;
+		onSaveState?: (state: ProjectSettingsSaveState) => void;
 	}) => (
 		<button
 			type="button"
 			onClick={() =>
 				onSaveState?.({
-					isPending: false,
+					isPending: true,
 					showSaving: false,
 					validationError: null,
 					mutationError: null,
-					saved: true,
+					saved: false,
 					replacementError: null,
-					replacementSessionId: "proj-1-orch-2",
 				})
 			}
 		>
-			Mock replacement saved
+			Start pending save
 		</button>
 	),
 }));
@@ -63,23 +43,18 @@ vi.mock("./ConnectMobileModal", () => ({
 
 describe("SettingsDialog", () => {
 	beforeEach(() => {
-		navigateMock.mockReset();
 		useUiStore.setState({ settingsModal: null });
 	});
 
-	it("navigates to the replacement orchestrator when project settings closes", async () => {
+	it("does not dismiss project settings while a save is pending", async () => {
 		useUiStore.getState().openProjectSettings("proj-1");
 		render(<SettingsDialog />);
 
-		await userEvent.click(await screen.findByRole("button", { name: "Mock replacement saved" }));
-		expect(navigateMock).not.toHaveBeenCalled();
+		await userEvent.click(await screen.findByRole("button", { name: "Start pending save" }));
+		const closeButton = screen.getByRole("button", { name: "Close settings" });
+		expect(closeButton).toBeDisabled();
 
-		await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
-
-		expect(navigateMock).toHaveBeenCalledWith({
-			to: "/projects/$projectId/sessions/$sessionId",
-			params: { projectId: "proj-1", sessionId: "proj-1-orch-2" },
-		});
-		expect(useUiStore.getState().settingsModal).toBeNull();
+		await userEvent.keyboard("{Escape}");
+		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
 	});
 });

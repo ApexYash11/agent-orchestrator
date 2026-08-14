@@ -1,5 +1,4 @@
 import { Bot, CircleHelp, GitBranch, Inbox, MonitorCog, RefreshCw, Settings2, TriangleAlert, X } from "lucide-react";
-import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GlobalSettingsForm, type GlobalSettingsSection } from "./GlobalSettingsForm";
@@ -25,9 +24,19 @@ import { type SettingsModal, useUiStore } from "../stores/ui-store";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 
+function initialProjectSaveState(): ProjectSettingsSaveState {
+	return {
+		isPending: false,
+		showSaving: false,
+		validationError: null,
+		mutationError: null,
+		saved: false,
+		replacementError: null,
+	};
+}
+
 export function SettingsDialog() {
 	const { t } = useTranslation();
-	const navigate = useNavigate();
 	const settingsModal = useUiStore((state) => state.settingsModal);
 	const closeSettings = useUiStore((state) => state.closeSettings);
 	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
@@ -63,15 +72,7 @@ export function SettingsDialog() {
 	const isProjectSettings = displaySettings?.scope === "project";
 	const [activeSection, setActiveSection] = useState<Exclude<GlobalSettingsSection, "all">>("general");
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
-	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>({
-		isPending: false,
-		showSaving: false,
-		validationError: null,
-		mutationError: null,
-		saved: false,
-		replacementError: null,
-		replacementSessionId: null,
-	});
+	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
 
 	const activeLabel = isProjectSettings
 		? (projectSections.find((s) => s.id === activeProjectSection)?.label ?? t("settings.project.identity"))
@@ -108,31 +109,15 @@ export function SettingsDialog() {
 	};
 
 	const closeSettingsDialog = () => {
-		const target =
-			displaySettings?.scope === "project" && projectSaveState.replacementSessionId
-				? { projectId: displaySettings.projectId, sessionId: projectSaveState.replacementSessionId }
-				: null;
+		if (isProjectSettings && projectSaveState.isPending) return;
 		closeSettings();
-		if (!target) return;
-		void navigate({
-			to: "/projects/$projectId/sessions/$sessionId",
-			params: target,
-		});
 	};
 
 	useEffect(() => {
 		if (settingsModal?.scope === "global") setActiveSection("general");
 		if (settingsModal?.scope === "project") {
 			setActiveProjectSection("general");
-			setProjectSaveState({
-				isPending: false,
-				showSaving: false,
-				validationError: null,
-				mutationError: null,
-				saved: false,
-				replacementError: null,
-				replacementSessionId: null,
-			});
+			setProjectSaveState(initialProjectSaveState());
 		}
 	}, [settingsModal]);
 
@@ -223,6 +208,7 @@ export function SettingsDialog() {
 							<DialogClose
 								aria-label={t("settings.close")}
 								className="settings-close-button border border-transparent transition-colors hover:border-(--color-border-settings-input) hover:bg-[var(--color-bg-settings-input)]"
+								disabled={isProjectSettings && projectSaveState.isPending}
 							>
 								<X aria-hidden="true" className="size-4" />
 							</DialogClose>

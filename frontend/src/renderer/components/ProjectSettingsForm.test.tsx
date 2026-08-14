@@ -80,7 +80,6 @@ function TestProjectSettings({
 		mutationError: null,
 		saved: false,
 		replacementError: null,
-		replacementSessionId: null,
 	});
 	return (
 		<>
@@ -119,6 +118,16 @@ async function chooseOption(trigger: HTMLElement, optionName: string) {
 
 function submitSettings() {
 	fireEvent.submit(document.getElementById("project-settings-form")!);
+}
+
+async function expectReplacementNavigation(sessionId = "proj-1-orch-2") {
+	await waitFor(() =>
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId },
+		}),
+	);
+	expect(closeSettingsMock).toHaveBeenCalledTimes(1);
 }
 
 const agentCatalogResponse = {
@@ -1341,8 +1350,7 @@ describe("ProjectSettingsForm", () => {
 		expect(postMock).toHaveBeenCalledWith("/api/v1/orchestrators", {
 			body: { projectId: "proj-1", clean: true },
 		});
-		expect(navigateMock).not.toHaveBeenCalled();
-		expect(closeSettingsMock).not.toHaveBeenCalled();
+		await expectReplacementNavigation();
 	});
 
 	it("navigates to the replacement orchestrator after changing the default agent", async () => {
@@ -1366,8 +1374,7 @@ describe("ProjectSettingsForm", () => {
 		submitSettings();
 
 		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-		expect(navigateMock).not.toHaveBeenCalled();
-		expect(closeSettingsMock).not.toHaveBeenCalled();
+		await expectReplacementNavigation();
 		expect(setOrchestratorReplacementErrorMock).not.toHaveBeenCalled();
 	});
 
@@ -1392,7 +1399,11 @@ describe("ProjectSettingsForm", () => {
 		});
 		postMock.mockResolvedValue({
 			data: undefined,
-			error: { message: "missing goose binary" },
+			error: {
+				code: "ORCHESTRATOR_SPAWN_FAILED",
+				message: "missing goose binary",
+				requestId: "request-42",
+			},
 			response: { status: 500 },
 		});
 
@@ -1410,10 +1421,18 @@ describe("ProjectSettingsForm", () => {
 		expect(screen.queryByText("Save failed")).not.toBeInTheDocument();
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project", "proj-1"] });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKey });
-		expect(closeSettingsMock).not.toHaveBeenCalled();
+		expect(closeSettingsMock).toHaveBeenCalledTimes(1);
 		expect(setOrchestratorReplacementErrorMock).toHaveBeenCalledWith("proj-1", {
 			message: "missing goose binary",
+			code: "ORCHESTRATOR_SPAWN_FAILED",
+			requestId: "request-42",
 		});
-		expect(captureOrchestratorReplacementFailureMock).toHaveBeenCalled();
+		expect(captureOrchestratorReplacementFailureMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				code: "ORCHESTRATOR_SPAWN_FAILED",
+				requestId: "request-42",
+			}),
+			"proj-1",
+		);
 	});
 });
