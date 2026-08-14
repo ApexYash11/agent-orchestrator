@@ -27,6 +27,7 @@ import { OrchestratorActivityIndicator } from "./OrchestratorActivityIndicator";
 import { getAgentActivityView } from "../lib/session-presentation";
 import { isMacPlatform, usesBoardActionsInPanel } from "../lib/platform";
 import { cn } from "../lib/utils";
+import { SHELL_PANEL_SPRING } from "../lib/motion-spring";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { StatusPill } from "./StatusPill";
 import { TopbarButton, TopbarKillError, topbarHeaderClass, topbarProjectLabelClass } from "./TopbarButton";
@@ -92,9 +93,7 @@ export function ShellTopbar({
 		const controls = animate(
 			paddingLeft,
 			targetPaddingLeft,
-			prefersReducedMotion
-				? { duration: 0 }
-				: { type: "spring", stiffness: 420, damping: 40, mass: 0.6 },
+			prefersReducedMotion ? { duration: 0 } : SHELL_PANEL_SPRING,
 		);
 		return controls.stop;
 	}, [targetPaddingLeft, paddingLeft, prefersReducedMotion]);
