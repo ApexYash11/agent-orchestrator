@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { Folder, LayoutDashboard, PanelRight, Plus, Trash2 } from "lucide-react";
+import { Folder, LayoutDashboard, Plus, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { animate, LayoutGroup, motion, useMotionValue, useReducedMotion } from "motion/react";
 import { NotificationCenter } from "./NotificationCenter";
@@ -71,7 +71,6 @@ export function ShellTopbar({
 	const isInspectorOpen = useUiStore((state) =>
 		currentSessionId ? (state.inspectorSessions[currentSessionId]?.isOpen ?? true) : false,
 	);
-	const toggleInspector = useUiStore((state) => state.toggleInspector);
 	const restartingProjectIds = useUiStore((state) => state.restartingProjectIds);
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
 	const isSidebarOpen = useUiStore((state) => state.isSidebarOpen);
@@ -131,11 +130,6 @@ export function ShellTopbar({
 	const openNewTask = () => {
 		if (!projectId || isProjectRestarting) return;
 		requestNewTask(projectId);
-	};
-
-	const handleToggleInspector = () => {
-		if (!currentSessionId) return;
-		toggleInspector(currentSessionId);
 	};
 
 	const openOrchestrator = async () => {
@@ -368,25 +362,21 @@ export function ShellTopbar({
 								<TooltipContent side="bottom">{orchestratorTooltip}</TooltipContent>
 							</Tooltip>
 						) : null}
-						{/* Bell before inspector so expand/collapse stays the trailing control. */}
-						{!isOrchestrator ? <NotificationCenter style={noDragStyle} /> : null}
-						{/* Inspector collapse (worker sessions only — orchestrators have no rail). */}
-						{!isOrchestrator && (
-							<TopbarButton
-								aria-label={isInspectorOpen ? t("shell.closeInspector") : t("shell.openInspector")}
-								aria-pressed={isInspectorOpen}
-								onClick={handleToggleInspector}
-								style={noDragStyle}
-								title={isInspectorOpen ? t("shell.closeInspectorTitle") : t("shell.openInspectorTitle")}
-								variant="icon"
-							>
-								<PanelRight className="size-icon-md" aria-hidden="true" />
-							</TopbarButton>
-						)}
 					</>
 				) : null}
-				{/* Bell trails the actions row when there is no inspector toggle after it. */}
-				{!(isSessionRoute && !isOrchestrator) ? <NotificationCenter style={noDragStyle} /> : null}
+				{isSessionRoute && !isOrchestrator ? (
+					/* Controls stay in one persistent overlay owned by SessionView. This
+					   spacer alone follows the inspector motion so neighboring actions do
+					   not jump as the center pane gains or loses the available width. */
+					<div
+						className="session-collapsed-inspector-actions"
+						data-state={isInspectorOpen ? "collapsed" : "expanded"}
+						data-testid="collapsed-inspector-actions"
+						aria-hidden="true"
+					/>
+				) : (
+					<NotificationCenter style={noDragStyle} />
+				)}
 			</div>
 		</motion.header>
 	</LayoutGroup>

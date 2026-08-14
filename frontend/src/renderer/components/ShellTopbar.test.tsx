@@ -52,7 +52,7 @@ vi.mock("../lib/telemetry", () => ({
 }));
 vi.mock("./NewTaskDialog", () => ({ NewTaskDialog: () => null }));
 vi.mock("./NotificationCenter", () => ({
-	NotificationCenter: () => <button type="button" aria-label="Notifications">Notifications</button>,
+	NotificationCenter: () => <button aria-label="Notifications" type="button" />,
 }));
 
 const worker: WorkspaceSession = {
@@ -369,31 +369,15 @@ describe("ShellTopbar orchestrator actions", () => {
 });
 
 describe("ShellTopbar inspector state", () => {
-	it("places notifications before the inspector toggle on worker sessions", () => {
+	it("keeps the expanded worker inspector controls out of the center topbar", () => {
 		renderTopbarSessions([worker], "sess-1");
 
-		const actions = screen.getByTestId("workspace-topbar-actions");
-		const buttons = within(actions)
-			.getAllByRole("button")
-			.map((button) => button.getAttribute("aria-label"));
-		const notificationsIndex = buttons.indexOf("Notifications");
-		const inspectorIndex = buttons.indexOf("Close inspector panel");
-		expect(notificationsIndex).toBeGreaterThanOrEqual(0);
-		expect(inspectorIndex).toBeGreaterThan(notificationsIndex);
+		expect(screen.getByTestId("collapsed-inspector-actions")).toHaveAttribute("data-state", "collapsed");
+		expect(screen.queryByRole("button", { name: "Close inspector panel" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open inspector panel" })).not.toBeInTheDocument();
 	});
 
-	it("treats missing worker inspector state as open", async () => {
-		renderTopbarSessions([worker], "sess-1");
-
-		const toggle = screen.getByRole("button", { name: "Close inspector panel" });
-		expect(toggle).toHaveAttribute("aria-pressed", "true");
-
-		await userEvent.click(toggle);
-
-		expect(useUiStore.getState().inspectorSessions["sess-1"]).toEqual({ isOpen: false, view: "summary" });
-	});
-
-	it("routes aria-pressed to the current worker session", () => {
+	it("sizes the persistent action spacer for the current worker inspector state", () => {
 		useUiStore.setState({
 			inspectorSessions: {
 				"sess-1": { isOpen: true, view: "summary" },
@@ -402,27 +386,25 @@ describe("ShellTopbar inspector state", () => {
 		});
 		const view = renderTopbarSessions([worker, secondWorker], "sess-1");
 
-		expect(screen.getByRole("button", { name: "Close inspector panel" })).toHaveAttribute("aria-pressed", "true");
+		expect(screen.getByTestId("collapsed-inspector-actions")).toHaveAttribute("data-state", "collapsed");
 
 		paramsMock.sessionId = "sess-2";
 		view.rerenderTopbar();
 
-		expect(screen.getByRole("button", { name: "Open inspector panel" })).toHaveAttribute("aria-pressed", "false");
+		expect(screen.getByTestId("collapsed-inspector-actions")).toHaveAttribute("data-state", "expanded");
 	});
 
-	it("toggles only the current worker session", async () => {
-		useUiStore.setState({
-			inspectorSessions: {
-				"sess-1": { isOpen: false, view: "summary" },
-				"sess-2": { isOpen: true, view: "browser" },
-			},
-		});
-		renderTopbarSessions([worker, secondWorker], "sess-1");
+	it("keeps one spacer mounted while the inspector changes state", () => {
+		useUiStore.setState({ inspectorSessions: { "sess-1": { isOpen: false, view: "summary" } } });
+		const view = renderTopbarSessions([worker], "sess-1");
+		const slot = screen.getByTestId("collapsed-inspector-actions");
 
-		await userEvent.click(screen.getByRole("button", { name: "Open inspector panel" }));
+		useUiStore.setState({ inspectorSessions: { "sess-1": { isOpen: true, view: "summary" } } });
+		view.rerenderTopbar();
 
-		expect(useUiStore.getState().inspectorSessions["sess-1"]?.isOpen).toBe(true);
-		expect(useUiStore.getState().inspectorSessions["sess-2"]).toEqual({ isOpen: true, view: "browser" });
+		expect(screen.getByTestId("collapsed-inspector-actions")).toBe(slot);
+		expect(slot).toHaveAttribute("data-state", "collapsed");
+		expect(within(slot).queryByRole("button")).not.toBeInTheDocument();
 	});
 });
 

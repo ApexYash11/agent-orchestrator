@@ -210,10 +210,11 @@ describe("SessionInspector tabs", () => {
 	it("gives the Browser viewport the full inspector body without the default content gutter", async () => {
 		renderWithQuery(<SessionInspector session={session([])} />);
 
-		const tablist = screen.getByRole("tablist");
 		await userEvent.click(screen.getByRole("tab", { name: "Browser" }));
 
-		const body = tablist.nextElementSibling;
+		const body = screen.getByRole("complementary", { name: "Session inspector" }).querySelector(
+			".session-inspector__body--browser",
+		);
 		expect(body).toHaveClass("session-inspector__body--browser", "p-0", "overflow-hidden");
 		expect(body).not.toHaveClass("p-3", "pb-4", "@max-[300px]/inspector:px-2.5");
 	});
@@ -226,7 +227,6 @@ describe("SessionInspector tabs", () => {
 		expect(summaryTab).not.toHaveClass("flex-1");
 		expect(summaryTab).toHaveClass("h-control-md", "px-1.5");
 		expect(summaryTab).toHaveAttribute("title", "Summary");
-		expect(within(summaryTab).getByText("Summary")).toHaveClass("@max-[350px]/inspector:hidden");
 	});
 
 	it("shows the glow only while real browser activity is unseen", () => {
@@ -296,6 +296,14 @@ describe("SessionInspector tabs", () => {
 
 		const filesTab = screen.getByRole("tab", { name: "Files" });
 		expect(within(filesTab).getByText("0 Files")).toBeInTheDocument();
+	});
+
+	it("keeps collapsed inspector content hidden and inert", () => {
+		renderWithQuery(<SessionInspector isInspectorVisible={false} session={session([])} />);
+
+		expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /inspector panel/i })).not.toBeInTheDocument();
+		expect(document.querySelector("[aria-hidden='true'][inert]")).toBeInTheDocument();
 	});
 });
 

@@ -71,7 +71,11 @@ type OpenReviewerTerminal = (target: { handleId: string; harness: string }) => v
 
 export type { InspectorView } from "@aoagents/product-ui";
 
-const VIEW_DEFS: { id: InspectorView; labelKey: "inspector.summary" | "inspector.reviewTab" | "inspector.browser" | "inspector.files"; icon: ReactNode }[] = [
+const VIEW_DEFS: {
+	id: InspectorView;
+	labelKey: "inspector.summary" | "inspector.reviewTab" | "inspector.browser" | "inspector.files";
+	icon: ReactNode;
+}[] = [
 	{
 		id: "summary",
 		labelKey: "inspector.summary",
@@ -189,6 +193,8 @@ export function SessionInspector({
 				) : undefined
 			}
 			filesView={session ? <FilesView filesView={filesView} onOpenFiles={onOpenFiles} /> : undefined}
+			headerActions={<span aria-hidden="true" className="session-inspector-actions-spacer" />}
+			isVisible={isInspectorVisible}
 			loadingText={session ? undefined : t("inspector.loadingSession")}
 			onViewChange={setView}
 			reviewsView={
