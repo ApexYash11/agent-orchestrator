@@ -20,7 +20,8 @@
 		"noImplicitReturns": true,
 		"noFallthroughCasesInSwitch": true,
 		"paths": {
-			"@/*": ["./src/renderer/*"]
+			"@/*": ["./src/renderer/*"],
+			"@aoagents/product-ui": ["../packages/product-ui/src/index.ts"]
 		}
 	},
 	"include": [
