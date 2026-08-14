@@ -1,4 +1,5 @@
 import { Bot, CircleHelp, GitBranch, Inbox, MonitorCog, RefreshCw, Settings2, TriangleAlert, X } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GlobalSettingsForm, type GlobalSettingsSection } from "./GlobalSettingsForm";
@@ -26,6 +27,7 @@ import { Button } from "./ui/button";
 
 export function SettingsDialog() {
 	const { t } = useTranslation();
+	const navigate = useNavigate();
 	const settingsModal = useUiStore((state) => state.settingsModal);
 	const closeSettings = useUiStore((state) => state.closeSettings);
 	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
@@ -68,6 +70,7 @@ export function SettingsDialog() {
 		mutationError: null,
 		saved: false,
 		replacementError: null,
+		replacementSessionId: null,
 	});
 
 	const activeLabel = isProjectSettings
@@ -104,6 +107,19 @@ export function SettingsDialog() {
 		else openProjectSettings(previousSettings.projectId);
 	};
 
+	const closeSettingsDialog = () => {
+		const target =
+			displaySettings?.scope === "project" && projectSaveState.replacementSessionId
+				? { projectId: displaySettings.projectId, sessionId: projectSaveState.replacementSessionId }
+				: null;
+		closeSettings();
+		if (!target) return;
+		void navigate({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: target,
+		});
+	};
+
 	useEffect(() => {
 		if (settingsModal?.scope === "global") setActiveSection("general");
 		if (settingsModal?.scope === "project") {
@@ -115,13 +131,14 @@ export function SettingsDialog() {
 				mutationError: null,
 				saved: false,
 				replacementError: null,
+				replacementSessionId: null,
 			});
 		}
 	}, [settingsModal]);
 
 	return (
 		<>
-			<Dialog open={settingsModal !== null} onOpenChange={(open) => !open && closeSettings()}>
+			<Dialog open={settingsModal !== null} onOpenChange={(open) => !open && closeSettingsDialog()}>
 			<DialogContent
 				className={cn(
 					settingsDialogContentClass,

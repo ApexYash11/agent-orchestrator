@@ -80,6 +80,7 @@ function TestProjectSettings({
 		mutationError: null,
 		saved: false,
 		replacementError: null,
+		replacementSessionId: null,
 	});
 	return (
 		<>
@@ -1340,11 +1341,8 @@ describe("ProjectSettingsForm", () => {
 		expect(postMock).toHaveBeenCalledWith("/api/v1/orchestrators", {
 			body: { projectId: "proj-1", clean: true },
 		});
-		await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
-			to: "/projects/$projectId/sessions/$sessionId",
-			params: { projectId: "proj-1", sessionId: "proj-1-orch-2" },
-		}));
-		expect(closeSettingsMock).toHaveBeenCalledTimes(1);
+		expect(navigateMock).not.toHaveBeenCalled();
+		expect(closeSettingsMock).not.toHaveBeenCalled();
 	});
 
 	it("navigates to the replacement orchestrator after changing the default agent", async () => {
@@ -1368,11 +1366,8 @@ describe("ProjectSettingsForm", () => {
 		submitSettings();
 
 		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-		await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
-			to: "/projects/$projectId/sessions/$sessionId",
-			params: { projectId: "proj-1", sessionId: "proj-1-orch-2" },
-		}));
-		expect(closeSettingsMock).toHaveBeenCalledTimes(1);
+		expect(navigateMock).not.toHaveBeenCalled();
+		expect(closeSettingsMock).not.toHaveBeenCalled();
 		expect(setOrchestratorReplacementErrorMock).not.toHaveBeenCalled();
 	});
 
@@ -1415,7 +1410,7 @@ describe("ProjectSettingsForm", () => {
 		expect(screen.queryByText("Save failed")).not.toBeInTheDocument();
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project", "proj-1"] });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKey });
-		expect(closeSettingsMock).toHaveBeenCalledTimes(1);
+		expect(closeSettingsMock).not.toHaveBeenCalled();
 		expect(setOrchestratorReplacementErrorMock).toHaveBeenCalledWith("proj-1", {
 			message: "missing goose binary",
 		});

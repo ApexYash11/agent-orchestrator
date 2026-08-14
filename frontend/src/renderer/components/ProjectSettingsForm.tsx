@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
 import {
 	ProjectAgentsSettingsView,
 	ProjectGeneralSettingsView,
@@ -60,6 +59,7 @@ export interface ProjectSettingsSaveState {
 	mutationError: string | null;
 	saved: boolean;
 	replacementError: string | null;
+	replacementSessionId: string | null;
 }
 
 export function ProjectSettingsForm({
@@ -123,8 +123,6 @@ function SettingsBody({
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const navigate = useNavigate();
-	const closeSettings = useUiStore((state) => state.closeSettings);
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const workspaceQuery = useWorkspaceQuery();
 	const config = project.config ?? {};
@@ -151,6 +149,7 @@ function SettingsBody({
 	const [savedAt, setSavedAt] = useState<number | null>(null);
 	const [showSaving, setShowSaving] = useState(false);
 	const [replacementError, setReplacementError] = useState<string | null>(null);
+	const [replacementSessionId, setReplacementSessionId] = useState<string | null>(null);
 	const [validationError, setValidationError] = useState<string | null>(null);
 	const initialOrchestratorAgent = config.orchestrator?.agent ?? "";
 	const missingRequiredAgent = form.workerAgent === "" || form.orchestratorAgent === "";
@@ -276,6 +275,7 @@ function SettingsBody({
 			void captureRendererEvent("ao.renderer.settings_save_succeeded", { project_id: projectId });
 			setSavedAt(Date.now());
 			setReplacementError(result.replacementError);
+			setReplacementSessionId(result.replacementSessionId);
 			setValidationError(null);
 			void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
 			onSaved();
@@ -286,16 +286,10 @@ function SettingsBody({
 				} catch {
 					// Navigation still proceeds if cache refresh fails.
 				}
-				closeSettings();
-				void navigate({
-					to: "/projects/$projectId/sessions/$sessionId",
-					params: { projectId, sessionId: result.replacementSessionId },
-				});
 				return;
 			}
 
 			if (result.replacementFailure) {
-				closeSettings();
 				setOrchestratorReplacementError(projectId, result.replacementFailure);
 				if (result.spawnError) {
 					captureOrchestratorReplacementFailure(result.spawnError, projectId);
@@ -329,6 +323,7 @@ function SettingsBody({
 			saved: savedAt !== null && !mutation.isPending && !mutation.isError,
 			replacementError:
 				replacementError && !mutation.isPending && !mutation.isError ? replacementError : null,
+			replacementSessionId: replacementSessionId && !mutation.isPending && !mutation.isError ? replacementSessionId : null,
 		});
 	}, [
 		mutation.error,
@@ -336,6 +331,7 @@ function SettingsBody({
 		mutation.isPending,
 		onSaveState,
 		replacementError,
+		replacementSessionId,
 		savedAt,
 		showSaving,
 		t,
@@ -354,6 +350,7 @@ function SettingsBody({
 			onSubmit={() => {
 				setSavedAt(null);
 				setReplacementError(null);
+				setReplacementSessionId(null);
 				const validation = validateProjectSettings(form, { validateIntake: !isScratchProject });
 				if (validation) {
 					setValidationError(
