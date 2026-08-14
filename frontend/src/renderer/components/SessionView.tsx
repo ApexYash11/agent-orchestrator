@@ -20,7 +20,6 @@ import {
 } from "./SessionInterfaceSwitch";
 import { ShellTopbar } from "./ShellTopbar";
 import { SessionTopbarHost } from "./SessionTopbarPortal";
-import { TerminalSwitchAgentButton } from "./TerminalSwitchAgentButton";
 import { TopbarButton } from "./TopbarButton";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./ui/resizable";
 import { useBrowserView } from "../hooks/useBrowserView";
@@ -140,12 +139,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const setInspectorOpenForSession = useUiStore((state) => state.setInspectorOpen);
 	const toggleInspector = useUiStore((state) => state.toggleInspector);
 	const setInspectorViewForSession = useUiStore((state) => state.setInspectorView);
-	const markInspectorPreviewSeen = useUiStore((state) => state.markInspectorPreviewSeen);
 	const setBrowserContentRevealed = useUiStore((state) => state.setBrowserContentRevealed);
 	const setBrowserUnseen = useUiStore((state) => state.setBrowserUnseen);
 	const { daemonStatus } = useShell();
 	const inspectorRef = useRef<PanelImperativeHandle | null>(null);
 	const inspectorSeparatorRef = useRef<HTMLDivElement | null>(null);
+	const previewBaselineRef = useRef<{ sessionId: string; key: string } | null>(null);
 	const sessionSplitRef = useRef<HTMLDivElement | null>(null);
 	const terminalLiveResizeTimerRef = useRef<number | null>(null);
 	const initializedInspectorSessionIdRef = useRef<string | null>(null);
@@ -462,7 +461,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					<Plus aria-hidden="true" className="size-icon-md" />
 				</TopbarButton>
 			) : null}
-			<TerminalSwitchAgentButton session={session} />
 			{interfaceSwitchAction}
 		</SessionInterfaceActionGroup>
 	) : null;
@@ -504,15 +502,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		if (current?.browserContentRevealed === undefined) {
 			setBrowserContentRevealed(sessionId, hasBrowserContent);
 		}
-		if (current?.previewKey === undefined) {
-			markInspectorPreviewSeen(sessionId, previewRevealKey(previewUrl, previewRevision));
-		}
 	}, [
 		hasBrowserContent,
 		hasInspector,
-		markInspectorPreviewSeen,
-		previewRevision,
-		previewUrl,
 		session,
 		sessionId,
 		setBrowserContentRevealed,
@@ -567,11 +559,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[sessionId],
 	);
 
-	// Reveal the first real content in each non-empty browser lifecycle. Once the
-	// user leaves Browser, subsequent work respects that choice and uses the
-	// unseen indicator instead of repeatedly stealing the active inspector tab.
-	// previewRevision intentionally retriggers the empty branch so an explicit
-	// clear consumes unseen activity even when the browser was already empty.
 	useEffect(() => {
 		if (!hasInspector) return;
 		const current = useUiStore.getState().inspectorSessions[sessionId];
@@ -582,8 +569,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		}
 		if (current?.browserContentRevealed) return;
 		setBrowserContentRevealed(sessionId, true);
-		setInspectorViewForSession(sessionId, "browser");
-		setInspectorOpenForSession(sessionId, true);
 	}, [
 		hasBrowserContent,
 		hasInspector,
@@ -591,36 +576,37 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		sessionId,
 		setBrowserContentRevealed,
 		setBrowserUnseen,
-		setInspectorOpenForSession,
-		setInspectorViewForSession,
 		terminated,
 	]);
 
-	// `ao preview` is authoritative browser work, including a same-URL rerun
-	// whose revision advances. The first target is handled by the lifecycle
-	// effect above; later targets glow only while Browser is not visible.
 	useEffect(() => {
 		if (!hasInspector) return;
 		const previewKey = previewRevealKey(previewUrl, previewRevision);
-		const seenKey = useUiStore.getState().inspectorSessions[sessionId]?.previewKey;
-		if (seenKey === undefined) {
-			markInspectorPreviewSeen(sessionId, previewKey);
+		const baseline = previewBaselineRef.current;
+		if (!baseline || baseline.sessionId !== sessionId) {
+			previewBaselineRef.current = { sessionId, key: previewKey };
 			return;
 		}
-		if (seenKey === previewKey) return;
-		markInspectorPreviewSeen(sessionId, previewKey);
+		if (baseline.key === previewKey) return;
+		previewBaselineRef.current = { sessionId, key: previewKey };
 		if (!previewKey) return;
-		const current = useUiStore.getState().inspectorSessions[sessionId];
-		const viewingBrowser = browserIsVisible(sessionId, browserPoppedOut);
-		if (current?.browserContentRevealed && !viewingBrowser) setBrowserUnseen(sessionId, true);
+		setBrowserContentRevealed(sessionId, true);
+		if (browserIsVisible(sessionId, browserPoppedOut)) {
+			setBrowserUnseen(sessionId, false);
+			return;
+		}
+		setInspectorViewForSession(sessionId, "browser");
+		setInspectorOpenForSession(sessionId, true);
 	}, [
 		browserPoppedOut,
 		hasInspector,
-		markInspectorPreviewSeen,
 		previewRevision,
 		previewUrl,
 		sessionId,
+		setBrowserContentRevealed,
 		setBrowserUnseen,
+		setInspectorOpenForSession,
+		setInspectorViewForSession,
 	]);
 
 	// Agent browser commands are genuine browser activity even when they do not
