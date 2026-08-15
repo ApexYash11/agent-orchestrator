@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
 	InspectorActivityTimelineView,
@@ -223,7 +223,7 @@ describe("portable inspector presentations", () => {
 		expect(externalReview).toHaveAttribute("aria-expanded", "false");
 		fireEvent.click(externalReview);
 		expect(screen.getByText("Ship it.")).toBeInTheDocument();
-		expect(screen.getByText("Not injected")).toBeInTheDocument();
+		expect(screen.queryByText("Not injected")).not.toBeInTheDocument();
 		expect(renderAvatar).toHaveBeenCalledWith("codex");
 		expect(renderMarkdown).toHaveBeenCalledTimes(2);
 	});
@@ -282,7 +282,8 @@ describe("portable inspector presentations", () => {
 		expect(screen.queryByText(newerBody)).not.toBeInTheDocument();
 	});
 
-	it("shows unresolved inline review comment bodies together above external reviews", () => {
+	it("shows unresolved inline review comment bodies together above external reviews", async () => {
+		const onSendInlineComment = vi.fn().mockResolvedValue(undefined);
 		render(
 			<InspectorReviewsView
 				externalLink={ExternalLink}
@@ -329,6 +330,7 @@ describe("portable inspector presentations", () => {
 				]}
 				isLoading={false}
 				labels={reviewLabels}
+				onSendInlineComment={onSendInlineComment}
 				renderAvatar={() => null}
 				renderMarkdown={(body) => <p>{body}</p>}
 			/>,
@@ -339,11 +341,120 @@ describe("portable inspector presentations", () => {
 		expect(screen.getByText("2 unresolved")).toBeInTheDocument();
 		expect(screen.queryByText("src/panel.tsx:42")).not.toBeInTheDocument();
 		expect(screen.getByText("This branch leaks the resize listener on unmount.")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Send to worker agent" })).toBeInTheDocument();
-		expect(screen.getByText("Sent to worker agent")).toHaveClass("text-success");
+		fireEvent.click(screen.getByRole("button", { name: "Send to worker agent" }));
+		expect(onSendInlineComment).toHaveBeenCalledWith(
+			expect.objectContaining({
+				body: "This branch leaks the resize listener on unmount.",
+				file: "src/panel.tsx",
+				line: 42,
+				reviewerId: "maya",
+				url: "https://example.com/comment",
+			}),
+		);
+		await waitFor(() => {
+			const sentLabels = screen.getAllByText("Sent to worker agent");
+			expect(sentLabels).toHaveLength(2);
+			expect(sentLabels[0]?.closest("span")).toHaveClass("bg-overlay/80", "border-border-strong");
+			expect(sentLabels[0]?.closest("span")?.querySelector("svg")).toHaveClass("text-success");
+		});
 		expect(screen.getAllByRole("link", { name: "View in file" })).toHaveLength(2);
 	});
 
+	it("surfaces inline review comment send failures", async () => {
+		const onSendInlineComment = vi.fn().mockRejectedValue(new Error("send failed"));
+		render(
+			<InspectorReviewsView
+				externalLink={ExternalLink}
+				groups={[
+					{
+						github: {
+							entries: [],
+							unresolved: 1,
+							unresolvedBy: [
+								{
+									count: 1,
+									links: [
+										{
+											body: "Please tighten this spacing.",
+											url: "https://example.com/comment",
+										},
+									],
+									reviewerId: "maya",
+								},
+							],
+						},
+						meta: "#12 · 1 unresolved",
+						number: 12,
+						title: "Portable inspector",
+					},
+				]}
+				isLoading={false}
+				labels={reviewLabels}
+				onSendInlineComment={onSendInlineComment}
+				renderAvatar={() => null}
+				renderMarkdown={(body) => <p>{body}</p>}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Send to worker agent" }));
+
+		await waitFor(() => expect(screen.getByText("Unable to send. Retry.")).toHaveClass("text-error"));
+		expect(screen.getByRole("button", { name: "Send to worker agent" })).toBeInTheDocument();
+		expect(screen.queryByText("Sent to worker agent")).not.toBeInTheDocument();
+	});
+
+	it("tracks URL-less inline comments independently when they share a review URL", async () => {
+		const onSendInlineComment = vi.fn().mockResolvedValue(undefined);
+		render(
+			<InspectorReviewsView
+				externalLink={ExternalLink}
+				groups={[
+					{
+						github: {
+							entries: [],
+							unresolved: 2,
+							unresolvedBy: [
+								{
+									count: 2,
+									links: [
+										{ body: "Fix the first comment.", file: "src/panel.tsx", line: 10 },
+										{ body: "Fix the second comment.", file: "src/panel.tsx", line: 20 },
+									],
+									reviewerId: "maya",
+									reviewUrl: "https://example.com/review",
+								},
+							],
+						},
+						meta: "#12 · 2 unresolved",
+						number: 12,
+						title: "Portable inspector",
+					},
+				]}
+				isLoading={false}
+				labels={reviewLabels}
+				onSendInlineComment={onSendInlineComment}
+				renderAvatar={() => null}
+				renderMarkdown={(body) => <p>{body}</p>}
+			/>,
+		);
+
+		const sendButtons = screen.getAllByRole("button", { name: "Send to worker agent" });
+		expect(sendButtons).toHaveLength(2);
+		fireEvent.click(sendButtons[0]!);
+
+		await waitFor(() => expect(screen.getByText("Sent to worker agent")).toBeInTheDocument());
+		expect(screen.getAllByRole("button", { name: "Send to worker agent" })).toHaveLength(1);
+		expect(onSendInlineComment).toHaveBeenCalledTimes(1);
+		expect(onSendInlineComment).toHaveBeenCalledWith(
+			expect.objectContaining({
+				body: "Fix the first comment.",
+				file: "src/panel.tsx",
+				line: 10,
+				reviewerId: "maya",
+				url: "https://example.com/review",
+			}),
+		);
+	});
 
 });
 
@@ -363,6 +474,7 @@ const reviewLabels: InspectorReviewLabels = {
 	resolvedComments: (count) => `Resolved comments · ${count}`,
 	sendToWorkerAgent: "Send to worker agent",
 	sentToWorkerAgent: "Sent to worker agent",
+	sendToWorkerAgentError: "Unable to send. Retry.",
 	showLatestReviewOnly: "Show latest only",
 	showLess: "Show less",
 	showMore: "Show more",

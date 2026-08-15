@@ -3,6 +3,7 @@ import type { ExternalLinkComponent } from "./external-link";
 import {
 	ArrowUpRightIcon,
 	BotIcon,
+	CheckIcon,
 	ChevronIcon,
 	GitPullRequestIcon,
 } from "./icons";
@@ -459,6 +460,7 @@ export type InspectorReviewLabels = {
 	resolvedComments: (count: number) => string;
 	sendToWorkerAgent: string;
 	sentToWorkerAgent: string;
+	sendToWorkerAgentError: string;
 	showLatestReviewOnly: string;
 	showLess: string;
 	showMore: string;
@@ -473,6 +475,7 @@ export function InspectorReviewsView({
 	groups,
 	isLoading,
 	labels,
+	onSendInlineComment,
 	renderAvatar,
 	renderMarkdown,
 }: {
@@ -480,6 +483,7 @@ export function InspectorReviewsView({
 	groups: InspectorReviewGroup[];
 	isLoading: boolean;
 	labels: InspectorReviewLabels;
+	onSendInlineComment?: (comment: InspectorInlineComment & { reviewerId?: string }) => Promise<void> | void;
 	renderAvatar: (harness: string) => ReactNode;
 	renderMarkdown: (body: string) => ReactNode;
 }) {
@@ -507,7 +511,6 @@ export function InspectorReviewsView({
 							<div className="flex min-w-0 flex-col gap-2">
 								<ReviewSourceLabel
 									icon={<BotIcon />}
-									marker={group.ao.notInjected ? labels.notInjected : undefined}
 								>
 									{labels.aoSource}
 								</ReviewSourceLabel>
@@ -526,13 +529,13 @@ export function InspectorReviewsView({
 							<div className="flex min-w-0 flex-col gap-2">
 								<ReviewSourceLabel
 									icon={<GitPullRequestIcon />}
-									marker={group.github.notInjected ? labels.notInjected : undefined}
 								>
 									{labels.githubSource}
 								</ReviewSourceLabel>
 								<GithubInlineComments
 									externalLink={externalLink}
 									labels={labels}
+									onSendInlineComment={onSendInlineComment}
 									reviewers={group.github.unresolvedBy}
 								/>
 								<GithubReviewHistory
@@ -887,18 +890,25 @@ function ExternalReviewCard({
 function GithubInlineComments({
 	externalLink: ExternalLink,
 	labels,
+	onSendInlineComment,
 	reviewers,
 }: {
 	externalLink: ExternalLinkComponent;
 	labels: InspectorReviewLabels;
+	onSendInlineComment?: (comment: InspectorInlineComment & { reviewerId?: string }) => Promise<void> | void;
 	reviewers: InspectorUnresolvedReviewer[];
 }) {
+	// Manual sends are reflected immediately in local UI state after /send succeeds;
+	// persisted autoInjectReview still comes from the next backend PR observation.
+	const [manuallySentCommentIds, setManuallySentCommentIds] = useState<Set<string>>(() => new Set());
+	const [sendingCommentIds, setSendingCommentIds] = useState<Set<string>>(() => new Set());
+	const [sendErrorCommentIds, setSendErrorCommentIds] = useState<Set<string>>(() => new Set());
 	const comments = reviewers.flatMap((reviewer) =>
 		reviewer.links
 			.filter((link) => link.body?.trim() || link.file || link.url)
 			.map((link, index) => ({
 				...link,
-				id: `${reviewer.reviewerId}:${link.url ?? link.file ?? index}`,
+				id: `${reviewer.reviewerId}:${link.url ?? `${link.file ?? ""}:${link.line ?? ""}:${index}`}`,
 				reviewerId: reviewer.reviewerId,
 				url: link.url || reviewer.reviewUrl,
 			})),
@@ -917,6 +927,29 @@ function GithubInlineComments({
 						externalLink={ExternalLink}
 						key={comment.id}
 						labels={labels}
+						onSend={onSendInlineComment ? async () => {
+							setSendingCommentIds((current) => new Set(current).add(comment.id));
+							setSendErrorCommentIds((current) => {
+								const next = new Set(current);
+								next.delete(comment.id);
+								return next;
+							});
+							try {
+								await onSendInlineComment(comment);
+								setManuallySentCommentIds((current) => new Set(current).add(comment.id));
+							} catch {
+								setSendErrorCommentIds((current) => new Set(current).add(comment.id));
+							} finally {
+								setSendingCommentIds((current) => {
+									const next = new Set(current);
+									next.delete(comment.id);
+									return next;
+								});
+							}
+						} : undefined}
+						sendError={sendErrorCommentIds.has(comment.id)}
+						sent={Boolean(comment.autoInjectReview) || manuallySentCommentIds.has(comment.id)}
+						sending={sendingCommentIds.has(comment.id)}
 					/>
 				))}
 			</div>
@@ -928,10 +961,18 @@ function InlineCommentRow({
 	comment,
 	externalLink: ExternalLink,
 	labels,
+	onSend,
+	sendError = false,
+	sending = false,
+	sent,
 }: {
 	comment: InspectorInlineComment & { reviewerId?: string };
 	externalLink: ExternalLinkComponent;
 	labels: InspectorReviewLabels;
+	onSend?: () => void;
+	sendError?: boolean;
+	sending?: boolean;
+	sent: boolean;
 }) {
 	const body = comment.body?.trim();
 	return (
@@ -939,11 +980,16 @@ function InlineCommentRow({
 			{comment.reviewerId ? <span className="font-medium text-muted-foreground">{comment.reviewerId}</span> : null}
 			{body ? <p className="m-0 whitespace-pre-wrap break-words leading-normal text-foreground/90">{body}</p> : null}
 			<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-				{comment.autoInjectReview ? (
-					<span className="font-medium text-success">{labels.sentToWorkerAgent}</span>
+				{sent ? (
+					<span className="inline-flex h-control-md items-center gap-1.5 rounded-md border border-border-strong bg-overlay/80 px-2.5 font-medium text-foreground shadow-sm [&_svg]:size-icon-xs">
+						<CheckIcon className="shrink-0 text-success" />
+						{labels.sentToWorkerAgent}
+					</span>
 				) : (
 					<button
-						className="inline-flex h-control-md items-center gap-1.5 rounded-md border border-border-strong bg-overlay/80 px-2.5 font-medium text-foreground shadow-sm transition-colors hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 [&_svg]:size-icon-xs"
+						className="inline-flex h-control-md items-center gap-1.5 rounded-md border border-border-strong bg-overlay/80 px-2.5 font-medium text-foreground shadow-sm transition-colors hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-60 [&_svg]:size-icon-xs"
+						disabled={sending || !onSend}
+						onClick={onSend}
 						type="button"
 					>
 						<BotIcon className="shrink-0 text-muted-foreground" />
@@ -956,6 +1002,7 @@ function InlineCommentRow({
 					</ExternalLink>
 				) : null}
 			</div>
+			{sendError && !sent ? <p className="m-0 text-2xs font-medium text-error">{labels.sendToWorkerAgentError}</p> : null}
 		</div>
 	);
 }

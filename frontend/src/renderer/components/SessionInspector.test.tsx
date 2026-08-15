@@ -1607,8 +1607,32 @@ describe("SessionInspector summary reviews", () => {
 		renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
 		await openReviewsSection();
 
-		expect(await screen.findByText("Not injected")).toBeInTheDocument();
+		expect(screen.queryByText("Not injected")).not.toBeInTheDocument();
 		expect(screen.getByText("External reviews")).toBeInTheDocument();
+		const sendButton = screen.getByRole("button", { name: "Send to worker agent" });
+		expect(sendButton).toBeEnabled();
+		await userEvent.click(sendButton);
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
+				params: { path: { sessionId: "sess-1" } },
+				body: {
+					message: expect.stringContaining("Location: a.ts:9"),
+				},
+			}),
+		);
+		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
+			params: { path: { sessionId: "sess-1" } },
+			body: {
+				message: expect.stringContaining("commit the fix, and push the branch to GitHub"),
+			},
+		});
+		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
+			params: { path: { sessionId: "sess-1" } },
+			body: {
+				message: expect.stringContaining("Reviewer: @maya"),
+			},
+		});
+		expect(screen.getAllByText("Sent to worker agent")).toHaveLength(2);
 	});
 
 	it("marks an AO review using its stored injection decision", async () => {
@@ -1626,7 +1650,7 @@ describe("SessionInspector summary reviews", () => {
 		renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
 		await openReviewsSection();
 
-		expect(await screen.findByText("Not injected")).toBeInTheDocument();
+		expect(screen.queryByText("Not injected")).not.toBeInTheDocument();
 		expect(screen.getByText("Agent reviews")).toBeInTheDocument();
 	});
 
