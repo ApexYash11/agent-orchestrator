@@ -214,14 +214,14 @@ export function SessionInspector({
 				session ? <ReviewsView onOpenReviewerTerminal={onOpenReviewerTerminal} session={session} /> : undefined
 			}
 			summaryView={
-				session ? <SummaryView session={session} /> : undefined
+				session ? <SummaryView onOpenReviews={() => setView("reviews")} session={session} /> : undefined
 			}
 			tabs={tabs}
 		/>
 	);
 }
 
-function SummaryView({ session }: { session: WorkspaceSession }) {
+function SummaryView({ onOpenReviews, session }: { onOpenReviews: () => void; session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const query = useSessionScmSummary(session.id);
 	const developerMode = useUiStore((state) => state.developerMode);
@@ -249,7 +249,12 @@ function SummaryView({ session }: { session: WorkspaceSession }) {
 				<div className="flex flex-col gap-1.5">
 					{hasPRs ? (
 						prSummaries.map((pr) => (
-							<PRSummaryCard key={pr.url || pr.htmlUrl || pr.number} pr={pr} sessionId={session.id} />
+							<PRSummaryCard
+								key={pr.url || pr.htmlUrl || pr.number}
+								onOpenReviews={onOpenReviews}
+								pr={pr}
+								sessionId={session.id}
+							/>
 						))
 					) : (
 						<p className={inspectorEmptyClass}>{t("inspector.noPROpened")}</p>
@@ -912,14 +917,15 @@ function updateSessionMergePolicy(
 	}));
 }
 
-function PRSummaryCard({ pr, sessionId }: { pr: SessionPRSummary; sessionId: string }) {
+function PRSummaryCard({ onOpenReviews, pr, sessionId }: { onOpenReviews: () => void; pr: SessionPRSummary; sessionId: string }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const presentation = prCardPresentation(pr);
 	const canMerge =
 		pr.state === "open" &&
-		presentation.primary.key === "merge" &&
-		presentation.primary.tone === "success" &&
+		pr.ci.state === "passing" &&
+		pr.review.decision === "approved" &&
+		pr.mergeability.state === "mergeable" &&
 		Boolean(pr.url && pr.headSha);
 	const mergePr = useMutation({
 		mutationFn: async () => {
@@ -943,6 +949,11 @@ function PRSummaryCard({ pr, sessionId }: { pr: SessionPRSummary; sessionId: str
 		card: presentation,
 		href: prBrowserUrl(pr),
 		stateLabel: t(prStateLabelKeys[pr.state]),
+		reviewDetailsAction: pr.review.decision !== "none" ? (
+				<button className="whitespace-nowrap text-2xs text-settings-muted underline-offset-2 hover:underline" onClick={onOpenReviews} type="button">
+				{t("pr.review.viewDetails")} ↗
+			</button>
+		) : undefined,
 	};
 	return (
 		<InspectorPullRequestCardView
@@ -953,7 +964,7 @@ function PRSummaryCard({ pr, sessionId }: { pr: SessionPRSummary; sessionId: str
 				canMerge ? (
 					<Button
 						aria-label={t("pr.merge.actionFor", { number: pr.number })}
-						className="gap-1 px-2"
+						className="gap-1 bg-success px-2 text-xs text-background hover:bg-success/80"
 						disabled={mergePr.isPending}
 						onClick={() => mergePr.mutate()}
 						size="sm"
@@ -972,13 +983,6 @@ function PRSummaryCard({ pr, sessionId }: { pr: SessionPRSummary; sessionId: str
 			openLabel={t("inspector.openPR", { number: pr.number })}
 			pr={viewModel}
 			pullRequestIcon={<GitPullRequest className="size-icon-sm shrink-0" aria-hidden="true" />}
-			statusNotice={
-				pr.ci.state === "failing" && !pr.ci.autoInjectCI ? (
-					<p className="mt-2 text-2xs font-medium leading-normal text-warning">
-						{t("inspector.ci.notInjected")}
-					</p>
-				) : undefined
-			}
 		/>
 	);
 }
