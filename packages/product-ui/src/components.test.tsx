@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AgentAvatar } from "./AgentAvatar";
+import { GithubAvatar } from "./GithubAvatar";
 import type { ExternalLinkProps } from "./external-link";
 import { PRCardStatusSummary, PRSummaryMeta, PRSummaryParts } from "./PRSummaryDisplay";
 import type { PRCardPresentation, PRSummaryPart } from "./pull-request-models";
@@ -18,6 +19,15 @@ function ExternalLink({ ariaLabel, children, stopPropagation, ...props }: Extern
 }
 
 describe("portable leaf components", () => {
+	it("renders GitHub avatars from the login and falls back to initials", () => {
+		const { container } = render(<GithubAvatar login="ada-lovelace" />);
+		const image = container.querySelector("img");
+
+		expect(image).toHaveAttribute("src", "https://github.com/ada-lovelace.png?size=64");
+		if (image) fireEvent.error(image);
+		expect(container).toHaveTextContent("AL");
+	});
+
 	it("renders an injected agent logo without owning app assets", () => {
 		render(<AgentAvatar logoSources={{ "claude-code": "/logos/claude.svg" }} provider="claude-code" />);
 
@@ -52,7 +62,8 @@ describe("portable leaf components", () => {
 
 		expect(screen.getByText("feature → main")).toBeInTheDocument();
 		expect(screen.getByText("2 localized-file")).toBeInTheDocument();
-		expect(screen.getByRole("link", { name: "@ada" })).toHaveAttribute("href", "https://github.com/ada");
+		expect(screen.getByRole("link", { name: "ada" })).toHaveAttribute("href", "https://github.com/ada");
+		expect(screen.getByText("feature → main")).toHaveClass("break-words");
 	});
 
 	it("renders precomputed PR presentation without controller dependencies", () => {
