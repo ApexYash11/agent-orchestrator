@@ -101,6 +101,7 @@ var shippedMigrations = map[int64]string{
 	95: "0095_allow_omp_harness.sql",
 	96: "0096_session_worktree_base_ref.sql",
 	97: "0097_pr_provider_identity.sql",
+	98: "0098_session_native_identity_generation.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

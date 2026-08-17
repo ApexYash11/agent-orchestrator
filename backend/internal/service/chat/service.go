@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,6 +137,10 @@ type StartConfig struct {
 	MCPServers            []ports.ChatMCPServerConfig
 	// ProviderConversationID resumes an existing provider conversation when set.
 	ProviderConversationID string
+	// RequireNativeHistory makes a missing typed provider replay fatal. Interface
+	// handoff sets it because provider context without a visible transcript would
+	// make completed Terminal work disappear from Chat.
+	RequireNativeHistory bool
 	// ControllerReady commits the controller's durable generation before event
 	// consumption starts. A controller that exits immediately must report after
 	// the launch has been marked live, so its exited signal cannot be overwritten
@@ -214,6 +219,22 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		return nil, err
 	}
 	defer gate.unlock()
+
+	replayCheckpoint := nativeHistoryCheckpoint{}
+	if cfg.RequireNativeHistory {
+		if s.sessions == nil {
+			return nil, errors.New("native history replay requires a session reader")
+		}
+		rec, found, err := s.sessions.GetSession(ctx, cfg.SessionID)
+		if err != nil {
+			return nil, fmt.Errorf("read native history checkpoint: %w", err)
+		}
+		if !found {
+			return nil, ports.ErrSessionNotFound
+		}
+		replayCheckpoint.latestUserPrompt = strings.TrimSpace(rec.Metadata.LatestUserPrompt)
+		replayCheckpoint.latestAssistantUpdate = strings.TrimSpace(rec.Metadata.LatestAssistantUpdate)
+	}
 
 	s.mu.RLock()
 	existing := s.controllers[cfg.SessionID]
@@ -351,8 +372,14 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 				return nil, fmt.Errorf("load conversation before native history import: %w", err)
 			}
 		}
+		if cfg.RequireNativeHistory {
+			replayCheckpoint.captureAOHighWater(
+				cfg.SessionID, existing.Turns, existing.Messages, existing.Activities,
+			)
+		}
 		if err := controller.importNativeHistory(
 			ctx, existing.Turns, existing.Messages, existing.Activities,
+			cfg.RequireNativeHistory, replayCheckpoint,
 		); err != nil {
 			_ = conv.Close()
 			return nil, err
@@ -852,6 +879,7 @@ type StartRequest struct {
 	MCPServers            []ports.ChatMCPServerConfig
 	// ProviderConversationID resumes a stored conversation. Empty starts fresh.
 	ProviderConversationID string
+	RequireNativeHistory   bool
 	// ControllerReady runs after the provider and generation exist but before
 	// live event projection starts.
 	ControllerReady func(StartResult) error

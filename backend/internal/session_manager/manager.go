@@ -107,6 +107,10 @@ var (
 	// ErrNativeConversationMissing means a supported harness has not yet exposed
 	// the native id required to resume it through the other controller.
 	ErrNativeConversationMissing = errors.New("session: native conversation id unavailable")
+	// ErrNativeConversationUnverified means the stored native id belongs to an
+	// older terminal generation and the currently visible TUI has not confirmed
+	// that it resumed the same provider conversation yet.
+	ErrNativeConversationUnverified = errors.New("session: native conversation id is not confirmed for the current terminal launch")
 	// ErrInterfaceAlreadySelected makes a stale/double switch request an explicit
 	// conflict instead of leaking a generic 500 after the first switch commits.
 	ErrInterfaceAlreadySelected = errors.New("session: requested interface is already selected")
@@ -148,6 +152,10 @@ const (
 	EnvSupervisedProcess = "AO_SUPERVISED_PROCESS"
 	// EnvDataDir tells a spawned agent's AO hook commands where the store lives.
 	EnvDataDir = "AO_DATA_DIR"
+	// EnvRunFile tells spawned AO hook commands which live daemon owns the
+	// session. AO_DATA_DIR is durable storage, not daemon discovery; custom and
+	// isolated daemons therefore need this coordinate explicitly.
+	EnvRunFile = "AO_RUN_FILE"
 	// EnvBrowserCapability proves ownership of the session's browser target.
 	EnvBrowserCapability = "AO_BROWSER_CAPABILITY"
 	// EnvBrowserRuntimeToken must never be inherited by a worker. It authenticates
@@ -307,6 +315,7 @@ type Manager struct {
 	attachments         *attachmentstore.Store
 	attachmentSuffix    func() (string, error)
 	dataDir             string
+	runFilePath         string
 	clock               func() time.Time
 	reconcileWorkers    int
 	// openTranscriptFile is os.Open in production. The narrow seam lets tests
@@ -562,7 +571,10 @@ type Deps struct {
 	// DataDir owns durable attachment storage and is exported to spawned agents
 	// as AO_DATA_DIR so their hook commands can open the same store.
 	DataDir string
-	Clock   func() time.Time
+	// RunFilePath is exported to spawned agents as AO_RUN_FILE so their hook
+	// callbacks reach this daemon even when another AO daemon is also running.
+	RunFilePath string
+	Clock       func() time.Time
 	// LookPath overrides exec.LookPath for the pre-launch agent-binary check.
 	// Production wiring leaves this nil and the manager defaults to
 	// exec.LookPath; tests inject a stub so they need not seed real binaries.
@@ -602,6 +614,7 @@ func New(d Deps) *Manager {
 		attachments:                  attachmentstore.New(d.DataDir),
 		attachmentSuffix:             randomSuffix,
 		dataDir:                      d.DataDir,
+		runFilePath:                  strings.TrimSpace(d.RunFilePath),
 		clock:                        d.Clock,
 		reconcileWorkers:             d.ReconcileWorkers,
 		openTranscriptFile:           os.Open,
@@ -1658,18 +1671,10 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 }
 
 func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle) (RestoreResult, error) {
-	return m.relaunchSessionWithPolicy(ctx, operation, rec, project, ws, restartHandle, false)
+	return m.relaunchSessionWithPolicy(ctx, operation, rec, project, ws, restartHandle, false, false)
 }
 
-// relaunchSessionFresh is reserved for an interface handoff whose adapter
-// proved that the reserved provider id has no persisted conversation behind it.
-// It bypasses native resume on both sides, so an empty Claude session cannot
-// fail target startup (or rollback) with "No conversation found".
-func (m *Manager) relaunchSessionFresh(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle) (RestoreResult, error) {
-	return m.relaunchSessionWithPolicy(ctx, operation, rec, project, ws, restartHandle, true)
-}
-
-func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh bool) (RestoreResult, error) {
+func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool) (RestoreResult, error) {
 	// Relaunch dispatches from the currently committed persisted mode, never from
 	// a caller hint. The interface-transition coordinator changes that fact only
 	// after stopping the old controller, then reuses this ordinary restore path.
@@ -1679,7 +1684,7 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 		} else if strings.TrimSpace(rec.Metadata.ProviderConversationID) == "" {
 			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrIncompleteHandle)
 		}
-		return m.resumeChatController(ctx, operation, rec, project, ws)
+		return m.resumeChatController(ctx, operation, rec, project, ws, requireNativeHistory)
 	}
 
 	agent, ok := m.agents.Agent(rec.Harness)
@@ -1771,6 +1776,16 @@ func (m *Manager) relaunchSessionWithPolicy(ctx context.Context, operation strin
 		AgentSessionID:            rec.Metadata.AgentSessionID,
 		Prompt:                    rec.Metadata.Prompt,
 		BrowserCapabilityVerifier: browserCapabilityVerifier,
+	}
+	// The interface coordinator has already frozen and stopped the Chat source,
+	// transferred its structured provider id, and required native history for
+	// this exact restore. Bind that id to the target launch immediately: passive
+	// TUI resumes do not necessarily emit a provider SessionStart hook until the
+	// next user turn, which would otherwise make an already-correct round trip
+	// appear unverified forever. Ordinary restores do not take this path and must
+	// still receive current-generation identity proof from their hooks.
+	if requireNativeHistory && !forceFresh && strings.TrimSpace(metadata.AgentSessionID) != "" {
+		metadata.AgentSessionIDLaunchID = launchID
 	}
 	if err := m.lcm.MarkSpawned(ctx, rec.ID, metadata); err != nil {
 		_ = m.runtime.Destroy(ctx, handle)
@@ -3450,6 +3465,17 @@ func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueI
 // logged so the degradation isn't silent.
 func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) map[string]string {
 	env := spawnEnv(id, project, issue, m.dataDir, projectEnv)
+	// Project configuration must never redirect AO-owned hook callbacks to a
+	// different daemon. New receives the resolved absolute path in production;
+	// the environment fallback keeps focused embedders and tests compatible.
+	runFilePath := m.runFilePath
+	if runFilePath == "" {
+		runFilePath = strings.TrimSpace(os.Getenv(EnvRunFile))
+	}
+	delete(env, EnvRunFile)
+	if runFilePath != "" {
+		env[EnvRunFile] = runFilePath
+	}
 	env[EnvBrowserCapability] = ""
 	env[EnvBrowserRuntimeToken] = ""
 	env[EnvBrowserRuntimeTokenStdin] = ""

@@ -204,6 +204,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Browser:             browserLifecycle,
 		BrowserCapabilities: browserCapabilities,
 		DataDir:             cfg.DataDir,
+		RunFilePath:         cfg.RunFilePath,
 		BackgroundContext:   ctx,
 		Logger:              log,
 		ReconcileWorkers:    startupReconcileWorkers,
@@ -475,6 +476,7 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 		SystemPrompt:           cfg.SystemPrompt,
 		AdditionalDirectories:  cfg.AdditionalDirectories,
 		ProviderConversationID: cfg.ProviderConversationID,
+		RequireNativeHistory:   cfg.RequireNativeHistory,
 		ControllerReady: func(out chatsvc.StartResult) error {
 			if cfg.ControllerReady == nil {
 				return nil
