@@ -689,6 +689,11 @@ type fakeWorkspace struct {
 	createErr  error
 	destroyErr error
 	destroyed  int
+	fetchErr   error
+	fetches    []fetchDefaultBranchCall
+	resolves   []resolveDefaultBranchCall
+	resolved   map[string]ports.WorkspaceDefaultBranch
+	fetchFunc  func(context.Context, string, ports.WorkspaceDefaultBranch) error
 	// createRepoPath, when set, is returned as the RepoPath of a single-repo
 	// Create so tests can assert it survives the spawn->teardown metadata round
 	// trip (production Create resolves this path; the zero default keeps every
@@ -727,9 +732,51 @@ type fakeWorkspace struct {
 	sharedLog *[]string
 }
 
+type fetchDefaultBranchCall struct {
+	repoPath string
+	remote   string
+	branch   string
+	baseRef  string
+}
+
+type resolveDefaultBranchCall struct {
+	repoPath         string
+	configuredBranch string
+}
+
+func (w *fakeWorkspace) ResolveDefaultBranch(_ context.Context, repoPath, configuredBranch string) (ports.WorkspaceDefaultBranch, error) {
+	w.resolves = append(w.resolves, resolveDefaultBranchCall{repoPath: repoPath, configuredBranch: configuredBranch})
+	if target, ok := w.resolved[repoPath]; ok {
+		return target, nil
+	}
+	branch := configuredBranch
+	if branch == "" {
+		branch = "main"
+	}
+	return ports.WorkspaceDefaultBranch{
+		Remote:  "origin",
+		Branch:  branch,
+		BaseRef: "refs/remotes/origin/" + branch,
+	}, nil
+}
+
+func (w *fakeWorkspace) FetchDefaultBranch(ctx context.Context, repoPath string, target ports.WorkspaceDefaultBranch) error {
+	w.fetches = append(w.fetches, fetchDefaultBranchCall{repoPath: repoPath, remote: target.Remote, branch: target.Branch, baseRef: target.BaseRef})
+	if w.sharedLog != nil {
+		*w.sharedLog = append(*w.sharedLog, "FetchDefaultBranch:"+target.Remote+"/"+target.Branch)
+	}
+	if w.fetchFunc != nil {
+		return w.fetchFunc(ctx, repoPath, target)
+	}
+	return w.fetchErr
+}
+
 func (w *fakeWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
 	if w.createErr != nil {
 		return ports.WorkspaceInfo{}, w.createErr
+	}
+	if w.sharedLog != nil {
+		*w.sharedLog = append(*w.sharedLog, "Create")
 	}
 	w.lastCfg = cfg
 	path := w.path
@@ -3099,6 +3146,192 @@ func TestPromptProjectContextOmitsAutomaticBranchSentinel(t *testing.T) {
 	})
 	if explicit.DefaultBranch != "trunk" {
 		t.Fatalf("explicit prompt default branch = %q, want trunk", explicit.DefaultBranch)
+	}
+}
+
+func TestSpawn_FetchesDefaultBranchBeforeCreatingWorkerWorktree(t *testing.T) {
+	m, st, _, ws := newManager()
+	cfg := testRoleAgents()
+	cfg.DefaultBranch = "main"
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Config: cfg}
+	var calls []string
+	ws.sharedLog = &calls
+
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := ws.fetches, []fetchDefaultBranchCall{{repoPath: "/repo/mer", remote: "origin", branch: "main", baseRef: "refs/remotes/origin/main"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("fetches = %#v, want %#v", got, want)
+	}
+	if got, want := ws.lastCfg.BaseRef, "refs/remotes/origin/main"; got != want {
+		t.Fatalf("create base ref = %q, want %q", got, want)
+	}
+	if got, want := calls[:2], []string{"FetchDefaultBranch:origin/main", "Create"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("workspace call order = %#v, want %#v", calls, want)
+	}
+}
+
+func TestSpawn_FetchesWorkspaceChildDefaultBranchesBeforeCreatingProject(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api", DefaultBranch: "release/2026"}}
+
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatal(err)
+	}
+	want := []fetchDefaultBranchCall{
+		{repoPath: "/repo/mer", remote: "origin", branch: "auto", baseRef: "refs/remotes/origin/auto"},
+		{repoPath: filepath.Join("/repo/mer", "api"), remote: "origin", branch: "release/2026", baseRef: "refs/remotes/origin/release/2026"},
+	}
+	if !reflect.DeepEqual(ws.fetches, want) {
+		t.Fatalf("fetches = %#v, want %#v", ws.fetches, want)
+	}
+	if got, want := ws.lastProjectCfg.Repos[0].BaseRef, "refs/remotes/origin/release/2026"; got != want {
+		t.Fatalf("child create base ref = %q, want %q", got, want)
+	}
+}
+
+func TestSpawn_InfersEmptyWorkspaceChildDefaultBeforeFetchAndCreate(t *testing.T) {
+	m, st, _, ws := newManager()
+	childPath := filepath.Join("/repo/mer", "api")
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
+	ws.resolved = map[string]ports.WorkspaceDefaultBranch{
+		childPath: {Remote: "origin", Branch: "dev", BaseRef: "refs/remotes/origin/dev"},
+	}
+
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := ws.resolves[1], (resolveDefaultBranchCall{repoPath: childPath, configuredBranch: ""}); got != want {
+		t.Fatalf("child resolution = %#v, want %#v", got, want)
+	}
+	if got, want := ws.fetches[1], (fetchDefaultBranchCall{repoPath: childPath, remote: "origin", branch: "dev", baseRef: "refs/remotes/origin/dev"}); got != want {
+		t.Fatalf("child fetch = %#v, want %#v", got, want)
+	}
+	if got, want := ws.lastProjectCfg.Repos[0].BaseRef, "refs/remotes/origin/dev"; got != want {
+		t.Fatalf("child create base ref = %q, want %q", got, want)
+	}
+	var persistedChildBase string
+	for _, row := range st.worktrees["mer-1"] {
+		if row.RepoName == "api" {
+			persistedChildBase = row.BaseSHA
+			break
+		}
+	}
+	if got, want := persistedChildBase, "api-base"; got != want {
+		t.Fatalf("persisted child BaseSHA = %q, want materializer result %q", got, want)
+	}
+}
+
+func TestSpawn_SkipsNeedsInitWorkspaceChildrenDuringRefreshAndCreate(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{
+		{Name: "api", RelativePath: "api", DefaultBranch: "main", GitStatus: domain.GitStatusReady},
+		{Name: "unborn", RelativePath: "unborn", GitStatus: domain.GitStatusNeedsInit},
+	}
+
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := len(ws.fetches), 2; got != want {
+		t.Fatalf("fetch calls = %d, want root plus ready child (%d)", got, want)
+	}
+	if got, want := len(ws.lastProjectCfg.Repos), 1; got != want {
+		t.Fatalf("materialized child configs = %d, want only ready child (%d)", got, want)
+	}
+	if got, want := ws.lastProjectCfg.Repos[0].Name, "api"; got != want {
+		t.Fatalf("materialized child = %q, want %q", got, want)
+	}
+}
+
+func TestRefreshDefaultBranchesUsesOneOverallFetchBudget(t *testing.T) {
+	m, st, _, ws := newManager()
+	project := domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("child-%d", i)
+		st.workspaceRepo["mer"] = append(st.workspaceRepo["mer"], domain.WorkspaceRepoRecord{Name: name, RelativePath: name, DefaultBranch: "main"})
+	}
+	m.defaultBranchRefreshTimeout = 25 * time.Millisecond
+	ws.fetchFunc = func(ctx context.Context, _ string, _ ports.WorkspaceDefaultBranch) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	started := time.Now()
+	baseRefs := m.refreshDefaultBranchesBestEffort(context.Background(), project)
+	elapsed := time.Since(started)
+
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("workspace refresh took %s, want one shared 25ms budget", elapsed)
+	}
+	if got, want := len(ws.fetches), 6; got != want {
+		t.Fatalf("fetch calls = %d, want root plus five children (%d)", got, want)
+	}
+	if got, want := len(baseRefs), 6; got != want {
+		t.Fatalf("resolved base refs = %d, want root plus five children (%d)", got, want)
+	}
+}
+
+func TestSpawn_FetchesQualifiedDefaultBranchRemote(t *testing.T) {
+	m, st, _, ws := newManager()
+	cfg := testRoleAgents()
+	cfg.DefaultBranch = "upstream/main"
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Config: cfg}
+	ws.resolved = map[string]ports.WorkspaceDefaultBranch{
+		"/repo/mer": {Remote: "upstream", Branch: "main", BaseRef: "refs/remotes/upstream/main"},
+	}
+
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := ws.resolves, []resolveDefaultBranchCall{{repoPath: "/repo/mer", configuredBranch: "upstream/main"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolutions = %#v, want %#v", got, want)
+	}
+	if got, want := ws.fetches, []fetchDefaultBranchCall{{repoPath: "/repo/mer", remote: "upstream", branch: "main", baseRef: "refs/remotes/upstream/main"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("fetches = %#v, want %#v", got, want)
+	}
+	if got, want := ws.lastCfg.BaseRef, "refs/remotes/upstream/main"; got != want {
+		t.Fatalf("create base ref = %q, want %q", got, want)
+	}
+}
+
+func TestSpawn_SlashDefaultBranchWithoutKnownRemoteFetchesFromOrigin(t *testing.T) {
+	m, st, _, ws := newManager()
+	cfg := testRoleAgents()
+	cfg.DefaultBranch = "release/2026"
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Config: cfg}
+
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := ws.resolves, []resolveDefaultBranchCall{{repoPath: "/repo/mer", configuredBranch: "release/2026"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolutions = %#v, want %#v", got, want)
+	}
+	if got, want := ws.fetches, []fetchDefaultBranchCall{{repoPath: "/repo/mer", remote: "origin", branch: "release/2026", baseRef: "refs/remotes/origin/release/2026"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("fetches = %#v, want %#v", got, want)
+	}
+}
+
+func TestSpawn_DefaultBranchFetchFailureDoesNotBlockWorkerSpawn(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Config: testRoleAgents()}
+	ws.fetchErr = errors.New("network unavailable")
+
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ws.fetches) != 1 {
+		t.Fatalf("fetches = %d, want 1", len(ws.fetches))
+	}
+	if ws.lastCfg.Branch != "ao/mer-1/root" {
+		t.Fatalf("created branch = %q, want ao/mer-1/root", ws.lastCfg.Branch)
 	}
 }
 

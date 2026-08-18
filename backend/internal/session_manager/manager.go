@@ -309,18 +309,19 @@ type Manager struct {
 	// defaults resolves the daemon-owned default session interface for a spawn
 	// that names no mode. Nil falls back to the compatibility default, so a build
 	// without it behaves exactly as before.
-	defaults            SessionModeDefaults
-	chat                ChatLauncher
-	lcm                 lifecycleRecorder
-	preview             PreviewLifecycle
-	browser             BrowserLifecycle
-	browserCapabilities BrowserCapabilityIssuer
-	attachments         *attachmentstore.Store
-	attachmentSuffix    func() (string, error)
-	dataDir             string
-	runFilePath         string
-	clock               func() time.Time
-	reconcileWorkers    int
+	defaults                    SessionModeDefaults
+	chat                        ChatLauncher
+	lcm                         lifecycleRecorder
+	preview                     PreviewLifecycle
+	browser                     BrowserLifecycle
+	browserCapabilities         BrowserCapabilityIssuer
+	attachments                 *attachmentstore.Store
+	attachmentSuffix            func() (string, error)
+	dataDir                     string
+	runFilePath                 string
+	clock                       func() time.Time
+	reconcileWorkers            int
+	defaultBranchRefreshTimeout time.Duration
 	// openTranscriptFile is os.Open in production. The narrow seam lets tests
 	// deterministically prove that a post-stop transcript read failure falls
 	// back without advertising the provider path.
@@ -548,9 +549,10 @@ type interfaceTransitionConfig struct {
 // Production sendConfirm bounds: 3 Enters total (1 from Send + 2 re-sends),
 // each given 2s to flip the session active, polled every 300ms.
 const (
-	sendConfirmPollInterval    = 300 * time.Millisecond
-	sendConfirmAttemptDeadline = 2 * time.Second
-	sendConfirmMaxAttempts     = 3
+	sendConfirmPollInterval     = 300 * time.Millisecond
+	sendConfirmAttemptDeadline  = 2 * time.Second
+	sendConfirmMaxAttempts      = 3
+	defaultBranchRefreshTimeout = 5 * time.Second
 )
 
 // Deps are the collaborators a Session Manager needs; New wires them together.
@@ -620,6 +622,7 @@ func New(d Deps) *Manager {
 		runFilePath:                  strings.TrimSpace(d.RunFilePath),
 		clock:                        d.Clock,
 		reconcileWorkers:             d.ReconcileWorkers,
+		defaultBranchRefreshTimeout:  defaultBranchRefreshTimeout,
 		openTranscriptFile:           os.Open,
 		lookPath:                     d.LookPath,
 		executable:                   d.Executable,
@@ -756,7 +759,8 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if branch == "" {
 		branch = DefaultSpawnBranch(id, cfg.Kind, sessionPrefix(project), projectKind, m.dataDir)
 	}
-	ws, workspaceProject, err := m.createSessionWorkspace(ctx, project, cfg, id, branch)
+	baseRefs := m.refreshDefaultBranchesBestEffort(ctx, project)
+	ws, workspaceProject, err := m.createSessionWorkspace(ctx, project, cfg, id, branch, baseRefs)
 	if err != nil {
 		// Nothing observable exists yet — no worktree, no runtime — so the seed
 		// row is deleted outright instead of accumulating as a terminated orphan
@@ -941,7 +945,88 @@ func (m *Manager) loadProject(ctx context.Context, projectID domain.ProjectID) (
 	return row, nil
 }
 
-func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.ProjectRecord, cfg ports.SpawnConfig, id domain.SessionID, branch string) (ports.WorkspaceInfo, *ports.WorkspaceProjectInfo, error) {
+type defaultBranchRefreshTarget struct {
+	repoPath         string
+	configuredBranch string
+	resolved         ports.WorkspaceDefaultBranch
+}
+
+func (m *Manager) refreshDefaultBranchesBestEffort(ctx context.Context, project domain.ProjectRecord) map[string]string {
+	if project.Kind.WithDefault() == domain.ProjectKindScratch {
+		return nil
+	}
+	if strings.TrimSpace(project.Path) == "" {
+		return nil
+	}
+	refresher, ok := m.workspace.(ports.WorkspaceDefaultBranchRefresher)
+	if !ok {
+		return nil
+	}
+	baseRefs := make(map[string]string)
+	targets := []defaultBranchRefreshTarget{{
+		repoPath:         project.Path,
+		configuredBranch: project.Config.WithDefaults().DefaultBranch,
+	}}
+	if project.Kind.WithDefault() == domain.ProjectKindWorkspace {
+		repos, err := m.store.ListWorkspaceRepos(ctx, project.ID)
+		if err != nil {
+			m.logger.Warn("spawn: workspace child repo lookup failed; continuing with root refresh only", "projectID", project.ID, "error", err)
+		} else {
+			for _, repo := range repos {
+				if repo.GitStatus == domain.GitStatusNeedsInit {
+					continue
+				}
+				targets = append(targets, defaultBranchRefreshTarget{
+					repoPath:         filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath)),
+					configuredBranch: repo.DefaultBranch,
+				})
+			}
+		}
+	}
+
+	// Resolve every canonical ref before starting network I/O. This preserves
+	// each repository's own inferred origin/HEAD even if an earlier fetch uses
+	// the entire shared refresh budget.
+	for i := range targets {
+		resolved, err := refresher.ResolveDefaultBranch(ctx, targets[i].repoPath, targets[i].configuredBranch)
+		if err != nil {
+			m.logger.Warn("spawn: default branch resolution failed; continuing with adapter fallback",
+				"projectID", project.ID,
+				"repoPath", targets[i].repoPath,
+				"defaultBranch", targets[i].configuredBranch,
+				"error", err,
+			)
+			continue
+		}
+		targets[i].resolved = resolved
+		if resolved.BaseRef != "" {
+			baseRefs[filepath.Clean(targets[i].repoPath)] = resolved.BaseRef
+		}
+	}
+
+	// One deadline covers the complete workspace refresh. A slow or offline
+	// repository cannot multiply spawn latency by the number of child repos.
+	fetchCtx, cancel := context.WithTimeout(ctx, m.defaultBranchRefreshTimeout)
+	defer cancel()
+	for _, target := range targets {
+		if target.resolved.BaseRef == "" {
+			continue
+		}
+		if err := refresher.FetchDefaultBranch(fetchCtx, target.repoPath, target.resolved); err != nil {
+			m.logger.Warn("spawn: default branch refresh failed; continuing with local refs",
+				"projectID", project.ID,
+				"repoPath", target.repoPath,
+				"remote", target.resolved.Remote,
+				"branch", target.resolved.Branch,
+				"baseRef", target.resolved.BaseRef,
+				"error", err,
+			)
+		}
+	}
+	return baseRefs
+}
+
+func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.ProjectRecord, cfg ports.SpawnConfig, id domain.SessionID, branch string, baseRefs map[string]string) (ports.WorkspaceInfo, *ports.WorkspaceProjectInfo, error) {
 	projectKind := project.Kind.WithDefault()
 	if projectKind != domain.ProjectKindWorkspace {
 		baseBranch := project.Config.WorktreeBaseBranch()
@@ -955,6 +1040,7 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 			SessionPrefix: sessionPrefix(project),
 			Branch:        branch,
 			BaseBranch:    baseBranch,
+			BaseRef:       baseRefs[filepath.Clean(project.Path)],
 		})
 		return ws, nil, err
 	}
@@ -971,14 +1057,16 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		if repo.GitStatus == domain.GitStatusNeedsInit {
 			continue
 		}
+		repoPath := filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath))
 		childRepos = append(childRepos, ports.WorkspaceProjectRepoConfig{
 			Name:         repo.Name,
 			RelativePath: repo.RelativePath,
-			RepoPath:     filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath)),
+			RepoPath:     repoPath,
 			// Older rows may have captured the branch checked out during
-			// registration. Leave automatic resolution to the adapter so only
-			// remote-derived repository metadata can select a default.
+			// registration. Automatic adapter fallback ignores it, while BaseRef
+			// preserves the canonical target resolved before the refresh.
 			BaseBranch: "",
+			BaseRef:    baseRefs[filepath.Clean(repoPath)],
 		})
 	}
 	info, err := workspaceProject.CreateWorkspaceProject(ctx, ports.WorkspaceProjectConfig{
@@ -989,6 +1077,7 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		Branch:        branch,
 		RootRepoPath:  project.Path,
 		BaseBranch:    project.Config.WorktreeBaseBranch(),
+		BaseRef:       baseRefs[filepath.Clean(project.Path)],
 		Repos:         childRepos,
 	})
 	if err != nil {
