@@ -1465,6 +1465,7 @@ function MergedReviewsSection({
 			unresolvedByReviewer.delete(entry.reviewerId);
 			return {
 				body: entry.body,
+				canRequestRereview: canRequestPRRereview(entry.verdict, github?.url),
 				id: entry.reviewUrl || `${entry.reviewerId}:${entry.submittedAt}`,
 				pullRequestUrl: github?.url,
 				inlineComments: (reviewer?.links ?? []).map((link) => ({
@@ -1486,6 +1487,7 @@ function MergedReviewsSection({
 		for (const reviewer of unresolvedByReviewer.values()) {
 			externalEntries.push({
 				body: undefined,
+				canRequestRereview: canRequestPRRereview("changes_requested", github?.url),
 				id: `unresolved:${reviewer.reviewerId}:${number}`,
 				pullRequestUrl: github?.url,
 				inlineComments: reviewer.links.map((link) => ({
@@ -1567,6 +1569,11 @@ function MergedReviewsSection({
 			renderMarkdown={renderReviewMarkdown}
 		/>
 	);
+}
+
+function canRequestPRRereview(verdict: string | undefined, pullRequestUrl: string | undefined): boolean {
+	if (!pullRequestUrl) return false;
+	return verdict !== "approved";
 }
 
 function reviewLabels(t: TFunction): InspectorReviewLabels {
