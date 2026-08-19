@@ -1476,6 +1476,14 @@ describe("SessionInspector summary reviews", () => {
     }
   };
 
+  const openLatestAgentReview = async () => {
+    const cards = await screen.findAllByTestId("agent-review-card");
+    const trigger = within(cards[0]).getByRole("button");
+    if (trigger.getAttribute("aria-expanded") === "false") {
+      await userEvent.click(trigger);
+    }
+  };
+
   it("triggers a review and opens the returned reviewer terminal", async () => {
     mockCommonGets([], "", [reviewState(3, "needs_review")]);
     const runningReview = {
@@ -1886,6 +1894,7 @@ describe("SessionInspector summary reviews", () => {
 
     renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
     await openReviewsSection();
+    await openLatestAgentReview();
 
     const summary = await screen.findByTestId("review-run-summary");
     expect(summary).toHaveClass("line-clamp-4");
@@ -1912,6 +1921,7 @@ describe("SessionInspector summary reviews", () => {
 
     renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
     await openReviewsSection();
+    await openLatestAgentReview();
 
     expect(await screen.findByTestId("review-run-summary")).not.toHaveClass(
       "line-clamp-4",
@@ -1934,6 +1944,7 @@ describe("SessionInspector summary reviews", () => {
 
     renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
     await openReviewsSection();
+    await openLatestAgentReview();
 
     const summary = await screen.findByTestId("review-run-summary");
     expect(within(summary).getByText("auth validation").tagName).toBe("STRONG");
@@ -1941,7 +1952,7 @@ describe("SessionInspector summary reviews", () => {
     expect(summary).not.toHaveTextContent("**auth validation**");
   });
 
-  it("does not show a View on PR CTA for review summaries", async () => {
+  it("links delivered AO review summaries to their GitHub review", async () => {
     mockCommonGets([], "reviewer-pane", [
       {
         ...reviewState(3, "up_to_date", "abc123"),
@@ -1951,9 +1962,13 @@ describe("SessionInspector summary reviews", () => {
 
     renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
     await openReviewsSection();
+    await openLatestAgentReview();
 
     expect(await screen.findByTestId("review-run-summary")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /View on PR/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View on PR" })).toHaveAttribute(
+      "href",
+      "https://example.com/pr/3#pullrequestreview-98765",
+    );
   });
 
   it.each([
@@ -1997,6 +2012,7 @@ describe("SessionInspector summary reviews", () => {
 
       renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
       await openReviewsSection();
+      await openLatestAgentReview();
 
       expect(await screen.findAllByText(runLabel)).not.toHaveLength(0);
       expect(
@@ -2017,7 +2033,10 @@ describe("SessionInspector summary reviews", () => {
         expect(screen.queryByText("Changes requested")).not.toBeInTheDocument();
         expect(screen.queryByText("Earlier commit")).not.toBeInTheDocument();
       }
-      expect(screen.queryByRole("link", { name: "View on PR" })).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "View on PR" })).toHaveAttribute(
+        "href",
+        "https://example.com/pr/3#pullrequestreview-98765",
+      );
       // A run in flight gets its own live strip naming the harness, not just a
       // word on the button.
       if (status === "running") {
@@ -2192,8 +2211,11 @@ describe("SessionInspector summary reviews", () => {
       within(externalReview).getByText("Reviewed 3d ago"),
     ).toBeInTheDocument();
     expect(
-      within(externalReview).queryByRole("link", { name: "View on PR" }),
-    ).not.toBeInTheDocument();
+      within(externalReview).getByRole("link", { name: "View on PR" }),
+    ).toHaveAttribute(
+      "href",
+      "https://example.com/pr/3#pullrequestreview-456",
+    );
     expect(
       within(externalReview).queryByRole("button", { name: "Request to re-review PR" }),
     ).not.toBeInTheDocument();
@@ -2321,6 +2343,68 @@ describe("SessionInspector summary reviews", () => {
     expect(screen.queryByText("Asked for re-review")).not.toBeInTheDocument();
   });
 
+  it("sends an AO review summary to the worker from the agent review card", async () => {
+    const run = {
+      ...approvedReview,
+      autoInjectReview: false,
+      body: "The empty-cart path still needs coverage.",
+      githubReviewId: "9876",
+      verdict: "changes_requested",
+    };
+    const state = {
+      ...reviewState(3, "changes_requested"),
+      latestRun: run,
+    };
+    const previous = getMock.getMockImplementation()!;
+    getMock.mockImplementation(async (path: string, opts?: unknown) => {
+      if (path === "/api/v1/sessions/{sessionId}/reviews") {
+        return {
+          data: {
+            reviewerHandleId: "reviewer-pane",
+            reviews: [state],
+            runs: [run],
+          },
+        };
+      }
+      return previous(path, opts);
+    });
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+    await openLatestAgentReview();
+
+    expect(screen.getByRole("link", { name: "View on PR" })).toHaveAttribute(
+      "href",
+      "https://example.com/pr/3#pullrequestreview-9876",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Send to worker agent" }),
+    );
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/api/v1/sessions/{sessionId}/send",
+        {
+          params: { path: { sessionId: "sess-1" } },
+          body: {
+            message: expect.stringContaining(
+              "Review:\nThe empty-cart path still needs coverage.",
+            ),
+          },
+        },
+      ),
+    );
+    expect(postMock).toHaveBeenCalledWith(
+      "/api/v1/sessions/{sessionId}/send",
+      expect.objectContaining({
+        body: {
+          message: expect.stringContaining("Reviewer: codex"),
+        },
+      }),
+    );
+    expect(screen.getByText("Sent to worker agent")).toBeInTheDocument();
+  });
+
   it("marks SCM reviews and individual comments using their stored injection decision", async () => {
     const previous = getMock.getMockImplementation()!;
     getMock.mockImplementation(async (path: string, opts?: unknown) => {
@@ -2376,6 +2460,14 @@ describe("SessionInspector summary reviews", () => {
       screen.getByRole("button", { name: /maya.*Changes requested/i }),
     );
     await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(screen.queryByRole("link", { name: "View in file" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "View in file" })[0]).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getAllByRole("tooltip")[0]).toHaveTextContent(
+      "Opening files in AO is a work in progress",
+    );
     const sendButton = screen.getByRole("button", {
       name: "Send to worker agent",
     });
@@ -2424,6 +2516,10 @@ describe("SessionInspector summary reviews", () => {
       ),
     );
     expect(screen.getAllByText("Sent to worker agent")).toHaveLength(2);
+    expect(screen.getAllByText("Sent to worker agent")[0]).toHaveAttribute(
+      "title",
+      "Worker agent is working on this feedback",
+    );
   });
 
   it("marks an AO review using its stored injection decision", async () => {
@@ -2628,6 +2724,7 @@ describe("SessionInspector summary reviews", () => {
 
     renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
     await openReviewsSection();
+    await openLatestAgentReview();
 
     expect(
       await screen.findByText("codex asked for tests."),
@@ -2638,6 +2735,8 @@ describe("SessionInspector summary reviews", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "Load more · 1 earlier" }),
     );
+    const reviewCards = screen.getAllByTestId("agent-review-card");
+    await userEvent.click(within(reviewCards[1]).getByRole("button"));
     expect(
       screen.getByText("claude-code found nothing blocking."),
     ).toBeInTheDocument();

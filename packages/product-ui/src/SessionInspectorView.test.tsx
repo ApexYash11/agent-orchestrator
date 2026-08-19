@@ -261,8 +261,14 @@ describe("portable inspector presentations", () => {
 
     const row = screen.getByTestId("review-pr-row");
     expect(row).not.toHaveAttribute("aria-expanded");
-    expect(screen.getByText("Looks good.")).toBeInTheDocument();
+    expect(screen.queryByText("Looks good.")).not.toBeInTheDocument();
     expect(screen.queryByText("Ship it.")).not.toBeInTheDocument();
+    const agentReview = screen.getByRole("button", {
+      name: /codex.*Approved/,
+    });
+    expect(agentReview).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(agentReview);
+    expect(screen.getByText("Looks good.")).toBeInTheDocument();
     const externalReview = screen.getByRole("button", {
       name: /review-bot.*Approved/,
     });
@@ -274,9 +280,112 @@ describe("portable inspector presentations", () => {
     expect(githubSummary).toBeInTheDocument();
     expect(githubSummary).toHaveClass("select-text");
     expect(screen.queryByText("Not injected")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "View on PR" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View on PR" })).toHaveAttribute(
+      "href",
+      "https://example.com/review",
+    );
     expect(renderAvatar).toHaveBeenCalledWith("codex");
     expect(renderMarkdown).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends an agent review to the worker and keeps its PR link alongside the action", async () => {
+    const onSendAgentReview = vi.fn().mockResolvedValue(undefined);
+    render(
+      <InspectorReviewsView
+        externalLink={ExternalLink}
+        groups={[
+          {
+            ao: {
+              runs: [
+                {
+                  body: "Please cover the empty state.",
+                  createdAtLabel: "5m ago",
+                  harness: "codex",
+                  id: "run-1",
+                  status: "delivered",
+                  url: "https://example.com/review",
+                  verdict: { label: "Changes requested", tone: "danger" },
+                },
+              ],
+            },
+            meta: "#12 · 5m ago",
+            number: 12,
+            title: "Portable inspector",
+          },
+        ]}
+        isLoading={false}
+        labels={reviewLabels}
+        onSendAgentReview={onSendAgentReview}
+        renderAvatar={() => null}
+        renderMarkdown={(body) => <p>{body}</p>}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /codex.*Changes requested/ }),
+    );
+    expect(screen.getByRole("link", { name: "View on PR" })).toHaveAttribute(
+      "href",
+      "https://example.com/review",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Send to worker agent" }),
+    );
+
+    await waitFor(() => {
+      expect(onSendAgentReview).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "run-1" }),
+      );
+      expect(screen.getByText("Sent to worker agent")).toBeInTheDocument();
+    });
+  });
+
+  it("keeps the agent review send action available after a failure", async () => {
+    render(
+      <InspectorReviewsView
+        externalLink={ExternalLink}
+        groups={[
+          {
+            ao: {
+              runs: [
+                {
+                  body: "Please cover the empty state.",
+                  createdAtLabel: "5m ago",
+                  harness: "codex",
+                  id: "run-1",
+                  status: "delivered",
+                  verdict: { label: "Changes requested", tone: "danger" },
+                },
+              ],
+            },
+            meta: "#12 · 5m ago",
+            number: 12,
+            title: "Portable inspector",
+          },
+        ]}
+        isLoading={false}
+        labels={reviewLabels}
+        onSendAgentReview={vi.fn().mockRejectedValue(new Error("send failed"))}
+        renderAvatar={() => null}
+        renderMarkdown={(body) => <p>{body}</p>}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /codex.*Changes requested/ }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Send to worker agent" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("Unable to send. Retry.")).toHaveClass(
+        "text-error",
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Send to worker agent" }),
+    ).toBeInTheDocument();
   });
 
   it("shows the newest GitHub review when history prepends", () => {
@@ -380,8 +489,16 @@ describe("portable inspector presentations", () => {
     fireEvent.click(
       screen.getByRole("button", { name: /maya.*Changes requested/ }),
     );
+    const viewPR = screen.getByRole("link", { name: "View on PR" });
+    const rereview = screen.getByRole("button", {
+      name: "Request to re-review PR",
+    });
+    expect(viewPR.className).toBe(rereview.className);
+    expect(viewPR.firstElementChild?.className).toBe(
+      rereview.firstElementChild?.className,
+    );
     fireEvent.click(
-      screen.getByRole("button", { name: "Request to re-review PR" }),
+      rereview,
     );
 
     await waitFor(() => {
@@ -504,7 +621,7 @@ describe("portable inspector presentations", () => {
             github: {
               entries: [
                 {
-                  body: "Please address the inline notes before merge.",
+                  body: "This branch leaks the resize listener on unmount.",
                   id: "github-review-1",
                   reviewerId: "maya",
                   reviewUrl: "https://example.com/review",
@@ -578,6 +695,13 @@ describe("portable inspector presentations", () => {
     expect(
       screen.getByText("This branch leaks the resize listener on unmount."),
     ).toBeInTheDocument();
+    expect(
+      screen.getAllByText("This branch leaks the resize listener on unmount."),
+    ).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "View on PR" })).toHaveAttribute(
+      "href",
+      "https://example.com/review",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Show more" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Send to worker agent" }),
@@ -599,8 +723,20 @@ describe("portable inspector presentations", () => {
         "text-success",
       );
     });
-    expect(screen.getAllByRole("link", { name: "View in file" })).toHaveLength(
+    const viewInFileButtons = screen.getAllByRole("button", {
+      name: "View in file",
+    });
+    expect(viewInFileButtons).toHaveLength(
       2,
+    );
+    expect(screen.queryByRole("link", { name: "View in file" })).not.toBeInTheDocument();
+    expect(viewInFileButtons[0]).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getAllByRole("tooltip")[0]).toHaveTextContent(
+      "Opening files in AO is a work in progress",
+    );
+    expect(screen.getAllByText("Sent to worker agent")[0]).toHaveAttribute(
+      "title",
+      "Worker agent is working on this feedback",
     );
   });
 
@@ -855,11 +991,13 @@ const reviewLabels: InspectorReviewLabels = {
   sendToWorkerAgent: "Send to worker agent",
   sentToWorkerAgent: "Sent to worker agent",
   sendToWorkerAgentError: "Unable to send. Retry.",
+  workerAgentWorkingOnFeedback: "Worker agent is working on this feedback",
   showLatestReviewOnly: "Show latest only",
   showLess: "Show less",
   showMore: "Show more",
   commentNumber: (number) => `Comment ${number}`,
   unresolvedCount: (count) => `${count} unresolved`,
   viewInFile: "View in file",
+  viewInFileWorkInProgress: "Opening files in AO is a work in progress",
   viewOnPR: "View on PR",
 };

@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useState } from "react";
 import type { ExternalLinkComponent } from "./external-link";
 import {
 	ArrowUpRightIcon,
@@ -388,6 +388,7 @@ export type InspectorVerdict = {
 };
 
 export type InspectorReviewRun = {
+	autoInjectReview?: boolean;
 	body?: string;
 	createdAtLabel: string;
 	harness: string;
@@ -476,12 +477,14 @@ export type InspectorReviewLabels = {
 	sendToWorkerAgent: string;
 	sentToWorkerAgent: string;
 	sendToWorkerAgentError: string;
+	workerAgentWorkingOnFeedback: string;
 	showLatestReviewOnly: string;
 	showLess: string;
 	showMore: string;
 	commentNumber: (number: number) => string;
 	unresolvedCount: (count: number) => string;
 	viewInFile: string;
+	viewInFileWorkInProgress: string;
 	viewOnPR: string;
 };
 
@@ -492,6 +495,7 @@ export function InspectorReviewsView({
 	labels,
 	onRequestRereview,
 	onResolveInlineComment,
+	onSendAgentReview,
 	onSendInlineComment,
 	renderAvatar,
 	renderMarkdown,
@@ -502,6 +506,7 @@ export function InspectorReviewsView({
 	labels: InspectorReviewLabels;
 	onRequestRereview?: (review: InspectorGithubReview) => Promise<void> | void;
 	onResolveInlineComment?: (comment: InspectorInlineComment & { reviewerId?: string }) => Promise<void> | void;
+	onSendAgentReview?: (run: InspectorReviewRun) => Promise<void> | void;
 	onSendInlineComment?: (comment: InspectorInlineComment & { reviewerId?: string }) => Promise<void> | void;
 	renderAvatar: (harness: string) => ReactNode;
 	renderMarkdown: (body: string) => ReactNode;
@@ -535,11 +540,13 @@ export function InspectorReviewsView({
 								</ReviewSourceLabel>
 								<ReviewRuns
 									dimmed={group.ao.dimmed}
+									externalLink={externalLink}
 									historical={group.ao.historical}
 									labels={labels}
 									renderAvatar={renderAvatar}
 									renderMarkdown={renderMarkdown}
 									runs={group.ao.runs}
+									onSendAgentReview={onSendAgentReview}
 								/>
 							</div>
 						) : null}
@@ -685,15 +692,19 @@ function ReviewDisclosure({
 
 function ReviewRuns({
 	dimmed,
+	externalLink,
 	historical,
 	labels,
+	onSendAgentReview,
 	renderAvatar,
 	renderMarkdown,
 	runs,
 }: {
 	dimmed?: boolean;
+	externalLink: ExternalLinkComponent;
 	historical?: boolean;
 	labels: InspectorReviewLabels;
+	onSendAgentReview?: (run: InspectorReviewRun) => Promise<void> | void;
 	renderAvatar: (harness: string) => ReactNode;
 	renderMarkdown: (body: string) => ReactNode;
 	runs: InspectorReviewRun[];
@@ -704,8 +715,10 @@ function ReviewRuns({
 	return (
 		<ReviewRunHistory
 			dimmed={dimmed}
+			externalLink={externalLink}
 			historical={historical}
 			labels={labels}
+			onSendAgentReview={onSendAgentReview}
 			renderAvatar={renderAvatar}
 			renderMarkdown={renderMarkdown}
 			runs={runs}
@@ -715,15 +728,19 @@ function ReviewRuns({
 
 function ReviewRunHistory({
 	dimmed,
+	externalLink,
 	historical,
 	labels,
+	onSendAgentReview,
 	renderAvatar,
 	renderMarkdown,
 	runs,
 }: {
 	dimmed?: boolean;
+	externalLink: ExternalLinkComponent;
 	historical?: boolean;
 	labels: InspectorReviewLabels;
+	onSendAgentReview?: (run: InspectorReviewRun) => Promise<void> | void;
 	renderAvatar: (harness: string) => ReactNode;
 	renderMarkdown: (body: string) => ReactNode;
 	runs: InspectorReviewRun[];
@@ -738,14 +755,18 @@ function ReviewRunHistory({
 			{visible.map((run, index) => (
 				<ReviewSummaryCard
 					actor={run.harness || "reviewer"}
+					autoInjected={run.autoInjectReview}
 					body={run.status === "cancelled" || run.status === "failed" ? "" : run.body}
+					externalLink={externalLink}
 					isEarlier={historical || index > 0}
 					key={run.id}
 					labels={labels}
+					onSend={onSendAgentReview ? () => onSendAgentReview(run) : undefined}
 					renderAvatar={renderAvatar}
 					renderMarkdown={renderMarkdown}
 					testId="review-run-summary"
 					timestamp={run.createdAtLabel}
+					url={run.url}
 					verdict={run.verdict}
 				/>
 			))}
@@ -841,10 +862,39 @@ function GithubReviewHistory({
 	);
 }
 
+const reviewHeaderActionClass =
+	"inline-flex h-7 min-w-0 max-w-full appearance-none items-center justify-center rounded-md border border-border-strong bg-transparent px-2 text-center text-muted-foreground no-underline transition-colors hover:bg-interactive-hover hover:text-foreground @max-[300px]/inspector:w-full";
+const reviewHeaderActionLabelClass = "whitespace-nowrap font-sans text-xs font-medium leading-none tracking-normal";
+
+function ReviewHeaderAction({
+	children,
+	externalLink: ExternalLink,
+	href,
+	onClick,
+}: {
+	children: string;
+	externalLink: ExternalLinkComponent;
+	href?: string;
+	onClick?: () => Promise<void> | void;
+}) {
+	if (href) {
+		return (
+			<ExternalLink className={reviewHeaderActionClass} href={href}>
+				<span className={reviewHeaderActionLabelClass}>{children}</span>
+			</ExternalLink>
+		);
+	}
+	return (
+		<button className={reviewHeaderActionClass} onClick={onClick} type="button">
+			<span className={reviewHeaderActionLabelClass}>{children}</span>
+		</button>
+	);
+}
+
 function ExternalReviewCard({
 	defaultOpen,
 	entry,
-	externalLink,
+	externalLink: ExternalLink,
 	labels,
 	onRequestRereview,
 	onResolveInlineComment,
@@ -865,46 +915,43 @@ function ExternalReviewCard({
 	const [rereviewError, setRereviewError] = useState(false);
 	const body = entry.body?.trim();
 	const inlineComments = entry.inlineComments ?? [];
+	const repeatedInlineBody = Boolean(
+		body && inlineComments.some((comment) => normalizedReviewText(comment.body) === normalizedReviewText(body)),
+	);
+	const reviewUrl = entry.reviewUrl || entry.pullRequestUrl;
 	const openInlineCount = inlineComments.filter((comment) => comment.body?.trim() || comment.file || comment.url).length;
 	const showRereviewAction = Boolean(onRequestRereview && (entry.canRequestRereview ?? entry.verdict.tone !== "success"));
 	return (
-		<article className="min-w-0 border-b border-border/70 py-3 first:pt-0 last:border-b-0 last:pb-0" data-testid="github-review-card">
-			<button
-				aria-expanded={open}
-				className="flex w-full min-w-0 items-start gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-interactive-hover/30"
-				onClick={() => setOpen((current) => !current)}
-				type="button"
-			>
-				<ChevronIcon className="mt-0.5 size-icon-2xs shrink-0 text-passive" direction={open ? "down" : "right"} />
-				<span className="flex min-w-0 flex-1 flex-col gap-0.5">
-					<span className="flex min-w-0 items-center gap-1.5">
-						<span className="inline-flex min-w-0 items-center gap-1 text-xs font-semibold text-foreground">
-							<GithubAvatar className="size-5" login={entry.reviewerId} />
-							<span className="truncate">{entry.reviewerId}</span>
-						</span>
-						{entry.isBot ? <span className="shrink-0 font-mono text-micro text-passive">{labels.bot}</span> : null}
-					</span>
-					<span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-micro text-passive">
-						{entry.submittedAtLabel ? <span>{labels.reviewedAt(entry.submittedAtLabel)}</span> : null}
-					</span>
-				</span>
-				<VerdictBadge verdict={entry.verdict} />
-			</button>
-			{open ? (
-				<div className="flex min-w-0 flex-col gap-3 px-1 pt-3">
-					{showRereviewAction ? (
-						<div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-y border-border/50 py-2 @max-[300px]/inspector:flex-col @max-[300px]/inspector:items-stretch">
-							{openInlineCount > 0 ? (
-								<span className="font-mono text-2xs font-semibold text-error">{labels.unresolvedCount(openInlineCount)}</span>
-							) : <span aria-hidden="true" />}
-							{rereviewRequested ? (
+		<ReviewEntryDisclosure
+			actor={entry.reviewerId}
+			avatar={<GithubAvatar className="size-5" login={entry.reviewerId} />}
+			botLabel={entry.isBot ? labels.bot : undefined}
+			meta={entry.submittedAtLabel ? labels.reviewedAt(entry.submittedAtLabel) : undefined}
+			onOpenChange={setOpen}
+			open={open}
+			testId="github-review-card"
+			verdict={entry.verdict}
+		>
+			{showRereviewAction || reviewUrl ? (
+				<div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-y border-border/50 py-2 @max-[300px]/inspector:flex-col @max-[300px]/inspector:items-stretch">
+					{openInlineCount > 0 ? (
+						<span className="font-mono text-2xs font-semibold text-error">{labels.unresolvedCount(openInlineCount)}</span>
+					) : <span aria-hidden="true" />}
+					<div className="flex min-w-0 flex-wrap items-center justify-end gap-2 @max-[300px]/inspector:w-full">
+						{reviewUrl ? (
+							<ReviewHeaderAction externalLink={ExternalLink} href={reviewUrl}>
+								{labels.viewOnPR}
+							</ReviewHeaderAction>
+						) : null}
+						{showRereviewAction ? (
+							rereviewRequested ? (
 								<span className="inline-flex h-control-md items-center gap-1.5 text-2xs font-medium text-success">
 									<CheckIcon className="size-icon-xs shrink-0" />
 									{labels.rereviewRequested}
 								</span>
 							) : (
-								<button
-									className="inline-flex h-7 min-w-0 max-w-full items-center justify-center rounded-md border border-border-strong px-1.5 text-center text-micro font-medium tracking-tight text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground @max-[300px]/inspector:w-full"
+								<ReviewHeaderAction
+									externalLink={ExternalLink}
 									onClick={async () => {
 										setRereviewError(false);
 										try {
@@ -914,37 +961,90 @@ function ExternalReviewCard({
 											setRereviewError(true);
 										}
 									}}
-									type="button"
 								>
 									{labels.requestRereviewPR}
-								</button>
-							)}
-						</div>
-					) : null}
-					{rereviewError ? <p className="m-0 text-2xs font-medium text-error">{labels.rereviewRequestFailed}</p> : null}
-					{body ? (
-						<ReviewMarkdownBody body={body} clamped={false} renderMarkdown={renderMarkdown} testId="github-review-summary" />
-					) : null}
-					{openInlineCount > 0 ? (
-						<GithubInlineComments
-							externalLink={externalLink}
-							labels={labels}
-							onSendInlineComment={onSendInlineComment}
-							onResolveInlineComment={onResolveInlineComment}
-							reviewers={[
-								{
-									count: openInlineCount,
-									isBot: entry.isBot,
-									links: inlineComments,
-									reviewerId: entry.reviewerId,
-									reviewUrl: entry.reviewUrl,
-								},
-							]}
-							showReviewer={false}
-						/>
-					) : null}
+								</ReviewHeaderAction>
+							)
+						) : null}
+					</div>
 				</div>
 			) : null}
+			{rereviewError ? <p className="m-0 text-2xs font-medium text-error">{labels.rereviewRequestFailed}</p> : null}
+			{body && !repeatedInlineBody ? (
+				<ReviewMarkdownBody body={body} clamped={false} renderMarkdown={renderMarkdown} testId="github-review-summary" />
+			) : null}
+			{openInlineCount > 0 ? (
+				<GithubInlineComments
+					labels={labels}
+					onSendInlineComment={onSendInlineComment}
+					onResolveInlineComment={onResolveInlineComment}
+					reviewers={[
+						{
+							count: openInlineCount,
+							isBot: entry.isBot,
+							links: inlineComments,
+							reviewerId: entry.reviewerId,
+							reviewUrl: entry.reviewUrl,
+						},
+					]}
+					showReviewer={false}
+				/>
+			) : null}
+		</ReviewEntryDisclosure>
+	);
+}
+
+function normalizedReviewText(value: string | undefined): string {
+	return value?.trim().replace(/\s+/g, " ") ?? "";
+}
+
+function ReviewEntryDisclosure({
+	actor,
+	avatar,
+	botLabel,
+	children,
+	meta,
+	onOpenChange,
+	open,
+	testId,
+	verdict,
+}: {
+	actor: string;
+	avatar: ReactNode;
+	botLabel?: string;
+	children: ReactNode;
+	meta?: ReactNode;
+	onOpenChange: (open: boolean) => void;
+	open: boolean;
+	testId: string;
+	verdict: InspectorVerdict;
+}) {
+	return (
+		<article className="min-w-0 border-b border-border/70 py-3 first:pt-0 last:border-b-0 last:pb-0" data-testid={testId}>
+			<button
+				aria-expanded={open}
+				className="flex w-full min-w-0 items-start gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-interactive-hover/30"
+				onClick={() => onOpenChange(!open)}
+				type="button"
+			>
+				<ChevronIcon className="mt-0.5 size-icon-2xs shrink-0 text-passive" direction={open ? "down" : "right"} />
+				<span className="flex min-w-0 flex-1 flex-col gap-0.5">
+					<span className="flex min-w-0 items-center gap-1.5">
+						<span className="inline-flex min-w-0 items-center gap-1 text-xs font-semibold text-foreground">
+							{avatar}
+							<span className="truncate">{actor}</span>
+						</span>
+						{botLabel ? <span className="shrink-0 font-mono text-micro text-passive">{botLabel}</span> : null}
+					</span>
+					{meta ? (
+						<span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-micro text-passive">
+							{meta}
+						</span>
+					) : null}
+				</span>
+				<VerdictBadge verdict={verdict} />
+			</button>
+			{open ? <div className="flex min-w-0 flex-col gap-3 px-1 pt-3">{children}</div> : null}
 		</article>
 	);
 }
@@ -952,14 +1052,12 @@ function ExternalReviewCard({
 const RESOLVED_COMMENT_DISPLAY_MS = 1000;
 
 function GithubInlineComments({
-	externalLink: ExternalLink,
 	labels,
 	onResolveInlineComment,
 	onSendInlineComment,
 	reviewers,
 	showReviewer = true,
 }: {
-	externalLink: ExternalLinkComponent;
 	labels: InspectorReviewLabels;
 	onResolveInlineComment?: (comment: InspectorInlineComment & { reviewerId?: string }) => Promise<void> | void;
 	onSendInlineComment?: (comment: InspectorInlineComment & { reviewerId?: string }) => Promise<void> | void;
@@ -1010,7 +1108,6 @@ function GithubInlineComments({
 					<InlineCommentRow
 						comment={comment}
 						commentNumber={index + 1}
-						externalLink={ExternalLink}
 						key={comment.id}
 						labels={labels}
 						onResolve={onResolveInlineComment ? async () => {
@@ -1071,7 +1168,6 @@ function GithubInlineComments({
 function InlineCommentRow({
 	comment,
 	commentNumber,
-	externalLink: ExternalLink,
 	labels,
 	onResolve,
 	onSend,
@@ -1084,7 +1180,6 @@ function InlineCommentRow({
 }: {
 	comment: InspectorInlineComment & { reviewerId?: string };
 	commentNumber: number;
-	externalLink: ExternalLinkComponent;
 	labels: InspectorReviewLabels;
 	onResolve?: () => void;
 	onSend?: () => void;
@@ -1096,6 +1191,7 @@ function InlineCommentRow({
 	sent: boolean;
 }) {
 	const body = comment.body?.trim();
+	const viewInFileTooltipId = useId();
 	return (
 		<div className="flex min-w-0 flex-col gap-2 px-0 py-4 text-xs first:pt-2 last:pb-0">
 			{showReviewer && comment.reviewerId ? (
@@ -1111,7 +1207,7 @@ function InlineCommentRow({
 			{body ? <p className="m-0 max-w-prose whitespace-pre-wrap break-words leading-relaxed text-muted-foreground">{body}</p> : null}
 			<div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-border/50 pt-2 text-2xs">
 				{sent ? (
-					<span className="inline-flex h-control-md items-center gap-1.5 rounded-md px-1.5 font-medium text-muted-foreground [&_svg]:size-icon-xs">
+					<span className="inline-flex h-control-md items-center gap-1.5 rounded-md px-1.5 font-medium text-muted-foreground [&_svg]:size-icon-xs" title={labels.workerAgentWorkingOnFeedback}>
 						<CheckIcon className="shrink-0 text-success" />
 						{labels.sentToWorkerAgent}
 					</span>
@@ -1140,11 +1236,23 @@ function InlineCommentRow({
 						{labels.resolveComment}
 					</button>
 				)}
-				{comment.url ? (
-					<ExternalLink className="inline-flex h-7 items-center rounded-md border border-border/70 px-2 text-2xs font-medium text-muted-foreground no-underline transition-colors hover:border-border-strong hover:bg-interactive-hover hover:text-foreground" href={comment.url}>
+				<span className="group relative inline-flex">
+					<button
+						aria-describedby={viewInFileTooltipId}
+						aria-disabled="true"
+						className="inline-flex h-7 cursor-help items-center rounded-md border border-border/70 bg-transparent px-2 text-2xs font-medium text-muted-foreground transition-colors hover:border-border-strong hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+						type="button"
+					>
 						{labels.viewInFile}
-					</ExternalLink>
-				) : null}
+					</button>
+					<span
+						className="pointer-events-none invisible absolute bottom-full left-1/2 z-overlay mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+						id={viewInFileTooltipId}
+						role="tooltip"
+					>
+						{labels.viewInFileWorkInProgress}
+					</span>
+				</span>
 			</div>
 			{sendError && !sent ? <p className="m-0 text-2xs font-medium text-error">{labels.sendToWorkerAgentError}</p> : null}
 			{resolveError && !resolved ? <p className="m-0 text-2xs font-medium text-error">{labels.resolveReviewFailed}</p> : null}
@@ -1154,45 +1262,62 @@ function InlineCommentRow({
 
 function ReviewSummaryCard({
 	actor,
+	autoInjected = false,
 	body: rawBody,
+	externalLink: ExternalLink,
 	isBot = false,
 	isEarlier = false,
 	labels,
+	onSend,
 	renderAvatar,
 	renderMarkdown,
 	testId,
 	timestamp,
+	url,
 	verdict,
 }: {
 	actor: string;
+	autoInjected?: boolean;
 	body?: string;
+	externalLink: ExternalLinkComponent;
 	isBot?: boolean;
 	isEarlier?: boolean;
 	labels: InspectorReviewLabels;
+	onSend?: () => Promise<void> | void;
 	renderAvatar: (harness: string) => ReactNode;
 	renderMarkdown: (body: string) => ReactNode;
 	testId: string;
 	timestamp: string;
+	url?: string | null;
 	verdict: InspectorVerdict;
 }) {
+	const [open, setOpen] = useState(false);
 	const [expanded, setExpanded] = useState(false);
+	const [sent, setSent] = useState(autoInjected);
+	const [sending, setSending] = useState(false);
+	const [sendError, setSendError] = useState(false);
+	useEffect(() => {
+		if (autoInjected) setSent(true);
+	}, [autoInjected]);
 	const trimmed = rawBody?.trim();
 	const body = trimmed ? trimmed.replace(/\n{3,}/g, "\n\n") : trimmed;
 	const clamped = body ? isClampedSummary(body) : false;
 	return (
-		<article className="flex min-w-0 flex-col gap-1 rounded-md bg-overlay/50 px-2.5 py-2.5">
-			<span className="flex min-w-0 items-center gap-1.5">
-				<span className="inline-flex min-w-0 items-center gap-1 text-micro font-medium text-muted-foreground">
-					{renderAvatar(actor)}
-					<span className="truncate">{actor}</span>
-				</span>
-				{isBot ? <span className="shrink-0 font-mono text-micro text-passive">{labels.bot}</span> : null}
-				<VerdictBadge verdict={verdict} />
-				<span className="ml-auto inline-flex shrink-0 items-center gap-1.5 text-micro text-passive">
+		<ReviewEntryDisclosure
+			actor={actor}
+			avatar={renderAvatar(actor)}
+			botLabel={isBot ? labels.bot : undefined}
+			meta={
+				<>
 					{isEarlier ? <span>{labels.earlierPass}</span> : null}
-					<span className="font-mono">{timestamp}</span>
-				</span>
-			</span>
+					<span>{timestamp}</span>
+				</>
+			}
+			onOpenChange={setOpen}
+			open={open}
+			testId="agent-review-card"
+			verdict={verdict}
+		>
 			{body ? (
 				<ReviewMarkdownBody
 					body={body}
@@ -1207,7 +1332,45 @@ function ReviewSummaryCard({
 				labels={labels}
 				onExpandedChange={() => setExpanded((open) => !open)}
 			/>
-		</article>
+			{body || url ? (
+				<div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-border/50 pt-2 text-2xs">
+					{body && onSend ? (
+						sent ? (
+							<span className="inline-flex h-control-md items-center gap-1.5 rounded-md px-1.5 font-medium text-muted-foreground [&_svg]:size-icon-xs" title={labels.workerAgentWorkingOnFeedback}>
+								<CheckIcon className="shrink-0 text-success" />
+								{labels.sentToWorkerAgent}
+							</span>
+						) : (
+							<button
+								className="inline-flex h-7 items-center rounded-md border border-border/70 px-2 text-2xs font-medium text-muted-foreground transition-colors hover:border-border-strong hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-60"
+								disabled={sending}
+								onClick={async () => {
+									setSending(true);
+									setSendError(false);
+									try {
+										await onSend();
+										setSent(true);
+									} catch {
+										setSendError(true);
+									} finally {
+										setSending(false);
+									}
+								}}
+								type="button"
+							>
+								{labels.sendToWorkerAgent}
+							</button>
+						)
+					) : null}
+					{url ? (
+						<ExternalLink className="inline-flex h-7 items-center rounded-md border border-border/70 px-2 text-2xs font-medium text-muted-foreground no-underline transition-colors hover:border-border-strong hover:bg-interactive-hover hover:text-foreground" href={url}>
+							{labels.viewOnPR}
+						</ExternalLink>
+					) : null}
+				</div>
+			) : null}
+			{sendError && !sent ? <p className="m-0 text-2xs font-medium text-error">{labels.sendToWorkerAgentError}</p> : null}
+		</ReviewEntryDisclosure>
 	);
 }
 
