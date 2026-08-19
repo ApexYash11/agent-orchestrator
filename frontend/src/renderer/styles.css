@@ -740,8 +740,8 @@ button.settings-link-row:active {
 	}
 
 	&:focus-visible {
-		border-color: var(--bridge-accent);
-		box-shadow: 0 0 0 2px var(--bridge-accent-weak);
+		border-color: var(--color-border-settings-input);
+		box-shadow: none;
 	}
 }
 
@@ -769,7 +769,7 @@ button.settings-link-row:active {
 
 	&:focus-visible {
 		border-radius: var(--radius-md);
-		box-shadow: 0 0 0 2px var(--bridge-accent-weak);
+		box-shadow: none;
 	}
 
 	& .settings-row-value {
@@ -812,8 +812,8 @@ button.settings-link-row:active {
 	}
 
 	&:focus-visible {
-		border-color: var(--bridge-accent);
-		box-shadow: 0 0 0 2px var(--bridge-accent-weak);
+		border-color: var(--color-border-settings-input);
+		box-shadow: none;
 		color: var(--color-text-settings-row);
 		outline: none;
 	}
@@ -847,8 +847,8 @@ button.settings-link-row:active {
 	}
 
 	&:focus-visible {
-		border-color: var(--bridge-accent);
-		box-shadow: 0 0 0 2px var(--bridge-accent-weak);
+		border-color: var(--color-border-settings-input);
+		box-shadow: none;
 		color: var(--color-text-settings-row);
 		outline: none;
 	}
@@ -946,7 +946,7 @@ button.settings-link-row:active {
 }
 
 .composer-toolbar .composer-toolbar-option:focus-visible {
-	box-shadow: inset 0 0 0 2px var(--bridge-accent-weak);
+	box-shadow: none;
 }
 
 /* Inline value control inside the task composer's bottom toolbar. Reads as a
@@ -977,7 +977,7 @@ button.settings-link-row:active {
 
 	&:focus-visible {
 		border-color: transparent;
-		box-shadow: 0 0 0 2px var(--bridge-accent-weak);
+		box-shadow: none;
 		outline: none;
 	}
 
@@ -1042,8 +1042,8 @@ button.settings-link-row:active {
 	}
 
 	&:focus-visible {
-		border-color: var(--bridge-accent);
-		box-shadow: 0 0 0 2px var(--bridge-accent-weak);
+		border-color: var(--color-border-settings-input);
+		box-shadow: none;
 		color: var(--color-text-settings-row);
 		outline: none;
 	}
@@ -1087,7 +1087,7 @@ button.settings-link-row:active {
 	}
 
 	&:focus-visible {
-		box-shadow: 0 0 0 2px var(--bridge-accent-weak);
+		box-shadow: none;
 	}
 }
 
@@ -1139,7 +1139,7 @@ button.settings-link-row:active {
 	}
 
 	&:focus-visible {
-		box-shadow: 0 0 0 2px var(--bridge-accent-weak);
+		box-shadow: none;
 	}
 
 	&[data-state="checked"] {
@@ -1184,7 +1184,7 @@ button.settings-link-row:active {
 
 	&:focus-visible {
 		outline: none;
-		box-shadow: 0 0 0 2px var(--bridge-accent-weak);
+		box-shadow: none;
 	}
 }
 
@@ -1754,6 +1754,20 @@ body.is-resizing-x [data-slot="inspector-container"] {
 .sidebar-focusless :focus-visible {
 	background-color: var(--color-interactive-hover) !important;
 	outline: none !important;
+	box-shadow: none !important;
+}
+
+/* No blue focus rings anywhere — hover/active carry interaction feedback.
+   !important beats Tailwind focus / focus-visible ring and outline utilities. */
+:focus,
+:focus-visible {
+	outline: none !important;
+	outline-offset: 0 !important;
+	--tw-ring-shadow: 0 0 #0000 !important;
+	--tw-ring-offset-shadow: 0 0 #0000 !important;
+	--tw-ring-color: transparent !important;
+}
+:focus-visible {
 	box-shadow: none !important;
 }
 
@@ -3703,8 +3717,8 @@ body:has(#root .platform-windows) > .files-popout-overlay {
 
 .browser-panel__url-input:focus {
 	box-shadow:
-		0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent),
-		inset 0 1px 0 color-mix(in srgb, white 6%, transparent);
+		inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
+		0 1px 8px color-mix(in srgb, black 9%, transparent);
 }
 
 .browser-panel__content {
