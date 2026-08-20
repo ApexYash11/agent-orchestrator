@@ -2167,6 +2167,12 @@ func TestToSpawnAPIErrorMapsSpawnStageSentinels(t *testing.T) {
 			"SPAWN_TIMEOUT",
 		},
 		{
+			"timeout wins over runtime stage",
+			fmt.Errorf("spawn mer-1: %w: %w", sessionmanager.ErrRuntimeCreate, context.DeadlineExceeded),
+			apierr.KindConflict,
+			"SPAWN_TIMEOUT",
+		},
+		{
 			"spawn cancelled",
 			context.Canceled,
 			apierr.KindConflict,
@@ -2225,6 +2231,45 @@ func TestSpawnEmitsTypedErrorCodeForRuntimeFailure(t *testing.T) {
 	}
 	if got := ts.events[0].Payload["error_kind"]; got != "internal" {
 		t.Fatalf("event payload error_kind = %#v, want internal", got)
+	}
+}
+
+func TestEmitSpawnFailedClassifiesRawStageSentinel(t *testing.T) {
+	ts := &fakeTelemetrySink{}
+	svc := NewWithDeps(Deps{
+		Telemetry: ts,
+		Clock:     func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	})
+
+	raw := fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: boom", sessionmanager.ErrRuntimeCreate)
+	svc.emitSpawnFailed(ports.SpawnConfig{
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+	}, raw, 42)
+
+	if len(ts.events) != 1 {
+		t.Fatalf("telemetry events = %d, want 1", len(ts.events))
+	}
+	if got := ts.events[0].Payload["error_code"]; got != "RUNTIME_CREATE_FAILED" {
+		t.Fatalf("event payload error_code = %#v, want RUNTIME_CREATE_FAILED", got)
+	}
+	if got := ts.events[0].Payload["error_kind"]; got != "internal" {
+		t.Fatalf("event payload error_kind = %#v, want internal", got)
+	}
+}
+
+func TestToSpawnAPIErrorIsIdempotentForMappedErrors(t *testing.T) {
+	raw := fmt.Errorf("spawn mer-1: %w: tmux runtime: create session mer-1: boom", sessionmanager.ErrRuntimeCreate)
+	first := toSpawnAPIError(raw)
+	second := toSpawnAPIError(first)
+
+	var firstErr, secondErr *apierr.Error
+	if !errors.As(first, &firstErr) || !errors.As(second, &secondErr) {
+		t.Fatalf("mapped = %v / %v, want *apierr.Error", first, second)
+	}
+	if firstErr.Code != "RUNTIME_CREATE_FAILED" || secondErr.Code != "RUNTIME_CREATE_FAILED" {
+		t.Fatalf("codes = %q / %q, want RUNTIME_CREATE_FAILED", firstErr.Code, secondErr.Code)
 	}
 }
 

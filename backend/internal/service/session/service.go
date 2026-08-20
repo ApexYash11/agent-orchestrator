@@ -346,7 +346,7 @@ func (s *Service) emitSpawnFailed(cfg ports.SpawnConfig, err error, durationMs i
 		return
 	}
 	projectID := cfg.ProjectID
-	apiErr := toAPIError(err)
+	apiErr := toSpawnAPIError(err)
 	errorKind, errorCode := telemetrymeta.ErrorKindAndCode(apiErr)
 	payload := map[string]any{
 		"component":   "session_service",
@@ -997,10 +997,15 @@ func toAPIError(err error) error {
 // toSpawnAPIError maps spawn failures to structured API errors so telemetry and
 // clients never land in the unclassified internal bucket when a stage sentinel
 // is present. Known inner sentinels (branch state, agent binary, chat
-// preflight) still win via toAPIError first.
+// preflight) still win via toAPIError. Already-mapped *apierr.Error values are
+// returned as-is so emitSpawnFailed can classify raw or pre-mapped errors.
 func toSpawnAPIError(err error) error {
 	if err == nil {
 		return nil
+	}
+	var already *apierr.Error
+	if errors.As(err, &already) {
+		return already
 	}
 	if mapped := toAPIError(err); !errors.Is(mapped, err) {
 		return mapped
