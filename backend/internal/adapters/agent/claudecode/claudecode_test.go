@@ -441,11 +441,11 @@ func TestGetAgentHooksInstallsClaudeHooks(t *testing.T) {
 	if len(config.Permissions) == 0 {
 		t.Fatalf("unrelated settings clobbered: %s", data)
 	}
-	// SessionStart must fire on resume (and clear/compact) as well as a fresh
-	// startup: a --resume relaunch otherwise never confirms the native session
-	// id under the new RuntimeLaunchID until the user types again (#4122).
-	if m := matcherForCommand(config.Hooks["SessionStart"], "ao hooks claude-code session-start"); m == nil || *m != "startup|resume|clear|compact" {
-		t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact", m)
+	// SessionStart must fire on resume (and clear/compact/fork) as well as a
+	// fresh startup: a --resume relaunch otherwise never confirms the native
+	// session id under the new RuntimeLaunchID until the user types again (#4122).
+	if m := matcherForCommand(config.Hooks["SessionStart"], "ao hooks claude-code session-start"); m == nil || *m != "startup|resume|clear|compact|fork" {
+		t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact|fork", m)
 	}
 	if m := matcherForCommand(config.Hooks["UserPromptSubmit"], "ao hooks claude-code user-prompt-submit"); m != nil {
 		t.Fatalf("UserPromptSubmit matcher = %v, want none", m)
@@ -490,8 +490,8 @@ func TestGetAgentHooksMigratesSessionStartMatcher(t *testing.T) {
 		t.Fatal(err)
 	}
 	groups := config.Hooks["SessionStart"]
-	if m := matcherForCommand(groups, "ao hooks claude-code session-start"); m == nil || *m != "startup|resume|clear|compact" {
-		t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact", m)
+	if m := matcherForCommand(groups, "ao hooks claude-code session-start"); m == nil || *m != "startup|resume|clear|compact|fork" {
+		t.Fatalf("SessionStart matcher = %v, want startup|resume|clear|compact|fork", m)
 	}
 	if got := countClaudeHookCommand(groups, "ao hooks claude-code session-start"); got != 1 {
 		t.Fatalf("session-start command count = %d, want 1 in %#v", got, groups)

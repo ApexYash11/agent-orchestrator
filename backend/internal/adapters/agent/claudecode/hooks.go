@@ -17,12 +17,12 @@ const (
 
 // claudeSessionStartMatcher is referenced by pointer so SessionStart serializes
 // with Claude's documented source matcher. "startup" alone misses --resume
-// relaunches (and /clear, compact), so the native session id is not confirmed
-// under the new RuntimeLaunchID until the next user prompt (#4122).
-var claudeSessionStartMatcher = "startup|resume|clear|compact"
+// relaunches (and /clear, compact, fork), so the native session id is not
+// confirmed under the new RuntimeLaunchID until the next user prompt (#4122).
+var claudeSessionStartMatcher = "startup|resume|clear|compact|fork"
 
 // claudeManagedHooks is the source of truth for the hooks AO installs:
-// SessionStart (startup/resume/clear/compact), UserPromptSubmit, the tool-use
+// SessionStart (startup/resume/clear/compact/fork), UserPromptSubmit, the tool-use
 // trio (PreToolUse, PostToolUse, PostToolUseFailure), PermissionRequest,
 // Stop, Notification, and SessionEnd. They report normalized session metadata
 // and activity-state signals back into AO's store (see DeriveActivityState).
