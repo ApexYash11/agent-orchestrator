@@ -1810,6 +1810,12 @@ export interface components {
         AgentSwitchResponse: {
             switch: components["schemas"]["AgentSwitch"];
         };
+        AnthropicUsageDetailsResponse: {
+            anthropicCacheCreation1hInputTokens: null | number;
+            anthropicCacheCreation5mInputTokens: null | number;
+            anthropicCacheCreationInputTokens: null | number;
+            anthropicDirectUncachedInputTokens: null | number;
+        };
         AttachmentInput: {
             data: string;
             mimeType?: string;
@@ -1877,8 +1883,13 @@ export interface components {
         };
         CompactSessionUsageResponse: {
             incomplete: boolean;
+            /** @description Canonical input plus output. Null when either component is unknown. */
+            processedTokens: null | number;
             sessionId: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Deprecated compatibility alias for processedTokens.
+             */
             totalTokens: number;
         };
         ContainerReapConfig: {
@@ -2442,6 +2453,10 @@ export interface components {
             kind: "session" | "pr";
             prUrl?: string;
             sessionId: string;
+        };
+        OpenAIUsageDetailsResponse: {
+            openaiCacheWriteInputTokens: null | number;
+            openaiReasoningOutputTokens: null | number;
         };
         OpenShellTerminalRequest: {
             /** @description Project whose root the shell starts in. Omitted opens the shell in the daemon data dir. */
@@ -3101,16 +3116,42 @@ export interface components {
             subagentTranscriptPath?: string;
             transcriptPath?: string;
         };
+        UsageMetricProvenanceResponse: {
+            /** @enum {string} */
+            cachedInputTokens: "reported" | "derived" | "unsupported" | "unknown";
+            /** @enum {string} */
+            inputTokens: "reported" | "derived" | "unsupported" | "unknown";
+            /** @enum {string} */
+            outputTokens: "reported" | "derived" | "unsupported" | "unknown";
+            /** @enum {string} */
+            uncachedInputTokens: "reported" | "derived" | "unsupported" | "unknown";
+        };
         UsageModelResponse: {
             modelId: string;
             totals: components["schemas"]["UsageTotalsResponse"];
         };
+        UsageProviderDetailsResponse: {
+            anthropic?: components["schemas"]["AnthropicUsageDetailsResponse"];
+            openai?: components["schemas"]["OpenAIUsageDetailsResponse"];
+        };
         UsageTotalsResponse: {
+            /** @description Deprecated compatibility alias for cachedInputTokens. */
             cacheReadTokens: null | number;
+            /** @description Deprecated compatibility aggregate of provider cache-write input counters. */
             cacheWriteTokens: null | number;
+            /** @description Input read from an existing provider cache. Cache hit percentage uses cachedInputTokens divided by inclusive inputTokens. */
+            cachedInputTokens: null | number;
+            /** @description Total input, including cached and uncached input. */
             inputTokens: null | number;
+            /** @description Total output, including provider-specific subsets such as reasoning output. */
             outputTokens: null | number;
+            /** @description Canonical input plus output. Null when either component is unknown. */
+            processedTokens: null | number;
+            provenance: components["schemas"]["UsageMetricProvenanceResponse"];
+            providerDetails: components["schemas"]["UsageProviderDetailsResponse"];
+            /** @description Deprecated compatibility alias for the OpenAI reasoning-output subset. */
             reasoningTokens: null | number;
+            /** @description Input not read from an existing provider cache. */
             uncachedInputTokens: null | number;
         };
         WorkspaceFileResponse: {
