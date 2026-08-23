@@ -50,7 +50,7 @@ type interruptAttempt struct {
 }
 
 type parkedPermission struct {
-	options map[string]acpsdk.PermissionOption
+	options map[string]json.RawMessage
 	result  chan string
 }
 
@@ -82,26 +82,32 @@ type conversation struct {
 	proc *process
 	log  *slog.Logger
 
-	mu             sync.Mutex
-	sessionID      string
-	capabilities   ports.ChatCapabilities
-	prepared       *preparedTurn
-	activeTurn     string
-	settlingTurn   string
-	turnCancel     context.CancelFunc
-	interrupt      *interruptAttempt
-	pending        map[string]*parkedPermission
-	pendingInputs  map[string]*parkedInput
-	messages       map[string]string
-	thoughts       map[string]string
-	nestedMessages map[string]nestedMessageState
-	tools          map[string]*toolState
-	configOptions  []ports.ChatConfigOption
-	skills         []ports.ChatSkill
-	skillsKnown    bool
-	closed         bool
-	modeFor        func(ports.PermissionMode) string
-	optionsFor     func(ports.ChatTurnSettings) []SessionOption
+	mu                sync.Mutex
+	sessionID         string
+	capabilities      ports.ChatCapabilities
+	prepared          *preparedTurn
+	activeTurn        string
+	settlingTurn      string
+	turnCancel        context.CancelFunc
+	interrupt         *interruptAttempt
+	pending           map[string]*parkedPermission
+	pendingInputs     map[string]*parkedInput
+	messages          map[string]string
+	thoughts          map[string]string
+	nestedMessages    map[string]nestedMessageState
+	tools             map[string]*toolState
+	configOptions     []ports.ChatConfigOption
+	skills            []ports.ChatSkill
+	skillsKnown       bool
+	closed            bool
+	modeFor           func(ports.PermissionMode) string
+	optionsFor        func(ports.ChatTurnSettings) []SessionOption
+	permissionMode    ports.PermissionMode
+	permissionFor     PermissionPolicy
+	initialPermission ports.PermissionMode
+	validateSettings  TurnSettingsValidator
+	extensionFor      ClientExtensionHandler
+	extensionMethods  map[string]string
 
 	eventMu      sync.RWMutex
 	events       chan ports.ChatEvent
@@ -124,21 +130,35 @@ var _ ports.ChatSteerer = (*conversation)(nil)
 var _ ports.ChatInputResponder = (*conversation)(nil)
 var _ acpsdk.Client = (*conversation)(nil)
 var _ acpsdk.ClientExperimental = (*conversation)(nil)
+var _ acpsdk.ExtensionMethodHandler = (*conversation)(nil)
 
-func newConversation(proc *process, log *slog.Logger) *conversation {
-	c := &conversation{
-		proc:           proc,
-		log:            log,
-		pending:        make(map[string]*parkedPermission),
-		pendingInputs:  make(map[string]*parkedInput),
-		capabilities:   make(ports.ChatCapabilities),
-		messages:       make(map[string]string),
-		thoughts:       make(map[string]string),
-		nestedMessages: make(map[string]nestedMessageState),
-		tools:          make(map[string]*toolState),
-		events:         make(chan ports.ChatEvent, eventBuffer),
+func newConversation(
+	proc *process,
+	log *slog.Logger,
+	extensionFor ClientExtensionHandler,
+	extensionAliases map[string]string,
+) *conversation {
+	reverseAliases := make(map[string]string, len(extensionAliases))
+	for method, alias := range extensionAliases {
+		reverseAliases[alias] = method
 	}
-	c.conn = acpsdk.NewClientSideConnection(c, proc.stdin, proc.stdout)
+	c := &conversation{
+		proc:             proc,
+		log:              log,
+		pending:          make(map[string]*parkedPermission),
+		pendingInputs:    make(map[string]*parkedInput),
+		capabilities:     make(ports.ChatCapabilities),
+		messages:         make(map[string]string),
+		thoughts:         make(map[string]string),
+		nestedMessages:   make(map[string]nestedMessageState),
+		tools:            make(map[string]*toolState),
+		events:           make(chan ports.ChatEvent, eventBuffer),
+		extensionFor:     extensionFor,
+		extensionMethods: reverseAliases,
+	}
+	c.conn = acpsdk.NewClientSideConnection(
+		c, proc.stdin, newExtensionMethodReader(proc.stdout, extensionAliases),
+	)
 	c.conn.SetLogger(log)
 	go c.watchConnection()
 	return c
@@ -149,6 +169,9 @@ func (c *conversation) start(
 	capabilities ports.ChatCapabilities,
 	modeFor func(ports.PermissionMode) string,
 	optionsFor func(ports.ChatTurnSettings) []SessionOption,
+	permissionFor PermissionPolicy,
+	initialPermission ports.PermissionMode,
+	validateSettings TurnSettingsValidator,
 	configOptions []acpsdk.SessionConfigOption,
 ) {
 	c.mu.Lock()
@@ -169,6 +192,10 @@ func (c *conversation) start(
 	}
 	c.modeFor = modeFor
 	c.optionsFor = optionsFor
+	c.permissionFor = permissionFor
+	c.initialPermission = ports.NormalizePermissionMode(initialPermission)
+	c.permissionMode = c.initialPermission
+	c.validateSettings = validateSettings
 	c.mu.Unlock()
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 }
@@ -232,9 +259,16 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 	sessionID := c.sessionID
 	modeFor := c.modeFor
 	optionsFor := c.optionsFor
+	initialPermission := c.initialPermission
+	validateSettings := c.validateSettings
 	c.mu.Unlock()
 	if sessionID == "" {
 		return errors.New("ACP session is not open")
+	}
+	if validateSettings != nil {
+		if err := validateSettings(initialPermission, settings); err != nil {
+			return err
+		}
 	}
 	if modeFor != nil {
 		if mode := modeFor(settings.Approval); mode != "" {
@@ -267,6 +301,11 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 			}
 			c.replaceConfigOptions(resp.ConfigOptions)
 		}
+	}
+	if settings.Approval != "" {
+		c.mu.Lock()
+		c.permissionMode = ports.NormalizePermissionMode(settings.Approval)
+		c.mu.Unlock()
 	}
 	return nil
 }
@@ -441,13 +480,12 @@ func (c *conversation) ResolveRequest(
 		c.mu.Unlock()
 		return ports.ErrChatRequestNotPending
 	}
-	option, offered := request.options[decision.ID]
+	offeredRaw, offered := request.options[decision.ID]
 	if !offered {
 		c.mu.Unlock()
 		return ports.ErrChatDecisionNotOffered
 	}
 	if len(decision.Raw) > 0 {
-		offeredRaw, _ := json.Marshal(option)
 		if !bytes.Equal(bytes.TrimSpace(decision.Raw), bytes.TrimSpace(offeredRaw)) {
 			c.mu.Unlock()
 			return ports.ErrChatDecisionNotOffered

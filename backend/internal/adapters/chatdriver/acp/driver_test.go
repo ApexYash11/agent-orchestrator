@@ -43,6 +43,7 @@ type fakeAgent struct {
 	mode                string
 	modeNotFound        bool // SetSessionMode returns -32601
 	configNotFound      bool // SetSessionConfigOption returns -32601
+	configErr           error
 	newSessionUpdates   []acpsdk.SessionUpdate
 	options             map[string]string
 	newConfig           []acpsdk.SessionConfigOption
@@ -163,6 +164,11 @@ func (a *fakeAgent) LoadSession(ctx context.Context, params acpsdk.LoadSessionRe
 func (a *fakeAgent) SetSessionConfigOption(_ context.Context, params acpsdk.SetSessionConfigOptionRequest) (acpsdk.SetSessionConfigOptionResponse, error) {
 	a.mu.Lock()
 	a.setCalls++
+	if a.configErr != nil {
+		err := a.configErr
+		a.mu.Unlock()
+		return acpsdk.SetSessionConfigOptionResponse{}, err
+	}
 	if a.configNotFound {
 		a.mu.Unlock()
 		return acpsdk.SetSessionConfigOptionResponse{}, acpsdk.NewMethodNotFound("session/set_config_option")
@@ -764,6 +770,115 @@ func TestACPDriverClosesTrailingUserOnlyHistoryAsRecovered(t *testing.T) {
 	if len(history) != 3 || history[2].Kind != ports.ChatEventTurnCompleted ||
 		history[2].TurnState != domain.TurnStateRecovered {
 		t.Fatalf("history = %#v, want trailing recovered turn", history)
+	}
+}
+
+func TestConversationCapabilitiesTreatLoadSessionAsResume(t *testing.T) {
+	configured := ports.ChatCapabilities{ports.ChatCapabilityResume: true}
+	init := acpsdk.InitializeResponse{AgentCapabilities: acpsdk.AgentCapabilities{
+		LoadSession: true,
+	}}
+	if !conversationCapabilities(configured, init)[ports.ChatCapabilityResume] {
+		t.Fatal("loadSession-only ACP agent was reported as non-resumable")
+	}
+}
+
+func TestACPDriverUsesProviderPermissionPolicyBeforeParking(t *testing.T) {
+	agent := &fakeAgent{promptNoPermission: true}
+	driver := New(Config{
+		Harness:      domain.HarnessCursor,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityApprovals: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		PermissionPolicy: func(mode ports.PermissionMode, params acpsdk.RequestPermissionRequest) (acpsdk.PermissionOptionId, bool) {
+			if mode != ports.PermissionModeBypassPermissions {
+				return "", false
+			}
+			return params.Options[0].OptionId, true
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.spawn = fakeSpawn(agent)
+
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{
+		WorkspacePath: t.TempDir(), Permissions: ports.PermissionModeBypassPermissions,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer opened.Close()
+	ready := nextEvent(t, opened.Events())
+	if ready.Kind != ports.ChatEventControllerState {
+		t.Fatalf("first event = %#v, want controller state", ready)
+	}
+
+	conv := opened.(*conversation)
+	if err := conv.applyTurnSettings(context.Background(), ports.ChatTurnSettings{}); err != nil {
+		t.Fatalf("apply empty settings: %v", err)
+	}
+	conv.mu.Lock()
+	modeAfterEmpty := conv.permissionMode
+	conv.mu.Unlock()
+	if modeAfterEmpty != ports.PermissionModeBypassPermissions {
+		t.Fatalf("permission mode after empty turn settings = %q, want launch mode %q",
+			modeAfterEmpty, ports.PermissionModeBypassPermissions)
+	}
+	response, err := conv.RequestPermission(context.Background(), acpsdk.RequestPermissionRequest{
+		ToolCall: acpsdk.ToolCallUpdate{ToolCallId: "edit-1", Kind: acpsdk.Ptr(acpsdk.ToolKindEdit)},
+		Options: []acpsdk.PermissionOption{{
+			OptionId: "allow-once", Name: "Allow", Kind: acpsdk.PermissionOptionKindAllowOnce,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RequestPermission: %v", err)
+	}
+	if response.Outcome.Selected == nil || response.Outcome.Selected.OptionId != "allow-once" {
+		t.Fatalf("permission response = %#v", response)
+	}
+	select {
+	case event := <-opened.Events():
+		t.Fatalf("automatic policy emitted a parked approval: %#v", event)
+	case <-time.After(30 * time.Millisecond):
+	}
+}
+
+func TestACPDriverKeepsPermissionPolicyWhenLaterTurnSettingFails(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness: domain.HarnessCursor,
+		Probe:   func(context.Context) error { return nil },
+		Launch:  func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		SessionOptions: func(settings ports.ChatTurnSettings) []SessionOption {
+			if settings.Model == "" {
+				return nil
+			}
+			return []SessionOption{{ID: "model", Value: settings.Model}}
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.spawn = fakeSpawn(agent)
+
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer opened.Close()
+	_ = nextEvent(t, opened.Events())
+
+	agent.mu.Lock()
+	agent.configErr = errors.New("set model failed")
+	agent.mu.Unlock()
+	conv := opened.(*conversation)
+	err = conv.applyTurnSettings(context.Background(), ports.ChatTurnSettings{
+		Approval: ports.PermissionModeAcceptEdits,
+		Model:    "cursor-model",
+	})
+	if err == nil {
+		t.Fatal("applyTurnSettings succeeded, want config error")
+	}
+	conv.mu.Lock()
+	mode := conv.permissionMode
+	conv.mu.Unlock()
+	if mode != ports.PermissionModeDefault {
+		t.Fatalf("permission mode after rejected settings = %q, want %q", mode, ports.PermissionModeDefault)
 	}
 }
 
