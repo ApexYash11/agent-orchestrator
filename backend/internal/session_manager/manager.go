@@ -748,7 +748,6 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if cfg.Harness == "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: configure project %s.agent or pass --harness", ErrMissingHarness, roleConfigName(cfg.Kind))
 	}
-
 	// Reject an unknown harness before any durable state is created. Doing this
 	// after CreateSession would leave a terminated orphan row and waste a
 	// worktree on a spawn that can never launch.
@@ -784,7 +783,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			m.logger.Warn("spawn: default Chat unavailable; falling back to TUI",
 				"harness", cfg.Harness, "error", ports.ErrChatUnsupported)
 			mode = domain.SessionModeTUI
-		} else if err := m.chat.PreflightChat(ctx, cfg.Harness); err != nil {
+		} else if err := m.chat.PreflightChat(ctx, cfg.Harness, agentConfig.Permissions); err != nil {
 			fallbackAllowed := errors.Is(err, ports.ErrChatUnsupported) ||
 				errors.Is(err, ports.ErrChatDriverUnavailable) ||
 				errors.Is(err, ports.ErrChatDriverIncompatible) ||
