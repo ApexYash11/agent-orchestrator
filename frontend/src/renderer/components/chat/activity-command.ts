@@ -63,6 +63,14 @@ export function exploredFileCount(text: string): number | undefined {
 }
 
 /** The command's binary, normalized so `/bin/sed` and `sed` classify alike. */
+export function commandBinaryLabel(command: string): string | undefined {
+	const trimmed = command.trim();
+	if (!trimmed) return undefined;
+	const word = firstWord(trimmed);
+	return word || undefined;
+}
+
+/** The command's binary, normalized so `/bin/sed` and `sed` classify alike. */
 function firstWord(text: string): string {
 	const trimmed = text.trim();
 	const space = trimmed.indexOf(" ");
