@@ -1,7 +1,4 @@
-import {
-	useQuery,
-	useQueryClient,
-} from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import {
@@ -18,6 +15,7 @@ import {
 	RefreshCw,
 	Search,
 	Settings,
+	Smartphone,
 	Trash2,
 	User,
 } from "lucide-react";
@@ -148,6 +146,7 @@ function useSelection() {
 		// Settings is a modal — open it in place so the current page (session
 		// terminal, board, etc.) stays underneath.
 		goGlobalSettings: () => openGlobalSettings(),
+		goConnectMobile: () => openGlobalSettings("mobile"),
 		goSettings: (projectId: string) => openProjectSettings(projectId),
 		goProject: (projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } }),
 		goSession: (projectId: string, sessionId: string) =>
@@ -199,7 +198,6 @@ export function Sidebar({
 	const daemonStatus = useShellMaybe()?.daemonStatus ?? null;
 	const commandPaletteEnabled = useCommandPaletteEnabled();
 	const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
-
 	useLayoutEffect(() => {
 		// Offcanvas: the panel slides off-screen on collapse — no need to hide content.
 		// Reveal immediately on expand so there's no fade-in delay.
@@ -416,16 +414,10 @@ export function Sidebar({
 
 			{/* Footer — Settings opens the global settings page directly.
 			    Its hairline and row height match the board Archive bar. Bottom
-			    margin matches the framed center-panel inset plus the 1px surface
-			    border so the two hairlines meet. Native fullscreen drops the
-			    mac inset, so the footer collapses to the 1px surface border. */}
+			    spacing stays inside the footer so there is no empty strip beneath
+			    the final action. */}
 			<SidebarFooter
-				className={cn(
-					"relative mt-auto gap-0 overflow-hidden border-t border-border-strong px-2 !py-2 transition-[padding] duration-200 ease-linear group-data-[collapsible=icon]:min-h-16 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:border-t-0 group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:!pb-0 group-data-[collapsible=icon]:!pt-1.5",
-					isMac
-						? "mb-[calc(var(--size-center-panel-inset-mac)+1px)] in-[.native-fullscreen]:mb-px"
-						: "mb-[calc(var(--size-center-panel-bottom-inset)+1px)]",
-				)}
+				className="relative mt-auto gap-0 overflow-hidden border-t border-border-strong px-2 !py-2 transition-[padding] duration-200 ease-linear group-data-[collapsible=icon]:min-h-20 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:border-t-0 group-data-[collapsible=icon]:px-1.5 group-data-[collapsible=icon]:!pb-0 group-data-[collapsible=icon]:!pt-1.5"
 			>
 				{/* Always-present daemon status mirror for the smoke suite: no visible
 				    daemon-state copy is guaranteed to be mounted elsewhere. */}
@@ -440,6 +432,19 @@ export function Sidebar({
 				>
 					<UpdateStatusRow status={updateStatus} tabIndex={isCollapsed ? -1 : 0} />
 					<CloudAccountRow tabIndex={isCollapsed ? -1 : 0} />
+					<button
+						aria-label={t("settings.connectMobile")}
+						className={cn(
+							NAV_ROW_CLASS,
+							"flex h-9 w-full items-center text-left [&_svg]:size-icon-md [&_svg]:shrink-0",
+						)}
+						onClick={() => selection.goConnectMobile()}
+						tabIndex={isCollapsed ? -1 : 0}
+						type="button"
+					>
+						<Smartphone aria-hidden="true" />
+						<span className="tracking-tight">{t("settings.connectMobile")}</span>
+					</button>
 					<button
 						aria-label={t("shell.settings")}
 						className={cn(
@@ -460,6 +465,20 @@ export function Sidebar({
 				>
 					<UpdateStatusRail status={updateStatus} tabIndex={isCollapsed ? 0 : -1} />
 					<CloudAccountRailButton tabIndex={isCollapsed ? 0 : -1} />
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<button
+								aria-label={t("settings.connectMobile")}
+								className="grid size-control-board place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground [&_svg]:size-icon-base"
+								onClick={() => selection.goConnectMobile()}
+								tabIndex={isCollapsed ? 0 : -1}
+								type="button"
+							>
+								<Smartphone aria-hidden="true" />
+							</button>
+						</TooltipTrigger>
+						<TooltipContent side="right">{t("settings.connectMobile")}</TooltipContent>
+					</Tooltip>
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<button

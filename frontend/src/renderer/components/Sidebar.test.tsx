@@ -44,7 +44,6 @@ const { cloudSessionState, getMock, navigateMock, mockParams, renameSessionMock,
 vi.mock("../lib/rename-session", () => ({ renameSession: renameSessionMock }));
 vi.mock("../lib/spawn-orchestrator", () => ({ spawnOrchestrator: spawnMock }));
 vi.mock("../lib/cloud-session", () => ({ useCloudSession: () => cloudSessionState }));
-
 vi.mock("../hooks/useCommandPaletteEnabled", () => ({
 	useCommandPaletteEnabled: () => commandPaletteEnabled.current,
 }));
@@ -313,22 +312,14 @@ describe("Sidebar", () => {
 		expect(screen.getAllByRole("button", { name: "Settings" })[0]).toHaveAttribute("tabindex", "0");
 	});
 
-	it("aligns the Settings footer hairline and row height with the board Archive bar", () => {
+	it("keeps the Settings footer flush with the bottom edge", () => {
 		renderSidebar();
 
 		const footer = document.querySelector('[data-sidebar="footer"]');
 		expect(footer).toHaveClass("border-t", "border-border-strong", "!py-2");
 		expect(screen.getAllByRole("button", { name: "Settings" })[0]).toHaveClass("h-[42px]");
-		// Windowed: lift the hairline by the framed panel inset + 1px surface
-		// border. macOS also collapses that inset in native fullscreen.
-		if (footer?.className.includes("--size-center-panel-inset-mac")) {
-			expect(footer).toHaveClass(
-				"mb-[calc(var(--size-center-panel-inset-mac)+1px)]",
-				"in-[.native-fullscreen]:mb-px",
-			);
-		} else {
-			expect(footer).toHaveClass("mb-[calc(var(--size-center-panel-bottom-inset)+1px)]");
-		}
+		expect(footer?.className).not.toContain("--size-center-panel-bottom-inset");
+		expect(footer?.className).not.toContain("--size-center-panel-inset-mac");
 	});
 
 	it("keeps only the expanded Settings control keyboard-accessible while expanded", () => {
@@ -1231,6 +1222,20 @@ describe("Sidebar", () => {
 		await user.click(screen.getAllByRole("button", { name: "Settings" })[0]);
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "global" });
 		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
+	it("opens the Mobile settings page from the footer", async () => {
+		const user = userEvent.setup();
+		renderSidebar();
+		await user.click((await screen.findAllByRole("button", { name: "Connect Mobile" }))[0]);
+		expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "mobile" });
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
+	it("always shows Connect Mobile", () => {
+		renderSidebar();
+
+		expect(screen.getByRole("button", { name: "Connect Mobile" })).toBeVisible();
 	});
 
 	it("opens the command palette when Search is clicked", async () => {

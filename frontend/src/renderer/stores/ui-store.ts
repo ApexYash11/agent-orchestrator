@@ -18,8 +18,10 @@ import {
 export type { Theme, ThemePreference, ThemeStyle } from "../lib/theme";
 export { readStoredThemePreference, readStoredThemeStyle, resolveTheme } from "../lib/theme";
 
+export type GlobalSettingsSection = "general" | "mobile" | "shortcuts" | "updates" | "help";
+
 export type SettingsModal =
-	| { scope: "global" }
+	| { scope: "global"; section?: GlobalSettingsSection }
 	| {
 			scope: "project";
 			projectId: string;
@@ -101,7 +103,7 @@ export type UiState = {
 	setThemePreference: (theme: ThemePreference) => void;
 	setThemeStyle: (style: ThemeStyle) => void;
 	setDeveloperMode: (enabled: boolean) => void;
-	openGlobalSettings: () => void;
+	openGlobalSettings: (section?: GlobalSettingsSection) => void;
 	openProjectSettings: (projectId: string) => void;
 	closeSettings: () => void;
 	/** Refresh resolvedTheme from OS without writing light/dark to storage. */
@@ -227,7 +229,7 @@ export const useUiStore = create<UiState>((set, get) => ({
 		getLocalStorage()?.setItem(developerModeStorageKey, String(developerMode));
 		set({ developerMode });
 	},
-	openGlobalSettings: () => set({ settingsModal: { scope: "global" } }),
+	openGlobalSettings: (section) => set({ settingsModal: { scope: "global", section } }),
 	openProjectSettings: (projectId) => set({ settingsModal: { scope: "project", projectId } }),
 	closeSettings: () => set({ settingsModal: null }),
 	syncSystemTheme: () => {
