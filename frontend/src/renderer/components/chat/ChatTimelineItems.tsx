@@ -52,6 +52,7 @@ const activityIcon: Record<ActivityKind, typeof SquareTerminal> = {
 import { cn } from "../../lib/utils";
 import { caretNotation, stripAnsi } from "../../lib/ansi";
 import { getApiBaseUrl } from "../../lib/api-client";
+import { openLinkInSystemBrowser } from "../../lib/external-link-policy";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
@@ -1411,12 +1412,74 @@ function RerouteRow({ activity }: { activity: ConversationActivity }) {
  * reconnect row as `role="alert"` would interrupt a screen reader once per attempt.
  */
 function ErrorActivityRow({ activity }: { activity: ConversationActivity }) {
-	const { headline } = providerErrorCopy(activity);
+	const { headline, detail } = providerErrorCopy(activity);
+	const action = providerErrorAction(detail);
 	return (
 		<div className="flex min-w-0 max-w-full items-baseline overflow-hidden py-0.5 text-[11.5px] leading-snug text-muted-foreground">
-			<span className="wrap-anywhere min-w-0">{headline}</span>
+			<span className="wrap-anywhere min-w-0">
+				<span>{headline}</span>
+				{detail ? (
+					<>
+						{" — "}
+						{/* React escapes this, so unknown provider text stays inert text. */}
+						<span className="text-muted-foreground/80">{detail}</span>
+					</>
+				) : null}
+				{action ? (
+					<>
+						{" "}
+						<a
+							href={action.href}
+							target="_blank"
+							rel="noreferrer noopener"
+							onClick={(event) => {
+								event.preventDefault();
+								void openLinkInSystemBrowser(action.href);
+							}}
+							className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
+						>
+							{action.label}
+						</a>
+					</>
+				) : null}
+			</span>
 		</div>
 	);
+}
+
+/**
+ * The one action a normalized provider error may offer, and where it may point.
+ *
+ * Provider envelopes carry arbitrary URLs; making any of them clickable would turn
+ * stored failure text into a phishing surface. Only hosts allow-listed here, on their
+ * known billing path, become an action — everything else stays plain escaped text.
+ */
+const providerErrorActions: Array<{ host: string; path: string; label: string }> = [
+	{
+		host: "platform.openai.com",
+		path: "/settings/organization/billing",
+		label: "Add credits",
+	},
+];
+
+export function providerErrorAction(
+	detail?: string,
+): { label: string; href: string } | undefined {
+	if (!detail) return undefined;
+	for (const match of detail.matchAll(/https?:\/\/[^\s)\]>]+/g)) {
+		let url: URL;
+		try {
+			url = new URL(match[0]);
+		} catch {
+			continue;
+		}
+		for (const allowed of providerErrorActions) {
+			if (url.host === allowed.host && url.pathname === allowed.path) {
+				return { label: allowed.label, href: url.href };
+			}
+		}
+	}
+	return undefined;
 }
 
 /**

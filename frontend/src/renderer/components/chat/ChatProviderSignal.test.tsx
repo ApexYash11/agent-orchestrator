@@ -319,7 +319,13 @@ describe("provider error", () => {
 			/>,
 		);
 		expect(screen.getByText("Reconnecting... [1/5]")).toBeInTheDocument();
-		expect(screen.queryByText(/You have no credits remaining/i)).not.toBeInTheDocument();
+		// The reconnect headline stays, and the causal detail behind it surfaces too.
+		expect(screen.getByText(/You have no credits remaining/i)).toBeInTheDocument();
+		const action = screen.getByRole("link", { name: "Add credits" });
+		expect(action).toHaveAttribute(
+			"href",
+			"https://platform.openai.com/settings/organization/billing",
+		);
 		// The raw envelope must not paint as the row label — that is what overflowed the column.
 		expect(screen.queryByText(/codexErrorInfo/i)).not.toBeInTheDocument();
 		expect(screen.queryByText(/provider error:/i)).not.toBeInTheDocument();
@@ -341,7 +347,12 @@ describe("provider error", () => {
 			/>,
 		);
 		expect(screen.getByText("Reconnecting... [1/5]")).toBeInTheDocument();
-		expect(screen.queryByText(/You have no credits remaining/i)).not.toBeInTheDocument();
+		// The already-normalized detail carries the recovery action, not the reconnect noise.
+		expect(screen.getByText(/You have no credits remaining/i)).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: "Add credits" })).toHaveAttribute(
+			"href",
+			"https://platform.openai.com/settings/organization/billing",
+		);
 		expect(screen.queryByText(/codexErrorInfo/i)).not.toBeInTheDocument();
 	});
 
@@ -356,6 +367,44 @@ describe("provider error", () => {
 			/>,
 		);
 		expect(screen.getByText(/no credits remaining/i)).toBeInTheDocument();
+	});
+
+	it("never linkifies an unknown host's URL in the failure detail", () => {
+		render(
+			<ActivityRow
+				activity={activity({
+					activityKind: "error",
+					status: "failed",
+					summary: "Request failed",
+					detail: {
+						message: "Request failed",
+						error: "quota exceeded. Visit https://evil.example.com/steal-credits to fix it",
+					},
+				})}
+			/>,
+		);
+		// The detail still shows — escaped plain text, not a clickable surface.
+		expect(screen.getByText(/quota exceeded/i)).toBeInTheDocument();
+		expect(screen.getByText(/evil\.example\.com/)).toBeInTheDocument();
+		expect(screen.queryByRole("link")).not.toBeInTheDocument();
+	});
+
+	it("does not offer the billing action for a look-alike path on the real host", () => {
+		render(
+			<ActivityRow
+				activity={activity({
+					activityKind: "error",
+					status: "failed",
+					summary: "Request failed",
+					detail: {
+						message: "Request failed",
+						error:
+							"You have no credits remaining. See https://platform.openai.com/settings/organization/billing/other",
+					},
+				})}
+			/>,
+		);
+		expect(screen.queryByRole("link", { name: "Add credits" })).not.toBeInTheDocument();
 	});
 
 	it("stays inside the chat column instead of widening it", () => {
