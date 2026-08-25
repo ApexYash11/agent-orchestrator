@@ -22,7 +22,18 @@ import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { agentsQueryKey } from "../hooks/useAgentsQuery";
 import { useUiStore } from "../stores/ui-store";
 
-const { cloudSessionState, getMock, navigateMock, mockParams, renameSessionMock, spawnMock, updateStatusMock, commandPaletteEnabled } = vi.hoisted(
+const {
+	checkUpdateMock,
+	cloudSessionState,
+	downloadUpdateMock,
+	getMock,
+	navigateMock,
+	mockParams,
+	renameSessionMock,
+	spawnMock,
+	updateStatusMock,
+	commandPaletteEnabled,
+} = vi.hoisted(
 	() => ({
 		cloudSessionState: {
 			configured: false,
@@ -37,6 +48,8 @@ const { cloudSessionState, getMock, navigateMock, mockParams, renameSessionMock,
 		renameSessionMock: vi.fn().mockResolvedValue(undefined),
 		spawnMock: vi.fn(),
 		updateStatusMock: vi.fn(),
+		downloadUpdateMock: vi.fn(),
+		checkUpdateMock: vi.fn(),
 		commandPaletteEnabled: { current: true },
 	}),
 );
@@ -64,7 +77,12 @@ vi.mock("../lib/bridge", async (importOriginal) => {
 	return {
 		aoBridge: {
 			...actual.aoBridge,
-			updates: { ...actual.aoBridge.updates, getStatus: updateStatusMock },
+			updates: {
+				...actual.aoBridge.updates,
+				getStatus: updateStatusMock,
+				download: downloadUpdateMock,
+				check: checkUpdateMock,
+			},
 		},
 	};
 });
@@ -279,6 +297,8 @@ beforeEach(() => {
 	renameSessionMock.mockReset().mockResolvedValue(undefined);
 	spawnMock.mockReset();
 	updateStatusMock.mockReset().mockResolvedValue({ state: "idle" });
+	downloadUpdateMock.mockReset().mockResolvedValue(undefined);
+	checkUpdateMock.mockReset().mockResolvedValue(undefined);
 	mockParams.projectId = undefined;
 	mockParams.sessionId = undefined;
 });
@@ -1641,13 +1661,20 @@ describe("Sidebar", () => {
 		expect(screen.queryByLabelText("Open merged terminated task")).not.toBeInTheDocument();
 	});
 
-	it("shows update activity before an available update finishes downloading", async () => {
+	it("downloads the update when the available row is clicked", async () => {
 		updateStatusMock.mockResolvedValue({ state: "available", version: "9.9.9" });
 		renderSidebar();
 
-		await waitFor(() => expect(updateStatusMock).toHaveBeenCalled());
-		expect(screen.getByText("Update available (v9.9.9).")).toBeInTheDocument();
+		// Both footer variants (expanded row and collapsed rail icon) are mounted.
+		const buttons = await screen.findAllByLabelText("Download update v9.9.9");
+		expect(buttons.length).toBeGreaterThan(0);
+		expect(screen.getByText("Update available")).toBeInTheDocument();
+		expect(screen.getByText("v9.9.9")).toBeInTheDocument();
+		// Nothing is staged yet, so the restart action must not be offered.
 		expect(screen.queryByLabelText(/Restart to install update/)).not.toBeInTheDocument();
+
+		await userEvent.click(buttons[0]);
+		expect(downloadUpdateMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("keeps showing update activity while the automatic download is in progress", async () => {
@@ -1657,6 +1684,46 @@ describe("Sidebar", () => {
 		await waitFor(() => expect(updateStatusMock).toHaveBeenCalled());
 		expect(screen.getByText("Downloading… 42%")).toBeInTheDocument();
 		expect(screen.queryByLabelText(/Restart to install update/)).not.toBeInTheDocument();
+		// A download already in flight must not offer a second one.
+		expect(screen.queryByLabelText(/Download update/)).not.toBeInTheDocument();
+	});
+
+	it("offers a retry when automatic update checks keep failing", async () => {
+		// The state stays truthful (the suppressed automatic failure never
+		// replaced it); the flag is what makes the dead end visible.
+		updateStatusMock.mockResolvedValue({ state: "idle", checksFailing: true });
+		renderSidebar();
+
+		// Both footer variants (expanded row and collapsed rail icon) are mounted.
+		const buttons = await screen.findAllByLabelText("Retry update check");
+		expect(buttons.length).toBeGreaterThan(0);
+		expect(screen.getByText("Update check failed")).toBeInTheDocument();
+
+		await userEvent.click(buttons[0]);
+		expect(checkUpdateMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps a staged build's restart action ahead of the failing-checks retry", async () => {
+		updateStatusMock.mockResolvedValue({
+			state: "downloaded",
+			version: "9.9.9",
+			stagedAt: Date.now(),
+			checksFailing: true,
+		});
+		renderSidebar();
+
+		// A build ready to install is more actionable than "checks are failing".
+		expect(await screen.findAllByLabelText("Restart to install update v9.9.9")).not.toHaveLength(0);
+		expect(screen.queryByLabelText("Retry update check")).not.toBeInTheDocument();
+	});
+
+	it("stays quiet for a one-off update failure that has not become a streak", async () => {
+		updateStatusMock.mockResolvedValue({ state: "idle" });
+		renderSidebar();
+
+		await waitFor(() => expect(updateStatusMock).toHaveBeenCalled());
+		expect(screen.queryByLabelText("Retry update check")).not.toBeInTheDocument();
+		expect(screen.queryByText("Update check failed")).not.toBeInTheDocument();
 	});
 
 	it("renders the restart-to-update row with the working-orange treatment when escalated", async () => {

@@ -409,6 +409,13 @@ function UpdateActions({
 				</div>
 			)}
 
+			{!status.staleCheckNudge && status.checksFailing && (
+				<p className="mx-4 mb-4 flex items-start gap-2 border-t border-[var(--color-border-settings-dialog)] pt-3 text-xs leading-5 text-warning">
+					<AlertTriangle className="mt-0.5 size-icon-sm shrink-0" aria-hidden="true" />
+					<span>{t("settings.updates.checksFailing")}</span>
+				</p>
+			)}
+
 			{status.staleCheckNudge && (
 				<p className="mx-4 mb-4 flex items-start gap-2 border-t border-[var(--color-border-settings-dialog)] pt-3 text-xs leading-5 text-warning">
 					<AlertTriangle className="mt-0.5 size-icon-sm shrink-0" aria-hidden="true" />
