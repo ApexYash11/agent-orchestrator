@@ -136,6 +136,44 @@ func TestNewUsesAppOwnedTmuxSocketFromEnv(t *testing.T) {
 	}
 }
 
+func TestNewUsesSystemTmuxForLegacyDefaultSocket(t *testing.T) {
+	binDir := t.TempDir()
+	systemTmux := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(systemTmux, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bundledTmux := filepath.Join(t.TempDir(), "bundled-tmux")
+	if err := os.WriteFile(bundledTmux, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("AO_TMUX_BINARY", bundledTmux)
+	t.Setenv("AO_TMUX_SOCKET_NAME", "ao")
+
+	r := New(Options{})
+	if got := r.binary; got != bundledTmux {
+		t.Fatalf("binary = %q, want bundled tmux %q", got, bundledTmux)
+	}
+	if got := r.legacyBinary; got != systemTmux {
+		t.Fatalf("legacy binary = %q, want system tmux %q", got, systemTmux)
+	}
+}
+
+func TestNewLeavesLegacyTmuxUnavailableWithoutSystemTmux(t *testing.T) {
+	bundledTmux := filepath.Join(t.TempDir(), "bundled-tmux")
+	if err := os.WriteFile(bundledTmux, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("AO_TMUX_BINARY", bundledTmux)
+	t.Setenv("AO_TMUX_SOCKET_NAME", "ao")
+
+	r := New(Options{})
+	if got := r.legacyBinary; got != "" {
+		t.Fatalf("legacy binary = %q, want unavailable", got)
+	}
+}
+
 // TestExecRunnerRunsFromStableDir is the direct regression test for Fix 1:
 // execRunner.Run must pin cmd.Dir to os.TempDir() rather than inheriting
 // whatever the daemon process's own cwd happens to be. The first tmux CLI
@@ -696,7 +734,12 @@ func TestRestartRejectsMismatchedSessionHandle(t *testing.T) {
 }
 
 func TestIsAliveAdoptsSessionFromLegacyDefaultSocket(t *testing.T) {
-	r := New(Options{Binary: "tmux-test", SocketName: "ao", Timeout: time.Second})
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
 	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
 		{out: []byte("can't find session: sess-1"), err: &exec.ExitError{}},
 		{}, // legacy default-socket discovery
@@ -714,17 +757,99 @@ func TestIsAliveAdoptsSessionFromLegacyDefaultSocket(t *testing.T) {
 	}
 	want := [][]string{
 		append([]string{"-L", "ao"}, hasSessionArgs("sess-1")...),
-		hasSessionArgs("sess-1"),
-		hasSessionArgs("sess-1"),
-		hasSessionArgs("sess-1"),
+		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
+		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
+		append([]string{"-L", "default"}, hasSessionArgs("sess-1")...),
+	}
+	wantBinaries := []string{
+		"bundled-tmux-test",
+		"system-tmux-test",
+		"system-tmux-test",
+		"system-tmux-test",
 	}
 	if len(fr.calls) != len(want) {
 		t.Fatalf("calls = %d, want %d: %+v", len(fr.calls), len(want), fr.calls)
 	}
 	for i := range want {
+		if fr.calls[i].name != wantBinaries[i] {
+			t.Fatalf("call %d binary = %q, want %q", i, fr.calls[i].name, wantBinaries[i])
+		}
 		if !reflect.DeepEqual(fr.calls[i].args, want[i]) {
 			t.Fatalf("call %d args = %#v, want %#v", i, fr.calls[i].args, want[i])
 		}
+	}
+}
+
+func TestIsAliveReportsMissingLegacyClientAsProbeInconclusive(t *testing.T) {
+	r := New(Options{Binary: "bundled-tmux-test", SocketName: "ao", Timeout: time.Second})
+	r.legacyBinary = ""
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+		{out: []byte("can't find session: sess-1"), err: &exec.ExitError{}},
+	}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false with inconclusive error")
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("calls = %d, want only the private-socket probe", len(fr.calls))
+	}
+}
+
+func TestIsAliveReportsIncompatibleLegacyClientAsProbeInconclusive(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+		{out: []byte("can't find session: sess-1"), err: &exec.ExitError{}},
+		{out: []byte("server exited unexpectedly"), err: &exec.ExitError{}},
+	}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false with inconclusive error")
+	}
+	if !strings.Contains(err.Error(), "server exited unexpectedly") {
+		t.Fatalf("IsAlive err = %v, want actionable legacy client failure", err)
+	}
+	if len(fr.calls) != 2 {
+		t.Fatalf("calls = %d, want private then legacy probes only", len(fr.calls))
+	}
+}
+
+func TestIsAliveReportsTransientLegacyConnectionAsProbeInconclusive(t *testing.T) {
+	r := New(Options{
+		Binary:       "bundled-tmux-test",
+		LegacyBinary: "system-tmux-test",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	fr := &fakeRunnerSequence{results: []fakeRunnerResult{
+		{out: []byte("can't find session: sess-1"), err: &exec.ExitError{}},
+		{out: []byte("error connecting to /tmp/tmux-1000/default (Connection refused)"), err: &exec.ExitError{}},
+	}}
+	r.runner = fr
+
+	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
+	}
+	if alive {
+		t.Fatal("alive = true, want false with inconclusive error")
+	}
+	if len(fr.calls) != 2 {
+		t.Fatalf("calls = %d, want private then legacy probes only", len(fr.calls))
 	}
 }
 
@@ -931,11 +1056,10 @@ func TestIsAliveReturnsFalseNilOnCantFindSession(t *testing.T) {
 	}
 }
 
-// A server-level failure says nothing about one session: the whole server is
-// gone (or unreachable), and the agent may still be alive as an orphan. It
-// must surface as ports.ErrRuntimeUnavailable — an inconclusive probe — never
-// as a definitive "this session is dead" (issue #3475: reading it as death
-// archived every session on the board in one pass).
+// A conclusively absent server means the tmux runtime handle is gone, although
+// the agent may still be alive as an orphan. Surface the infrastructure-level
+// sentinel rather than a per-session false result: the reaper treats errors as
+// failed probes, while explicit recovery paths may recreate the missing server.
 func TestIsAliveReportsNoServerAsRuntimeUnavailable(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{[]byte("no server running on /tmp/tmux-1000/default")}
@@ -950,14 +1074,14 @@ func TestIsAliveReportsNoServerAsRuntimeUnavailable(t *testing.T) {
 	}
 }
 
-func TestIsAliveReportsErrorConnectingAsRuntimeUnavailable(t *testing.T) {
+func TestIsAliveReportsErrorConnectingAsProbeInconclusive(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{[]byte("error connecting to /tmp/tmux-1000/default (No such file or directory)")}
 	fr.err = &exec.ExitError{}
 
 	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
-	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
-		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
+	if !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeProbeInconclusive", err)
 	}
 	if alive {
 		t.Fatal("alive = true, want false")
@@ -1272,6 +1396,20 @@ func TestAttachCommandUsesAppOwnedSocket(t *testing.T) {
 		t.Fatalf("AttachCommand: %v", err)
 	}
 	want := []string{"/opt/ao/resources/tmux/bin/tmux", "-L", "ao", "-u", "-T", "RGB", "attach-session", "-t", "sess-1"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("argv = %#v, want %#v", argv, want)
+	}
+}
+
+func TestAttachCommandUsesSystemTmuxForLegacyDefaultSocket(t *testing.T) {
+	r := New(Options{
+		Binary:       "/opt/ao/resources/tmux/bin/tmux",
+		LegacyBinary: "/opt/homebrew/bin/tmux",
+		SocketName:   "ao",
+		Timeout:      time.Second,
+	})
+	argv := r.attachCommandForSocket("sess-1", "")
+	want := []string{"/opt/homebrew/bin/tmux", "-L", "default", "-u", "-T", "RGB", "attach-session", "-t", "sess-1"}
 	if !reflect.DeepEqual(argv, want) {
 		t.Fatalf("argv = %#v, want %#v", argv, want)
 	}
