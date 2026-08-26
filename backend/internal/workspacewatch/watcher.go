@@ -9,14 +9,25 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
 )
+
+// maxWatchedDirectories bounds how many per-directory watches one workspace
+// stream registers. fsnotify consumes one descriptor per watched directory
+// (a kqueue descriptor on macOS, an inotify watch slot on Linux), so watching
+// every directory of an unbounded tree eventually exhausts RLIMIT_NOFILE or
+// max_user_watches and every subsequent Add fails. Directories beyond the cap
+// stay unwatched; the model refresh they guard remains reachable through the
+// other invalidation paths instead of the whole SSE subscription failing.
+var maxWatchedDirectories = 4096
 
 // Watch subscribes to relevant changes below the workspace roots until ctx is cancelled. The
 // returned channel is intentionally edge-triggered and buffered by one: a burst
@@ -182,15 +193,46 @@ func addInitialDirectories(ctx context.Context, watcher *fsnotify.Watcher, root 
 		return fmt.Errorf("walk workspace directories: %w", err)
 	}
 
+	// Register watches shallowest-first so that when the platform refuses
+	// further watches (fd or inotify limits) the remaining coverage degrades
+	// toward the leaves, which matter least for workspace-level invalidation.
+	ordered := make([]string, 0, len(dirs))
 	for dir := range dirs {
+		ordered = append(ordered, dir)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		iDepth := directoryDepth(root, ordered[i])
+		jDepth := directoryDepth(root, ordered[j])
+		if iDepth != jDepth {
+			return iDepth < jDepth
+		}
+		return ordered[i] < ordered[j]
+	})
+	if len(ordered) > maxWatchedDirectories {
+		ordered = ordered[:maxWatchedDirectories]
+	}
+
+	for _, dir := range ordered {
 		if err := watcher.Add(dir); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("watch workspace directory %q: %w", dir, err)
+			// A single unwatchable directory must not abort the whole
+			// subscription: EMFILE/ENFILE pressure and stale git-listed
+			// paths are both recoverable with partial coverage.
+			slog.WarnContext(ctx, "workspace watch skipped directory", "dir", dir, "error", err)
+			continue
 		}
 	}
 	return nil
+}
+
+func directoryDepth(root, dir string) int {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." {
+		return 0
+	}
+	return strings.Count(rel, string(filepath.Separator)) + 1
 }
 
 func run(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace, changes chan struct{}) {
@@ -264,7 +306,13 @@ func addCreatedTree(ctx context.Context, watcher *fsnotify.Watcher, root string,
 		if hasGitMetadataComponent(root, path) || (git.available && gitIgnored(ctx, root, path)) {
 			return filepath.SkipDir
 		}
-		return watcher.Add(path)
+		if err := watcher.Add(path); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			slog.WarnContext(ctx, "workspace watch skipped created directory", "dir", path, "error", err)
+		}
+		return nil
 	})
 }
 

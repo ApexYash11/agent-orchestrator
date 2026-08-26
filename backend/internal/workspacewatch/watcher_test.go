@@ -2,6 +2,7 @@ package workspacewatch
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,5 +149,82 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+func TestAddInitialDirectoriesSkipsMissingGitListedDirectories(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "src")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing directory: %v", err)
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	rel, relErr := filepath.Rel(root, existing)
+	if relErr != nil {
+		t.Fatalf("rel: %v", relErr)
+	}
+	git := gitWorkspace{
+		available: true,
+		files:     []string{"missing-dir/file.txt", filepath.ToSlash(rel) + "/main.go"},
+	}
+	if err := addInitialDirectories(context.Background(), watcher, root, git); err != nil {
+		t.Fatalf("addInitialDirectories with a stale git-listed directory: %v", err)
+	}
+}
+
+func TestAddInitialDirectoriesBoundsWatchCount(t *testing.T) {
+	root := t.TempDir()
+	for i := range 8 {
+		if err := os.MkdirAll(filepath.Join(root, fmt.Sprintf("dir-%02d", i), "nested", "deeper"), 0o755); err != nil {
+			t.Fatalf("mkdir tree: %v", err)
+		}
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	previous := maxWatchedDirectories
+	maxWatchedDirectories = 4
+	defer func() { maxWatchedDirectories = previous }()
+
+	if err := addInitialDirectories(context.Background(), watcher, root, gitWorkspace{}); err != nil {
+		t.Fatalf("addInitialDirectories over the watch cap: %v", err)
+	}
+
+	watched := watcher.WatchList()
+	if len(watched) != maxWatchedDirectories {
+		t.Fatalf("watched directories = %d (%v), want exactly cap %d", len(watched), watched, maxWatchedDirectories)
+	}
+	watchedSet := make(map[string]struct{}, len(watched))
+	for _, dir := range watched {
+		watchedSet[dir] = struct{}{}
+	}
+	for _, want := range []string{
+		root,
+		filepath.Join(root, "dir-00"),
+		filepath.Join(root, "dir-01"),
+		filepath.Join(root, "dir-02"),
+	} {
+		if _, ok := watchedSet[want]; !ok {
+			t.Fatalf("watched directories = %v, want shallow directory %q retained", watched, want)
+		}
+	}
+	for _, unexpected := range []string{
+		filepath.Join(root, "dir-00", "nested"),
+		filepath.Join(root, "dir-00", "nested", "deeper"),
+		filepath.Join(root, "dir-03"),
+	} {
+		if _, ok := watchedSet[unexpected]; ok {
+			t.Fatalf("watched directories = %v, did not want capped directory %q retained", watched, unexpected)
+		}
 	}
 }
