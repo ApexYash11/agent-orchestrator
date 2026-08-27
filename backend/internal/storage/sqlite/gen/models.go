@@ -155,6 +155,10 @@ type ConversationBranch struct {
 	ReplacementTurnID      sql.NullString
 	ForkAfterSequence      int64
 	CreatedAt              time.Time
+	Strategy               string
+	ReplayCutoffSequence   int64
+	ReplayTruncated        int64
+	ProviderScopeID        string
 }
 
 type ConversationMessage struct {
