@@ -563,7 +563,7 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Kill session")).toHaveProperty("tabIndex", 0);
 	});
 
-	it("keeps the message age visible while the label yields only the hover action space", () => {
+	it("fades the message age out in favor of the overlaid hover actions", () => {
 		const lastUserMessageAt = "2026-06-29T23:55:00Z";
 		renderSidebar({
 			workspaces: [{ ...workspace, sessions: [{ ...session, lastUserMessageAt }] }],
@@ -575,14 +575,16 @@ describe("Sidebar", () => {
 		const actionButtons = screen.getByLabelText("Pin session").parentElement;
 		const time = actions?.querySelector("time");
 
-		expect(openSession).toHaveClass("pr-[34px]");
+		expect(openSession).toHaveClass("pr-[36px]");
 		expect(openSession).toHaveClass(
-			"group-hover/session-row:pr-[78px]",
-			"group-focus-within/session-row:pr-[78px]",
+			"group-hover/session-row:pr-[50px]",
+			"group-focus-within/session-row:pr-[50px]",
 		);
 		expect(label).toHaveClass("min-w-0", "flex-1", "truncate");
 		expect(actions).toHaveAttribute("data-session-actions");
 		expect(actionButtons).toHaveClass(
+			"absolute",
+			"right-0.5",
 			"opacity-0",
 			"group-hover/session-row:pointer-events-auto",
 			"group-hover/session-row:opacity-100",
@@ -590,7 +592,13 @@ describe("Sidebar", () => {
 			"group-focus-within/session-row:opacity-100",
 		);
 		expect(time).toHaveAttribute("datetime", lastUserMessageAt);
-		expect(time).not.toHaveClass("opacity-0");
+		expect(time).toHaveClass(
+			"absolute",
+			"right-1.5",
+			"opacity-100",
+			"group-hover/session-row:opacity-0",
+			"group-focus-within/session-row:opacity-0",
+		);
 		expect(openSession).toHaveClass("pl-1.5");
 		expect(openSession.closest("li")).toHaveClass("pl-0.5");
 	});
