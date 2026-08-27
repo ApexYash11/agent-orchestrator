@@ -255,6 +255,9 @@ var schemaNames = map[string]string{
 	"ControllersWorkspaceCommitSummary":                   "WorkspaceCommitSummary",
 	"ControllersWorkspaceSummary":                         "WorkspaceSummary",
 	"ControllersWorkspaceFileResponse":                    "WorkspaceFileResponse",
+	"ControllersWorkspaceTreeQuery":                       "WorkspaceTreeQuery",
+	"ControllersListWorkspaceTreeResponse":                "ListWorkspaceTreeResponse",
+	"ControllersWorkspaceTreeEntry":                       "WorkspaceTreeEntry",
 	"ControllersListEditorsResponse":                      "ListEditorsResponse",
 	"ControllersEditorSummary":                            "EditorSummary",
 	"ControllersOpenSessionEditorRequest":                 "OpenSessionEditorRequest",
@@ -1636,6 +1639,18 @@ func sessionOperations() []operation {
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
 			contentTypes: map[int]string{http.StatusOK: "application/octet-stream"},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/workspace/tree", id: "listSessionWorkspaceTree", tag: "sessions",
+			summary:    "List one directory level of a session workspace's full file tree, git-status decorated",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.WorkspaceTreeQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListWorkspaceTreeResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
 		},
 		{
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/pr", id: "listSessionPRs", tag: "sessions",
