@@ -39,9 +39,13 @@ export type MakerNSISConfig = {
 // installer ships unsigned and Defender SmartScreen blocks first run with
 // "unknown publisher"). Three credential paths, first match wins:
 //
-//  1. WIN_CSC_LINK (falling back to CSC_LINK for local convenience) (+ the
-//     matching key password): a code-signing .pfx — local path, URL,
-//     or base64, per electron-builder's certificateFile handling.
+//  1. WIN_CSC_LINK (+ WIN_CSC_KEY_PASSWORD): a code-signing .pfx — local
+//     path, URL, or base64, per electron-builder's certificateFile handling.
+//     Deliberately NOT CSC_LINK: that secret is the macOS Apple Developer ID
+//     .p12, and falling back to it would let a stray Apple credential on a
+//     Windows build wedge signing (with forceCodeSigning below, a wrong-cert
+//     misconfiguration becomes a hard failure instead of a clean unsigned
+//     build). Per-platform signing must be opted into explicitly.
 //  2. WIN_CERT_SUBJECT_NAME: a certificate already installed in the runner's
 //     Windows certificate store — the standard path for non-exportable EV
 //     tokens, where no .pfx can exist.
@@ -55,11 +59,10 @@ export type MakerNSISConfig = {
 // Returns undefined when nothing is set — local and fork/dev builds stay
 // unsigned and keep working exactly as before.
 function envSigningOptions(): Record<string, unknown> | undefined {
-	// WIN_CSC_LINK wins so the release workflow can point at the Windows
-	// certificate without colliding with the macOS CSC_LINK secret (which is
-	// the Apple Developer ID .p12 — the wrong cert for Windows).
-	const certFile = process.env.WIN_CSC_LINK ?? process.env.CSC_LINK;
-	const certPassword = process.env.WIN_CSC_KEY_PASSWORD ?? process.env.CSC_KEY_PASSWORD;
+	// WIN_CSC_LINK only — never the macOS CSC_LINK secret (the Apple Developer
+	// ID .p12, the wrong cert for Windows). See the comment above.
+	const certFile = process.env.WIN_CSC_LINK;
+	const certPassword = process.env.WIN_CSC_KEY_PASSWORD;
 	if (certFile) {
 		const signtoolOptions: Record<string, unknown> = {
 			certificateFile: certFile,
