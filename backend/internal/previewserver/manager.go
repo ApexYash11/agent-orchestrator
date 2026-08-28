@@ -319,7 +319,11 @@ func (m *Manager) Start(
 	m.runs[sessionID] = run
 	m.persistProcessesLocked()
 	m.mu.Unlock()
-	go m.waitForExit(sessionID, run)
+	// Pass the request-scoped context into the wait goroutine so OnExit
+	// callbacks (issue #4500) inherit a context the gosec G118 check accepts.
+	// The wait goroutine detaches cancellation with context.WithoutCancel so a
+	// caller request ending after launch does not cancel the OnExit call.
+	go m.waitForExit(context.WithoutCancel(ctx), sessionID, run)
 	releaseOperation()
 	operationLocked = false
 
@@ -508,7 +512,7 @@ func (m *Manager) Close() {
 	}
 }
 
-func (m *Manager) waitForExit(sessionID domain.SessionID, run *serverRun) {
+func (m *Manager) waitForExit(ctx context.Context, sessionID domain.SessionID, run *serverRun) {
 	err := run.cmd.Wait()
 	// Wait has returned, so the PID is back in the OS pool and no longer
 	// provably AO's. No escalation happens here: descendants the dead root
@@ -542,10 +546,13 @@ func (m *Manager) waitForExit(sessionID domain.SessionID, run *serverRun) {
 		// can be told the backing server is gone. After failedStatusRetention
 		// the failed run is removed and status reports "stopped" with no
 		// error, so this is the only window to surface the failure.
+		// ctx is the request-scoped context passed by Start with
+		// context.WithoutCancel, so caller cancellation cannot kill the
+		// callback (gosec G118 wants a request-scoped ancestor).
 		status := m.statusFor(run)
 		if fn := m.onExitCallback(); fn != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			fn(ctx, sessionID, status)
+			notifyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			fn(notifyCtx, sessionID, status)
 			cancel()
 		}
 	}
