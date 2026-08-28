@@ -292,6 +292,26 @@ func Run() error {
 		}
 		return fmt.Errorf("wire session service: %w", err)
 	}
+
+	// When a managed preview server crashes after launch, the Browser panel's
+	// only failure hook is `did-fail-load`, which fires on navigation, not on an
+	// already-rendered page whose backing server has died. Clear the session's
+	// preview URL so the panel falls off the dead server and the session update
+	// fans out via the existing CDC session_updated event (issue #4500). Only
+	// clear when the session's current preview URL still points at the failed
+	// server, so an unrelated static-file preview isn't clobbered.
+	managedPreview.SetOnExit(func(ctx context.Context, id domain.SessionID, status previewserver.Status) {
+		sess, err := sessionSvc.Get(ctx, id)
+		if err != nil {
+			return
+		}
+		if status.URL == "" || sess.Metadata.PreviewURL != status.URL {
+			return
+		}
+		if _, err := sessionSvc.SetPreview(ctx, id, ""); err != nil {
+			log.Warn("clear preview URL after managed preview crash", "session", id, "err", err)
+		}
+	})
 	sessMgr.SetTerminalInputGate(termMgr)
 	lifecycleMessenger.Bind(sessionLifecycleMessenger{sessMgr})
 	lcStack.LCM.SetCompletionTerminator(sessMgr)
