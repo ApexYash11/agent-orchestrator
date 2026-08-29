@@ -668,8 +668,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// Orchestrators get the full workspace width; only workers need the inspector rail.
 	const hasInspector = Boolean(session && !isOrchestrator);
 	const sizing = useMemo(() => inspectorSizing(inspectorView), [inspectorView]);
-	const adaptiveWorkspaceActive =
-		hasInspector && isInspectorOpen && !browserPoppedOut && !filesPoppedOut;
+	// Utility views remain ordinary inspector rails. Only the docked Browser is a
+	// co-work canvas that may reclaim navigation width from the shell.
+	const browserWorkspacePressureActive = useCallback(
+		(view: InspectorView, inspectorOpen = isInspectorOpen) =>
+			hasInspector && view === "browser" && inspectorOpen && !browserPoppedOut && !filesPoppedOut,
+		[browserPoppedOut, filesPoppedOut, hasInspector, isInspectorOpen],
+	);
+	const adaptiveWorkspaceActive = browserWorkspacePressureActive(inspectorView);
 
 	// Arm the shared width transition before the selected inspector surface
 	// changes its CSS variable. Browser becomes a co-work canvas; utility views
@@ -720,10 +726,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			if (next === inspectorView) return;
 			const nextSizing = inspectorSizing(next);
 			if (!sizingGeometryEqual(sizing, nextSizing)) prepareWorkspaceProfile(nextSizing);
-			publishWorkspaceDemand(nextSizing);
+			publishWorkspaceDemand(nextSizing, browserWorkspacePressureActive(next));
 			setInspectorViewForSession(sessionId, next);
 		},
 		[
+			browserWorkspacePressureActive,
 			inspectorView,
 			prepareWorkspaceProfile,
 			publishWorkspaceDemand,
@@ -884,11 +891,21 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			{interfaceSwitchAction}
 		</SessionInterfaceActionGroup>
 	) : null;
+	const compactSessionChrome = adaptiveWorkspaceActive;
+	// Branch context remains useful in an ordinary window. It yields to tabs
+	// based on real competition in the strip; width-based CSS handles the
+	// remaining genuinely narrow layouts independently of Browser state.
+	const branchHasCompetingTabs = Boolean(
+		reviewerTerminal || shellTerminals.length > 0 || fileTabs.openPaths.length > 0,
+	);
 	const sessionHeaderActions = (
-		<>
-			<SessionBranchBadge branch={session?.branch} />
-			<ShellTopbar embedded sessionAction={sessionLocalActions} />
-		</>
+		<div
+			className="session-topbar-session-chrome flex shrink-0 items-center"
+			data-compact-session-chrome={compactSessionChrome ? "true" : "false"}
+		>
+			<SessionBranchBadge branch={session?.branch} compact={branchHasCompetingTabs} />
+			<ShellTopbar compactActions={compactSessionChrome} embedded sessionAction={sessionLocalActions} />
+		</div>
 	);
 	const fileAnnotation = useFileAnnotation(sessionId);
 	const centerFileTabs = (
@@ -1191,11 +1208,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	const handleToggleInspector = useCallback(() => {
 		const nextOpen = !isInspectorOpen;
-		publishWorkspaceDemand(sizing, nextOpen && !browserPoppedOut && !filesPoppedOut);
+		publishWorkspaceDemand(sizing, browserWorkspacePressureActive(inspectorView, nextOpen));
 		toggleInspector(sessionId);
 	}, [
-		browserPoppedOut,
-		filesPoppedOut,
+		browserWorkspacePressureActive,
+		inspectorView,
 		isInspectorOpen,
 		publishWorkspaceDemand,
 		sessionId,
