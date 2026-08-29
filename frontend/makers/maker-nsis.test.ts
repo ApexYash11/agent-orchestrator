@@ -137,6 +137,15 @@ describe("MakerNSIS Windows code signing (#4502)", () => {
 		expect(options.config.win.forceCodeSigning).toBe(true);
 	});
 
+	it("trims whitespace around WIN_SIGNING_HASH_ALGORITHMS entries", async () => {
+		// "sha256, sha1" must yield ["sha256", "sha1"] — not a " sha1" element
+		// electron-builder would not recognize (PR review feedback).
+		process.env.WIN_CSC_LINK = "C:\\certs\\windows-codesign.pfx";
+		process.env.WIN_SIGNING_HASH_ALGORITHMS = "sha256, sha1";
+		const options = await makeWithNoConfig();
+		expect(options.config.win.signtoolOptions.signingHashAlgorithms).toEqual(["sha256", "sha1"]);
+	});
+
 	it("signs via the certificate-store subject name (non-exportable EV tokens)", async () => {
 		process.env.WIN_CERT_SUBJECT_NAME = "Contoso Code Signing EV";
 		const options = await makeWithNoConfig();

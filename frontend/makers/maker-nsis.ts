@@ -71,7 +71,11 @@ function envSigningOptions(): Record<string, unknown> | undefined {
 			signtoolOptions.certificatePassword = certPassword;
 		}
 		if (process.env.WIN_SIGNING_HASH_ALGORITHMS) {
-			signtoolOptions.signingHashAlgorithms = process.env.WIN_SIGNING_HASH_ALGORITHMS.split(",");
+			// Trim each entry: "sha256, sha1" must not yield a " sha1" element
+			// electron-builder would not recognize (PR review feedback).
+			signtoolOptions.signingHashAlgorithms = process.env.WIN_SIGNING_HASH_ALGORITHMS.split(",")
+				.map((algo) => algo.trim())
+				.filter(Boolean);
 		}
 		return { signtoolOptions };
 	}
