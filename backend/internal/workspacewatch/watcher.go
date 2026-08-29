@@ -29,6 +29,58 @@ import (
 // other invalidation paths instead of the whole SSE subscription failing.
 var maxWatchedDirectories = 4096
 
+// dirWatchLimiter enforces maxWatchedDirectories across the whole lifetime of
+// one workspace stream: both the initial walk and directories created later go
+// through add, so total watches can never exceed the cap even if the workspace
+// grows during a session. Failed Adds are counted as skipped and surfaced by
+// warn as a single aggregated log line instead of one WARN per directory.
+type dirWatchLimiter struct {
+	watcher   *fsnotify.Watcher
+	limit     int
+	mu        sync.Mutex
+	used      int
+	skipped   int
+	lastError error
+}
+
+func newDirWatchLimiter(watcher *fsnotify.Watcher, limit int) *dirWatchLimiter {
+	return &dirWatchLimiter{watcher: watcher, limit: limit}
+}
+
+// add registers dir if budget remains. It returns ctx.Err() when the context
+// was cancelled; every other failure is counted as skipped and does not abort
+// the caller.
+func (l *dirWatchLimiter) add(ctx context.Context, dir string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.used >= l.limit {
+		l.skipped++
+		return nil
+	}
+	if err := l.watcher.Add(dir); err != nil {
+		l.skipped++
+		l.lastError = err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return nil
+	}
+	l.used++
+	return nil
+}
+
+// warn emits at most one aggregated WARN per call describing how many
+// directories could not be watched and why.
+func (l *dirWatchLimiter) warn(ctx context.Context, stage string) {
+	l.mu.Lock()
+	skipped, lastError, limit := l.skipped, l.lastError, l.limit
+	l.mu.Unlock()
+	if skipped == 0 {
+		return
+	}
+	slog.WarnContext(ctx, "workspace watch skipped directories", "stage", stage, "skipped", skipped, "watch_limit", limit, "last_error", lastError)
+}
+
 // Watch subscribes to relevant changes below the workspace roots until ctx is cancelled. The
 // returned channel is intentionally edge-triggered and buffered by one: a burst
 // of editor writes only needs to tell the caller that its Git read model is
@@ -106,13 +158,15 @@ func watchRoot(ctx context.Context, root string) (<-chan struct{}, error) {
 	}
 
 	git := discoverGitWorkspace(ctx, root)
-	if err := addInitialDirectories(ctx, watcher, root, git); err != nil {
+	limiter := newDirWatchLimiter(watcher, maxWatchedDirectories)
+	if err := addInitialDirectories(ctx, limiter, root, git); err != nil {
 		_ = watcher.Close()
 		return nil, err
 	}
+	limiter.warn(ctx, "initial")
 
 	changes := make(chan struct{}, 1)
-	go run(ctx, watcher, root, git, changes)
+	go run(ctx, watcher, root, git, limiter, changes)
 	return changes, nil
 }
 
@@ -159,7 +213,7 @@ func discoverGitWorkspace(ctx context.Context, root string) gitWorkspace {
 	return gitWorkspace{available: true, files: files, metadataFiles: metadataFiles}
 }
 
-func addInitialDirectories(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace) error {
+func addInitialDirectories(ctx context.Context, limiter *dirWatchLimiter, root string, git gitWorkspace) error {
 	dirs := map[string]struct{}{root: {}}
 	if git.available {
 		for _, rel := range git.files {
@@ -213,15 +267,8 @@ func addInitialDirectories(ctx context.Context, watcher *fsnotify.Watcher, root 
 	}
 
 	for _, dir := range ordered {
-		if err := watcher.Add(dir); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			// A single unwatchable directory must not abort the whole
-			// subscription: EMFILE/ENFILE pressure and stale git-listed
-			// paths are both recoverable with partial coverage.
-			slog.WarnContext(ctx, "workspace watch skipped directory", "dir", dir, "error", err)
-			continue
+		if err := limiter.add(ctx, dir); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -235,9 +282,10 @@ func directoryDepth(root, dir string) int {
 	return strings.Count(rel, string(filepath.Separator)) + 1
 }
 
-func run(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace, changes chan struct{}) {
+func run(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace, limiter *dirWatchLimiter, changes chan struct{}) {
 	defer close(changes)
 	defer func() { _ = watcher.Close() }()
+	defer limiter.warn(ctx, "runtime")
 	notify := func() {
 		select {
 		case changes <- struct{}{}:
@@ -260,14 +308,14 @@ func run(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWor
 			if !ok {
 				return
 			}
-			if handleEvent(ctx, watcher, root, git, event) {
+			if handleEvent(ctx, limiter, root, git, event) {
 				notify()
 			}
 		}
 	}
 }
 
-func handleEvent(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace, event fsnotify.Event) bool {
+func handleEvent(ctx context.Context, limiter *dirWatchLimiter, root string, git gitWorkspace, event fsnotify.Event) bool {
 	// On macOS, kqueue can report CHMOD while Git is only reading files to
 	// build the diff model. Treating those metadata-only notifications as
 	// content changes creates a read -> event -> read feedback loop.
@@ -289,13 +337,13 @@ func handleEvent(ctx context.Context, watcher *fsnotify.Watcher, root string, gi
 	}
 	if event.Has(fsnotify.Create) {
 		if info, statErr := os.Stat(name); statErr == nil && info.IsDir() {
-			_ = addCreatedTree(ctx, watcher, root, git, name)
+			_ = addCreatedTree(ctx, limiter, root, git, name)
 		}
 	}
 	return true
 }
 
-func addCreatedTree(ctx context.Context, watcher *fsnotify.Watcher, root string, git gitWorkspace, created string) error {
+func addCreatedTree(ctx context.Context, limiter *dirWatchLimiter, root string, git gitWorkspace, created string) error {
 	return filepath.WalkDir(created, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -306,13 +354,10 @@ func addCreatedTree(ctx context.Context, watcher *fsnotify.Watcher, root string,
 		if hasGitMetadataComponent(root, path) || (git.available && gitIgnored(ctx, root, path)) {
 			return filepath.SkipDir
 		}
-		if err := watcher.Add(path); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			slog.WarnContext(ctx, "workspace watch skipped created directory", "dir", path, "error", err)
-		}
-		return nil
+		// Created directories draw from the same budget as the initial
+		// walk, so a workspace that grows during the session cannot push
+		// total watches past the cap and back into fd exhaustion.
+		return limiter.add(ctx, path)
 	})
 }
 

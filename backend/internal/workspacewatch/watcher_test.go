@@ -173,7 +173,8 @@ func TestAddInitialDirectoriesSkipsMissingGitListedDirectories(t *testing.T) {
 		available: true,
 		files:     []string{"missing-dir/file.txt", filepath.ToSlash(rel) + "/main.go"},
 	}
-	if err := addInitialDirectories(context.Background(), watcher, root, git); err != nil {
+	limiter := newDirWatchLimiter(watcher, maxWatchedDirectories)
+	if err := addInitialDirectories(context.Background(), limiter, root, git); err != nil {
 		t.Fatalf("addInitialDirectories with a stale git-listed directory: %v", err)
 	}
 }
@@ -196,7 +197,8 @@ func TestAddInitialDirectoriesBoundsWatchCount(t *testing.T) {
 	maxWatchedDirectories = 4
 	defer func() { maxWatchedDirectories = previous }()
 
-	if err := addInitialDirectories(context.Background(), watcher, root, gitWorkspace{}); err != nil {
+	limiter := newDirWatchLimiter(watcher, maxWatchedDirectories)
+	if err := addInitialDirectories(context.Background(), limiter, root, gitWorkspace{}); err != nil {
 		t.Fatalf("addInitialDirectories over the watch cap: %v", err)
 	}
 
@@ -227,4 +229,69 @@ func TestAddInitialDirectoriesBoundsWatchCount(t *testing.T) {
 			t.Fatalf("watched directories = %v, did not want capped directory %q retained", watched, unexpected)
 		}
 	}
+}
+
+func TestAddCreatedTreeSharesWatchBudgetWithInitialWalk(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "initial")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("mkdir initial directory: %v", err)
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	limiter := newDirWatchLimiter(watcher, 2)
+	if err := addInitialDirectories(context.Background(), limiter, root, gitWorkspace{}); err != nil {
+		t.Fatalf("addInitialDirectories: %v", err)
+	}
+
+	created := filepath.Join(root, "created")
+	if err := os.Mkdir(created, 0o755); err != nil {
+		t.Fatalf("mkdir created directory: %v", err)
+	}
+	if err := addCreatedTree(context.Background(), limiter, root, gitWorkspace{}, created); err != nil {
+		t.Fatalf("addCreatedTree over the watch cap: %v", err)
+	}
+
+	watched := watcher.WatchList()
+	if len(watched) != 2 {
+		t.Fatalf("watched directories = %d (%v), want total watches bounded by cap 2", len(watched), watched)
+	}
+	watchedSet := make(map[string]struct{}, len(watched))
+	for _, dir := range watched {
+		watchedSet[dir] = struct{}{}
+	}
+	if _, ok := watchedSet[created]; ok {
+		t.Fatalf("watched directories = %v, did not want over-cap created directory %q watched", watched, created)
+	}
+}
+
+func TestChangeInUnwatchedDirectoryStillNotifies(t *testing.T) {
+	root := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	previous := maxWatchedDirectories
+	maxWatchedDirectories = 1
+	defer func() { maxWatchedDirectories = previous }()
+
+	changes, err := Watch(ctx, root)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	// The only watch is the root, so the created directory itself stays
+	// unwatched. Its creation must still surface through the watched root's
+	// Create event so the read model refresh remains reachable even when
+	// per-directory coverage degrades.
+	unwatched := filepath.Join(root, "beyond-cap")
+	if err := os.Mkdir(unwatched, 0o755); err != nil {
+		t.Fatalf("mkdir beyond-cap directory: %v", err)
+	}
+	waitForChange(t, changes)
 }
