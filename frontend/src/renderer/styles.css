@@ -2555,63 +2555,6 @@ html.sidebar-reordering * {
 	flex: 0 0 auto;
 }
 
-.session-branch-badge {
-	transition:
-		max-width 240ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
-		padding-inline 240ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
-		gap 240ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
-}
-
-.session-branch-badge__label {
-	max-inline-size: 10rem;
-	transition:
-		max-inline-size 200ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
-		opacity 160ms ease-out;
-}
-
-@container workspace-topbar (max-width: 959px) {
-	.session-branch-badge {
-		max-width: 7rem;
-	}
-}
-
-@container workspace-topbar (max-width: 719px) {
-	.session-branch-badge {
-		max-width: 5rem;
-	}
-}
-
-.session-branch-badge[data-compact="true"] {
-	max-width: calc(var(--space-8) + var(--space-1));
-	gap: 0;
-	padding-inline: var(--space-2);
-}
-
-.session-branch-badge[data-compact="true"] .session-branch-badge__label {
-	max-inline-size: 0;
-	opacity: 0;
-}
-
-@container workspace-topbar (max-width: 559px) {
-	.session-branch-badge {
-		max-width: calc(var(--space-8) + var(--space-1));
-		gap: 0;
-		padding-inline: var(--space-2);
-	}
-
-	.session-branch-badge__label {
-		max-inline-size: 0;
-		opacity: 0;
-	}
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.session-branch-badge,
-	.session-branch-badge__label {
-		transition-duration: 0ms;
-	}
-}
-
 .session-topbar-session-chrome[data-compact-session-chrome="true"]
 	.workspace-topbar-actions
 	[data-priority]

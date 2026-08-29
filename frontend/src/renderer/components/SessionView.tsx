@@ -27,7 +27,6 @@ import { ResizeHandle } from "./ResizeHandle";
 import { SessionFileExplorer } from "./SessionFileExplorer";
 import { SessionFileTabs } from "./SessionFileTabs";
 import { SessionFileWorkspace } from "./SessionFileWorkspace";
-import { SessionBranchBadge } from "./SessionBranchBadge";
 import { SessionInspector } from "./SessionInspector";
 import {
 	SessionInterfaceActionGroup,
@@ -892,18 +891,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		</SessionInterfaceActionGroup>
 	) : null;
 	const compactSessionChrome = adaptiveWorkspaceActive;
-	// Branch context remains useful in an ordinary window. It yields to tabs
-	// based on real competition in the strip; width-based CSS handles the
-	// remaining genuinely narrow layouts independently of Browser state.
-	const branchHasCompetingTabs = Boolean(
-		reviewerTerminal || shellTerminals.length > 0 || fileTabs.openPaths.length > 0,
-	);
+	// The prime top bar carries session identity, status, and controls only. The
+	// worktree branch stays on detail surfaces (inspector PR summary, board card,
+	// command palette) — it is long, rarely actionable, and crowds the actions.
 	const sessionHeaderActions = (
 		<div
 			className="session-topbar-session-chrome flex shrink-0 items-center"
 			data-compact-session-chrome={compactSessionChrome ? "true" : "false"}
 		>
-			<SessionBranchBadge branch={session?.branch} compact={branchHasCompetingTabs} />
 			<ShellTopbar compactActions={compactSessionChrome} embedded sessionAction={sessionLocalActions} />
 		</div>
 	);

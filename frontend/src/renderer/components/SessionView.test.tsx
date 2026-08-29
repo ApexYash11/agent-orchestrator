@@ -599,25 +599,6 @@ describe("SessionView", () => {
 		expect(tabs).not.toHaveTextContent("loose-shell");
 	});
 
-	it("lets competing workspace tabs compact the branch and restores it when they close", () => {
-		shellTerminalsState.data = [
-			{
-				handleId: "sh-a",
-				sessionId: "sess-1",
-				title: "sess-1-shell",
-				workingDir: "/p",
-				createdAt: "2026-07-24T00:00:00Z",
-			},
-		];
-		const view = render(<SessionView sessionId="sess-1" />);
-		const branch = screen.getByLabelText("ao/sess-1");
-		expect(branch).toHaveAttribute("data-compact", "true");
-
-		shellTerminalsState.data = [];
-		view.rerender(<SessionView sessionId="sess-1" />);
-		expect(branch).toHaveAttribute("data-compact", "false");
-	});
-
 	// The pane shows one terminal at a time, so selecting a shell takes the
 	// agent's terminal off screen while the route still points at this session.
 	// The notification runtime lives outside this subtree and reads the published
@@ -709,6 +690,27 @@ describe("SessionView", () => {
 		render(<SessionView sessionId="sess-orch" />);
 
 		expect(screen.queryByRole("button", { name: "New terminal" })).not.toBeInTheDocument();
+	});
+
+	// Regression (#3874 then re-added by #4252): the prime top bar carries session
+	// identity, status, and controls — never the worktree branch. A branch badge
+	// beside the actions duplicates a fact the inspector, board card, and command
+	// palette already own, and its long name crowds the controls it sits next to.
+	it.each([
+		["a terminal worker", "sess-1", "tui", true],
+		["a chat worker", "sess-1", "chat", true],
+		["an orchestrator", "sess-orch", "tui", false],
+	] as const)("keeps the git branch out of %s session's top bar", (_label, sessionId, mode, offersNewTerminal) => {
+		workerSession(sessionId).mode = mode;
+
+		render(<SessionView sessionId={sessionId} />);
+
+		expect(screen.queryByText("ao/sess-1")).not.toBeInTheDocument();
+		expect(screen.queryByTitle("ao/sess-1")).not.toBeInTheDocument();
+		expect(document.querySelector(".lucide-git-branch")).toBeNull();
+		// The session's own actions still ride in the same top-bar slot.
+		expect(screen.getByTestId("mock-session-topbar")).toBeInTheDocument();
+		expect(Boolean(screen.queryByRole("button", { name: "New terminal" }))).toBe(offersNewTerminal);
 	});
 
 	it("shows a shell opened from chat and returns to the chat agent tab", () => {
@@ -1540,13 +1542,12 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-1" />);
 
-		expect(screen.getByTestId("mock-session-topbar")).toHaveAttribute("data-compact-actions", "true");
-		const branch = screen.getByLabelText("ao/sess-1");
-		expect(branch.closest("[data-compact-session-chrome]")).toHaveAttribute(
+		const topbar = screen.getByTestId("mock-session-topbar");
+		expect(topbar).toHaveAttribute("data-compact-actions", "true");
+		expect(topbar.closest("[data-compact-session-chrome]")).toHaveAttribute(
 			"data-compact-session-chrome",
 			"true",
 		);
-		expect(branch).toHaveAttribute("data-compact", "false");
 	});
 
 	it("restores and clamps the persisted inspector width in pixels", () => {
