@@ -1,6 +1,7 @@
 import { StrictMode, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionView } from "./SessionView";
 import { SessionTopbarProvider } from "./SessionTopbarPortal";
@@ -31,6 +32,12 @@ const chatSurfaceWorkState = vi.hoisted(() => ({
 	hasRunningTurn: false,
 	queuedTurnCount: 0,
 }));
+
+async function chooseSessionAction(name: string) {
+	const user = userEvent.setup();
+	await user.click(screen.getByRole("button", { name: "Session actions" }));
+	await user.click(await screen.findByRole("menuitem", { name }));
+}
 
 vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => navigateMock,
@@ -173,16 +180,24 @@ vi.mock("./ShellTopbar", () => ({
 vi.mock("./NotificationCenter", () => ({
 	NotificationCenter: () => <button type="button">Notifications</button>,
 }));
+vi.mock("../hooks/useSessionHandoffMenu", () => ({
+	useSessionHandoffMenu: () => ({
+		agentSwitch: undefined,
+		switchControlPresentation: undefined,
+		switchError: null,
+	}),
+}));
 vi.mock("./TerminalSwitchAgentButton", () => ({
-	TerminalSwitchAgentButton: () => (
-		<button aria-label="Switch agent" type="button" />
-	),
+	TerminalSwitchAgentButton: ({ variant }: { variant?: "icon" | "menu-item" }) =>
+		variant === "menu-item" ? null : <button aria-label="Switch agent" type="button" />,
 }));
 vi.mock("./chat/SessionChatSurface", () => ({
 	SessionChatSurface: ({
 		onOpenShell,
 		onOpenFile,
 		headerActions,
+		sessionTabAction,
+		tabStripAction,
 		reviewerTerminal,
 		onOpenReviewerTerminal,
 		reviewerTarget,
@@ -197,6 +212,8 @@ vi.mock("./chat/SessionChatSurface", () => ({
 		onOpenShell?: () => void;
 		onOpenFile?: (path: string) => void;
 		headerActions?: ReactNode;
+		sessionTabAction?: ReactNode;
+		tabStripAction?: ReactNode;
 		reviewerTerminal?: { handleId: string; harness: string };
 		onOpenReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
 		reviewerTarget?: { kind: "reviewer"; handleId: string; harness: string; sessionId: string };
@@ -214,7 +231,11 @@ vi.mock("./chat/SessionChatSurface", () => ({
 		>
 			chat surface
 			{headerActions}
-			<div role="tablist">{workspaceTabs}</div>
+			{sessionTabAction}
+			<div role="tablist">
+				{workspaceTabs}
+				{tabStripAction}
+			</div>
 			{onOpenFile ? (
 				<button type="button" onClick={() => onOpenFile("notes.txt")}>
 					open chat basename
@@ -268,6 +289,8 @@ vi.mock("./CenterPane", () => ({
 		onSelectSessionTerminal,
 		onSelectReviewerTerminal,
 		topbarActions,
+		sessionTabAction,
+		tabStripAction,
 		workspaceTabs,
 		reviewerTerminal,
 		terminalTarget,
@@ -279,6 +302,8 @@ vi.mock("./CenterPane", () => ({
 		onSelectSessionTerminal?: () => void;
 		onSelectReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
 		topbarActions?: ReactNode;
+		sessionTabAction?: ReactNode;
+		tabStripAction?: ReactNode;
 		workspaceTabs?: ReactNode;
 		reviewerTerminal?: { handleId: string; harness: string };
 		terminalTarget?: { kind: string; handleId?: string };
@@ -286,7 +311,11 @@ vi.mock("./CenterPane", () => ({
 		<div>
 			terminal center
 			{topbarActions}
-			<div role="tablist">{workspaceTabs}</div>
+			{sessionTabAction}
+			<div role="tablist">
+				{workspaceTabs}
+				{tabStripAction}
+			</div>
 			<div data-testid="terminal-target">
 				{terminalTarget?.kind === "shell" ? terminalTarget.handleId : (terminalTarget?.kind ?? "worker")}
 			</div>
@@ -747,7 +776,7 @@ describe("SessionView", () => {
 	it.each([
 		["Terminal UI worker", "sess-1", "tui", "chat", "Switch to chat UI"],
 		["Terminal UI orchestrator", "sess-orch", "tui", "chat", "Switch to chat UI"],
-	] as const)("switches an idle %s directly with drain", (_label, sessionId, mode, targetMode, buttonName) => {
+	] as const)("switches an idle %s directly with drain", async (_label, sessionId, mode, targetMode, buttonName) => {
 		interfaceTransitionState.status = { supported: true, targetMode };
 		const session = workerSession(sessionId);
 		session.mode = mode;
@@ -756,7 +785,7 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId={sessionId} />);
 
-		fireEvent.click(screen.getByRole("button", { name: buttonName }));
+		await chooseSessionAction(buttonName);
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode, policy: "drain" });
@@ -765,7 +794,7 @@ describe("SessionView", () => {
 	it.each([
 		["worker", "sess-1"],
 		["orchestrator", "sess-orch"],
-	] as const)("switches an idle Chat %s directly to Terminal UI with drain", (_label, sessionId) => {
+	] as const)("switches an idle Chat %s directly to Terminal UI with drain", async (_label, sessionId) => {
 		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
 		const session = workerSession(sessionId);
 		session.mode = "chat";
@@ -775,7 +804,7 @@ describe("SessionView", () => {
 		render(<SessionView sessionId={sessionId} />);
 		fireEvent.click(screen.getByRole("button", { name: "report chat work" }));
 
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "drain" });
@@ -790,9 +819,7 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-1" />);
 
-		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: "Switch to chat UI" }));
-		});
+		await chooseSessionAction("Switch to chat UI");
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 	});
@@ -807,7 +834,7 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-1" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 		expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
@@ -821,7 +848,7 @@ describe("SessionView", () => {
 		["working status", "sess-1", "tui", "chat", "Switch to chat UI", "working", "idle"],
 		["needs-input status", "sess-orch", "tui", "chat", "Switch to chat UI", "needs_input", "idle"],
 		["blocked activity", "sess-1", "tui", "chat", "Switch to chat UI", "idle", "blocked"],
-	] as const)("opens the switch policy dialog for %s", (_label, sessionId, mode, targetMode, buttonName, status, activityState) => {
+	] as const)("opens the switch policy dialog for %s", async (_label, sessionId, mode, targetMode, buttonName, status, activityState) => {
 		interfaceTransitionState.status = { supported: true, targetMode };
 		const session = workerSession(sessionId);
 		session.mode = mode;
@@ -830,13 +857,13 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId={sessionId} />);
 
-		fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${buttonName}`) }));
+		await chooseSessionAction(buttonName);
 
 		expect(screen.getByRole("dialog")).toBeInTheDocument();
 		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
 	});
 
-	it("requires an explicit policy while current Chat work is not yet known", () => {
+	it("requires an explicit policy while current Chat work is not yet known", async () => {
 		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
 		const session = workerSession("sess-1");
 		session.mode = "chat";
@@ -844,7 +871,7 @@ describe("SessionView", () => {
 		session.activity = { state: "idle", lastActivityAt: "2026-08-06T00:00:00Z" };
 
 		render(<SessionView sessionId="sess-1" />);
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 
 		expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
 		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
@@ -856,7 +883,7 @@ describe("SessionView", () => {
 		["active activity", "sess-1", "idle", "active"],
 		["waiting-input activity", "sess-orch", "idle", "waiting_input"],
 		["blocked activity", "sess-1", "idle", "blocked"],
-	] as const)("asks for policy before a busy Chat session switches for %s", (_label, sessionId, status, activityState) => {
+	] as const)("asks for policy before a busy Chat session switches for %s", async (_label, sessionId, status, activityState) => {
 		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
 		const session = workerSession(sessionId);
 		session.mode = "chat";
@@ -865,7 +892,7 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId={sessionId} />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 
 		expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
 		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
@@ -875,7 +902,7 @@ describe("SessionView", () => {
 		["a busy controller", { controllerBusy: true, hasRunningTurn: false, queuedTurnCount: 0 }],
 		["a running turn", { controllerBusy: false, hasRunningTurn: true, queuedTurnCount: 0 }],
 		["accepted queued work", { controllerBusy: false, hasRunningTurn: false, queuedTurnCount: 1 }],
-	] as const)("asks for policy when Chat reports %s but the session projection is idle", (_label, work) => {
+	] as const)("asks for policy when Chat reports %s but the session projection is idle", async (_label, work) => {
 		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
 		const session = workerSession("sess-1");
 		session.mode = "chat";
@@ -885,13 +912,13 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-1" />);
 		fireEvent.click(screen.getByRole("button", { name: "report chat work" }));
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 
 		expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
 		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
 	});
 
-	it("does not apply one Chat session's reported work to another selected session", () => {
+	it("does not apply one Chat session's reported work to another selected session", async () => {
 		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
 		for (const sessionId of ["sess-1", "sess-2"]) {
 			const session = workerSession(sessionId);
@@ -906,7 +933,7 @@ describe("SessionView", () => {
 		view.rerender(<SessionView sessionId="sess-2" />);
 		chatSurfaceWorkState.queuedTurnCount = 0;
 		fireEvent.click(screen.getByRole("button", { name: "report chat work" }));
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "drain" });
@@ -915,7 +942,7 @@ describe("SessionView", () => {
 	it.each([
 		["Finish work, then switch", "drain"],
 		["Stop now and switch", "interrupt"],
-	] as const)("maps explicit busy Chat consent through the %s action", (buttonName, policy) => {
+	] as const)("maps explicit busy Chat consent through the %s action", async (buttonName, policy) => {
 		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
 		const session = workerSession("sess-1");
 		session.mode = "chat";
@@ -924,7 +951,7 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-1" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 		expect(interfaceTransitionMock.start).not.toHaveBeenCalled();
 		fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${buttonName}`) }));
 
@@ -932,7 +959,7 @@ describe("SessionView", () => {
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy });
 	});
 
-	it("disables Chat input while an accepted Chat-to-Terminal drain starts, runs, or settles", () => {
+	it("disables Chat input while an accepted Chat-to-Terminal drain starts, runs, or settles", async () => {
 		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
 		const session = workerSession("sess-1");
 		session.mode = "chat";
@@ -943,7 +970,7 @@ describe("SessionView", () => {
 		const chatSurface = () => screen.getByTestId("chat-surface");
 		expect(chatSurface()).toHaveAttribute("data-new-work-disabled", "false");
 
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 		fireEvent.click(screen.getByRole("button", { name: /^Finish work, then switch/ }));
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "tui", policy: "drain" });
 
@@ -979,7 +1006,7 @@ describe("SessionView", () => {
 		expect(chatSurface()).toHaveAttribute("data-new-work-disabled", "false");
 	});
 
-	it("discards one session's switch consent dialog when navigating to another session", () => {
+	it("discards one session's switch consent dialog when navigating to another session", async () => {
 		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
 		for (const sessionId of ["sess-1", "sess-2"]) {
 			const session = workerSession(sessionId);
@@ -989,7 +1016,7 @@ describe("SessionView", () => {
 		}
 		const view = render(<SessionView sessionId="sess-1" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 		expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
 
 		view.rerender(<SessionView sessionId="sess-2" />);
@@ -1016,7 +1043,7 @@ describe("SessionView", () => {
 		);
 		const view = render(<SessionView sessionId="sess-1" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 		fireEvent.click(screen.getByRole("button", { name: /^Stop now and switch/ }));
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
 			targetMode: "tui",
@@ -1024,7 +1051,7 @@ describe("SessionView", () => {
 		});
 
 		view.rerender(<SessionView sessionId="sess-2" />);
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 		expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
 
 		await act(async () => finishFirstSwitch());
@@ -1032,7 +1059,7 @@ describe("SessionView", () => {
 		expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
 	});
 
-	it("discards switch consent when the requested target changes", () => {
+	it("discards switch consent when the requested target changes", async () => {
 		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
 		const session = workerSession("sess-1");
 		session.mode = "chat";
@@ -1040,7 +1067,7 @@ describe("SessionView", () => {
 		session.activity = { state: "active", lastActivityAt: "2026-08-06T00:00:00Z" };
 		const view = render(<SessionView sessionId="sess-1" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Switch to terminal UI" }));
+		await chooseSessionAction("Switch to terminal UI");
 		expect(screen.getByRole("dialog", { name: "Switch to Terminal UI?" })).toBeInTheDocument();
 
 		interfaceTransitionState.status = { supported: true, targetMode: "chat" };
@@ -1053,7 +1080,7 @@ describe("SessionView", () => {
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 	});
 
-	it("checks only the selected session when deciding whether to show the policy dialog", () => {
+	it("checks only the selected session when deciding whether to show the policy dialog", async () => {
 		interfaceTransitionState.status = { supported: true, targetMode: "chat" };
 		const selected = workerSession("sess-1");
 		selected.status = "idle";
@@ -1064,7 +1091,7 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-1" />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Switch to chat UI" }));
+		await chooseSessionAction("Switch to chat UI");
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode: "chat", policy: "drain" });
@@ -1131,7 +1158,7 @@ describe("SessionView", () => {
 	it.each([
 		["worker", "sess-1"],
 		["orchestrator", "sess-orch"],
-	] as const)("hides the interface switch button for %s sessions when Chat UI is unsupported", (_label, sessionId) => {
+	] as const)("hides the interface switch button for %s sessions when Chat UI is unsupported", async (_label, sessionId) => {
 		interfaceTransitionState.status = { supported: false, targetMode: "chat", reasonCode: "CHAT_UNSUPPORTED" };
 		const session = workerSession(sessionId);
 		session.mode = "tui";
@@ -1140,10 +1167,11 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId={sessionId} />);
 
-		expect(screen.queryByRole("button", { name: "Switch to chat UI" })).not.toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Session actions" }));
+		expect(screen.queryByRole("menuitem", { name: "Switch to chat UI" })).not.toBeInTheDocument();
 	});
 
-	it("shows the switch button when the adapter only reports a generic unsupported reason", () => {
+	it("shows the switch button when the adapter only reports a generic unsupported reason", async () => {
 		interfaceTransitionState.status = { supported: false, targetMode: "chat", reasonCode: "INTERFACE_HANDOFF_UNSUPPORTED" };
 		const session = workerSession("sess-1");
 		session.mode = "tui";
@@ -1152,7 +1180,8 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-1" />);
 
-		expect(screen.getByRole("button", { name: "Switch to chat UI" })).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Session actions" }));
+		expect(screen.getByRole("menuitem", { name: "Switch to chat UI" })).toBeInTheDocument();
 	});
 
 	it("walks backward through auxiliary terminals before returning to the permanent terminal", () => {
