@@ -365,6 +365,16 @@ export function SessionChatSurface({
 				onSteer={can(renderSnapshot, "steer") && !commands.steerUnsupported ? commands.steer : undefined}
 				steerPending={commands.steerPending}
 				steerRefusal={commands.steerRefusal}
+				onPromoteQueuedTurn={
+					can(renderSnapshot, "steer") && !commands.steerUnsupported
+						? commands.promoteQueuedTurn
+						: undefined
+				}
+				onEditQueuedTurn={commands.editQueuedTurn}
+				onCancelQueuedTurn={commands.cancelQueuedTurn}
+				promoteQueuedTurnPendingTurnId={commands.promoteQueuedTurnPendingTurnId}
+				cancelQueuedTurnPendingTurnId={commands.cancelQueuedTurnPendingTurnId}
+				editQueuedTurnPendingTurnId={commands.editQueuedTurnPendingTurnId}
 				onReloadMcpServers={
 					!can(renderSnapshot, "mcp_reload") || commands.mcpReloadUnsupported
 						? undefined
