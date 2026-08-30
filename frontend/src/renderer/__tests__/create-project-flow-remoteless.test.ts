@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { remotelessDefaultBranchCandidate } from "../components/CreateProjectFlow";
-import type { ImportFolderScan } from "../../../preload";
+import type { ImportFolderScan } from "../../preload";
 
 type ScanRepo = ImportFolderScan["repos"][number];
 

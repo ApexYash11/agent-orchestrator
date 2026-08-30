@@ -179,7 +179,6 @@ async function scanGitRepo(
 					hasRemote: false,
 					hasCommit: false,
 					checkedOutBranch: "",
-				checkedOutBranch: "",
 					status: "error",
 					reason: "Bare repositories cannot be imported.",
 				};
@@ -264,8 +263,6 @@ export async function scanImportFolder(
 						hasRemote: false,
 						hasCommit: false,
 						checkedOutBranch: "",
-					checkedOutBranch: "",
-				checkedOutBranch: "",
 						status: "error",
 						reason: safetyReason,
 					},
