@@ -295,3 +295,84 @@ func TestChangeInUnwatchedDirectoryStillNotifies(t *testing.T) {
 	}
 	waitForChange(t, changes)
 }
+
+func TestHandleEventReclaimsWatchBudgetOnRemoveAndRename(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim")
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	limiter := newDirWatchLimiter(watcher, 2)
+	if err := limiter.add(context.Background(), root); err != nil {
+		t.Fatalf("add root: %v", err)
+	}
+	if err := limiter.add(context.Background(), victim); err != nil {
+		t.Fatalf("add victim: %v", err)
+	}
+
+	// Removing a watched directory must free its budget slot.
+	if !handleEvent(context.Background(), limiter, root, gitWorkspace{}, fsnotify.Event{
+		Name: victim,
+		Op:   fsnotify.Remove,
+	}) {
+		t.Fatal("directory removal was not treated as a workspace change")
+	}
+	if limiter.used != 1 {
+		t.Fatalf("limiter budget after Remove = %d, want 1 (released)", limiter.used)
+	}
+	for _, dir := range watcher.WatchList() {
+		if dir == victim {
+			t.Fatalf("watch list still contains removed directory %q", dir)
+		}
+	}
+
+	// Renaming a watched directory must reclaim its slot too.
+	if !handleEvent(context.Background(), limiter, root, gitWorkspace{}, fsnotify.Event{
+		Name: victim,
+		Op:   fsnotify.Rename,
+	}) {
+		t.Fatal("directory rename was not treated as a workspace change")
+	}
+	if limiter.used != 1 {
+		t.Fatalf("limiter budget after Rename = %d, want 1 (already released)", limiter.used)
+	}
+
+	// The freed slot must be reusable by newly created directories.
+	created := filepath.Join(root, "created")
+	if err := os.Mkdir(created, 0o755); err != nil {
+		t.Fatalf("mkdir created directory: %v", err)
+	}
+	if err := addCreatedTree(context.Background(), limiter, root, gitWorkspace{}, created); err != nil {
+		t.Fatalf("addCreatedTree after reclaim: %v", err)
+	}
+	found := false
+	for _, dir := range watcher.WatchList() {
+		if dir == created {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("watch list = %v, want reclaimed budget spent on %q", watcher.WatchList(), created)
+	}
+}
+
+func TestReleaseIgnoresPathsTheLimiterNeverWatched(t *testing.T) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	limiter := newDirWatchLimiter(watcher, 2)
+	// A nil limiter and paths outside the watched set must both be no-ops.
+	limiter.release(filepath.Join(t.TempDir(), "untracked"))
+	var nilLimiter *dirWatchLimiter
+	nilLimiter.release(filepath.Join(t.TempDir(), "untracked"))
+	if limiter.used != 0 {
+		t.Fatalf("limiter budget after releasing unwatched paths = %d, want 0", limiter.used)
+	}
+}

@@ -20,31 +20,36 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// maxWatchedDirectories bounds how many per-directory watches one workspace
-// stream registers. fsnotify consumes one descriptor per watched directory
-// (a kqueue descriptor on macOS, an inotify watch slot on Linux), so watching
-// every directory of an unbounded tree eventually exhausts RLIMIT_NOFILE or
-// max_user_watches and every subsequent Add fails. Directories beyond the cap
-// stay unwatched; the model refresh they guard remains reachable through the
-// other invalidation paths instead of the whole SSE subscription failing.
+// maxWatchedDirectories bounds how many directories one workspace stream has
+// concurrently registered. fsnotify consumes one descriptor per watched
+// directory (a kqueue descriptor on macOS, an inotify watch slot on Linux), so
+// watching every directory of an unbounded tree eventually exhausts
+// RLIMIT_NOFILE or max_user_watches and every subsequent Add fails.
+// Directories beyond the cap stay unwatched; the model refresh they guard
+// remains reachable through the other invalidation paths instead of the whole
+// SSE subscription failing.
 var maxWatchedDirectories = 4096
 
-// dirWatchLimiter enforces maxWatchedDirectories across the whole lifetime of
-// one workspace stream: both the initial walk and directories created later go
-// through add, so total watches can never exceed the cap even if the workspace
-// grows during a session. Failed Adds are counted as skipped and surfaced by
-// warn as a single aggregated log line instead of one WARN per directory.
+// dirWatchLimiter keeps the number of concurrently registered directory
+// watches at or below maxWatchedDirectories for the lifetime of one workspace
+// stream: both the initial walk and directories created later go through add,
+// while directories that disappear reclaim their budget through release, so a
+// session with directory churn (build outputs, node_modules, branch switches)
+// keeps reusing freed budget instead of exhausting it. Failed Adds are
+// counted as skipped and surfaced by warn as a single aggregated log line
+// instead of one WARN per directory.
 type dirWatchLimiter struct {
 	watcher   *fsnotify.Watcher
 	limit     int
 	mu        sync.Mutex
+	watched   map[string]struct{}
 	used      int
 	skipped   int
 	lastError error
 }
 
 func newDirWatchLimiter(watcher *fsnotify.Watcher, limit int) *dirWatchLimiter {
-	return &dirWatchLimiter{watcher: watcher, limit: limit}
+	return &dirWatchLimiter{watcher: watcher, limit: limit, watched: make(map[string]struct{})}
 }
 
 // add registers dir if budget remains. It returns ctx.Err() when the context
@@ -65,8 +70,28 @@ func (l *dirWatchLimiter) add(ctx context.Context, dir string) error {
 		}
 		return nil
 	}
+	l.watched[dir] = struct{}{}
 	l.used++
 	return nil
+}
+
+// release drops the watch on dir and returns its budget so it can be reused.
+// It is a no-op for paths this limiter never watched (regular files, ignored
+// directories, already-released paths) and safe to call on a nil limiter.
+// Best-effort: fsnotify may have already dropped the watch implicitly (for
+// example on Rename); reclaiming the accounting slot is what matters.
+func (l *dirWatchLimiter) release(dir string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.watched[dir]; !ok {
+		return
+	}
+	delete(l.watched, dir)
+	_ = l.watcher.Remove(dir)
+	l.used--
 }
 
 // warn emits at most one aggregated WARN per call describing how many
@@ -335,6 +360,13 @@ func handleEvent(ctx context.Context, limiter *dirWatchLimiter, root string, git
 	if git.available && gitIgnored(ctx, root, name) {
 		return false
 	}
+	if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+		// A watched directory that goes away frees its descriptor and its
+		// budget slot, so later directory creation can still be watched even
+		// in workspaces with heavy directory churn. Paths the limiter never
+		// watched (regular files, ignored directories) are no-ops.
+		limiter.release(name)
+	}
 	if event.Has(fsnotify.Create) {
 		if info, statErr := os.Stat(name); statErr == nil && info.IsDir() {
 			_ = addCreatedTree(ctx, limiter, root, git, name)
@@ -356,7 +388,7 @@ func addCreatedTree(ctx context.Context, limiter *dirWatchLimiter, root string, 
 		}
 		// Created directories draw from the same budget as the initial
 		// walk, so a workspace that grows during the session cannot push
-		// total watches past the cap and back into fd exhaustion.
+		// concurrent watches past the cap and back into fd exhaustion.
 		return limiter.add(ctx, path)
 	})
 }
