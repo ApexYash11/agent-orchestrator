@@ -194,6 +194,7 @@ async function scanGitRepo(
 			remote: "",
 			hasRemote: false,
 			hasCommit: false,
+			checkedOutBranch: "",
 			status: "ok",
 			needsGitInit: true,
 		};
