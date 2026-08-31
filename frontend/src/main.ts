@@ -100,7 +100,11 @@ import { installCloudCpProxy } from "./main/cloud-cp-proxy";
 import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "./shared/posthog-config";
 import { DEFAULT_SENTRY_DSN } from "./shared/sentry-config";
 import { buildTelemetryBootstrap } from "./shared/telemetry";
-import { createBrowserViewHost, type BrowserViewHost } from "./main/browser-view-host";
+import {
+	createBrowserViewHost,
+	shouldHandleAppShortcutInBrowserContext,
+	type BrowserViewHost,
+} from "./main/browser-view-host";
 import { createWindowComposition, type WindowComposition } from "./main/window-composition";
 import { AgentBrowserRuntime } from "./main/agent-browser-runtime";
 import { sameBrowserRuntimeIdentity, type BrowserRuntimeIdentity } from "./main/browser-runtime-identity";
@@ -535,7 +539,9 @@ async function createWindowInternal(): Promise<void> {
 		false,
 		() => keybindingOverrides,
 		() => keybindingRecordingActive,
-		() => true,
+		(id, chord) =>
+			!browserViewHost?.isLastUsedBrowser() ||
+			shouldHandleAppShortcutInBrowserContext(id, chord, isMac),
 		(id) => {
 			if (id !== "toggle-browser-devtools") return;
 			void browserViewHost?.toggleDevToolsForLastFocused().catch(() => undefined);

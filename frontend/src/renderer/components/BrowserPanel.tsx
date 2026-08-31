@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	type FocusEvent,
+	type FormEvent,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
 	DndContext,
@@ -296,6 +303,7 @@ export function BrowserPanel({
 }
 
 export function BrowserPanelView({
+	active,
 	poppedOut,
 	onTogglePopOut,
 	browserView,
@@ -349,6 +357,32 @@ export function BrowserPanelView({
 	const [pinned, setPinned] = useState(() => window.localStorage.getItem(RAIL_PINNED_STORAGE_KEY) === "1");
 	const showTabsTrigger = !poppedOut && !pinned && tabs.length >= 2;
 	const [topTabDragActive, setTopTabDragActive] = useState(false);
+
+	useEffect(() => {
+		if (!viewId) return;
+		if (active) window.ao?.browser.notifyPanelUsed(viewId);
+		else window.ao?.browser.notifyPanelBlur(viewId);
+		return () => window.ao?.browser.notifyPanelBlur(viewId);
+	}, [active, viewId]);
+
+	useEffect(
+		() =>
+			window.ao?.browser.onFocusLocation((targetViewId) => {
+				if (targetViewId !== viewId) return;
+				urlInputRef.current?.focus();
+				urlInputRef.current?.select();
+			}),
+		[viewId],
+	);
+	useEffect(
+		() =>
+			window.ao?.browser.onReopenClosedTab((targetViewId) => {
+				if (targetViewId !== viewId) return;
+				void reopenClosedTab();
+			}),
+		[reopenClosedTab, viewId],
+	);
+
 	const tabSensors = useSensors(
 		useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
 		useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -512,6 +546,17 @@ export function BrowserPanelView({
 			data-browser-dock-target={poppedOut ? undefined : ""}
 			data-browser-native-page={navState.url ? "live" : "empty"}
 			data-testid="browser-panel"
+			onBlurCapture={(event: FocusEvent<HTMLDivElement>) => {
+				if (viewId && !event.currentTarget.contains(event.relatedTarget)) {
+					window.ao?.browser.notifyPanelBlur(viewId);
+				}
+			}}
+			onFocusCapture={() => {
+				if (viewId) window.ao?.browser.notifyPanelUsed(viewId);
+			}}
+			onPointerDownCapture={() => {
+				if (viewId) window.ao?.browser.notifyPanelUsed(viewId);
+			}}
 			ref={panelRef}
 			role="tabpanel"
 		>
