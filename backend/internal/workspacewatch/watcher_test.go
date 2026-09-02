@@ -360,6 +360,28 @@ func TestHandleEventReclaimsWatchBudgetOnRemoveAndRename(t *testing.T) {
 	}
 }
 
+func TestLimiterAddIsIdempotent(t *testing.T) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	limiter := newDirWatchLimiter(watcher, 4096)
+	dir := t.TempDir()
+	if err := limiter.add(context.Background(), dir); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if err := limiter.add(context.Background(), dir); err != nil {
+		t.Fatalf("re-add of an already-watched directory: %v", err)
+	}
+	// Re-adding a watched directory must not consume a second budget slot:
+	// used must always equal the number of distinct watched directories.
+	if limiter.used != len(limiter.watched) || limiter.used != 1 {
+		t.Fatalf("used=%d watched=%d, want 1/1", limiter.used, len(limiter.watched))
+	}
+}
+
 func TestReleaseIgnoresPathsTheLimiterNeverWatched(t *testing.T) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {

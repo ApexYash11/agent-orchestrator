@@ -58,6 +58,11 @@ func newDirWatchLimiter(watcher *fsnotify.Watcher, limit int) *dirWatchLimiter {
 func (l *dirWatchLimiter) add(ctx context.Context, dir string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if _, ok := l.watched[dir]; ok {
+		// Already watched: fsnotify.Add is a no-op for an existing watch, so
+		// do not consume budget or re-count the slot.
+		return nil
+	}
 	if l.used >= l.limit {
 		l.skipped++
 		return nil
