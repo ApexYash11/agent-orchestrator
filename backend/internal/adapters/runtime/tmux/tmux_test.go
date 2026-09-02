@@ -873,14 +873,19 @@ func TestIsAliveReturnsFalseNilOnCantFindSession(t *testing.T) {
 // must surface as ports.ErrRuntimeUnavailable — an inconclusive probe — never
 // as a definitive "this session is dead" (issue #3475: reading it as death
 // archived every session on the board in one pass).
-func TestIsAliveReportsNoServerAsRuntimeUnavailable(t *testing.T) {
+// A tmux server that definitively does not exist ("no server running") means
+// the session's runtime cannot exist either: leaving it inconclusive kept
+// post-reboot sessions live-looking forever (issue #4776). The reaper's
+// mass-death circuit breaker (#3491) guards a board-wide misread of a server
+// outage; per-session liveness here reads definitive server absence as death.
+func TestIsAliveReportsNoServerAsDefinitivelyDead(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{[]byte("no server running on /tmp/tmux-1000/default")}
 	fr.err = &exec.ExitError{}
 
 	alive, err := r.IsAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
-	if !errors.Is(err, ports.ErrRuntimeUnavailable) {
-		t.Fatalf("IsAlive err = %v, want ports.ErrRuntimeUnavailable", err)
+	if err != nil {
+		t.Fatalf("IsAlive err = %v, want (false, nil)", err)
 	}
 	if alive {
 		t.Fatal("alive = true, want false")
