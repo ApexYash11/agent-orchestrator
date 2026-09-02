@@ -170,12 +170,12 @@ function renderWithQuery(
   };
 }
 
-function mockCommonGets(
+function commonGetsResponder(
   _unusedRuns: unknown[] = [],
   reviewerHandleId = "",
   reviews: unknown[] = [],
 ) {
-  getMock.mockImplementation(async (path: string) => {
+  return async (path: string) => {
     if (path === "/api/v1/agents") {
       const agents = ["claude-code", "codex", "opencode"].map((id) => ({
         id,
@@ -211,7 +211,15 @@ function mockCommonGets(
       };
     }
     return { data: undefined };
-  });
+  };
+}
+
+function mockCommonGets(
+  _unusedRuns: unknown[] = [],
+  reviewerHandleId = "",
+  reviews: unknown[] = [],
+) {
+  getMock.mockImplementation(commonGetsResponder(_unusedRuns, reviewerHandleId, reviews));
 }
 
 const approvedReview = {
@@ -2927,6 +2935,315 @@ describe("SessionInspector summary reviews", () => {
         params: { path: { sessionId: "sess-1" } },
         body: { harness: "opencode" },
       },
+    );
+  });
+
+  it("preserves hidden reviewer config fields when saving a session reviewer model", async () => {
+    getMock.mockImplementation(async (path: string, options?: { params?: { path?: { agent?: string } } }) => {
+      if (path === "/api/v1/agents/{agent}/models" && options?.params?.path?.agent === "codex") {
+        return {
+          data: {
+            agentId: "codex",
+            selectionMode: "catalog",
+            models: [
+              { id: "gpt-5", label: "GPT-5", isDefault: true },
+              { id: "gpt-5-mini", label: "GPT-5 Mini" },
+            ],
+            allowCustom: false,
+            source: "official-catalog",
+            fetchedAt: "2026-08-30T00:00:00Z",
+            stale: false,
+          },
+          error: undefined,
+        };
+      }
+      return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
+    });
+    postMock.mockResolvedValue({
+      data: { reviewerHandleId: "", reviews: [] },
+      error: undefined,
+      response: { status: 200 },
+    });
+
+    renderWithQuery(
+      <SessionInspector
+        session={session([pr(3, "open")], {
+          reviewerHarness: "codex",
+          reviewerConfig: { model: "gpt-5", permissions: "bypass-permissions" },
+        })}
+      />,
+    );
+    await openReviewsSection();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /codex/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: "GPT-5 Mini" })).toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5 Mini" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/api/v1/sessions/{sessionId}/reviews/switch",
+        {
+          params: { path: { sessionId: "sess-1" } },
+          body: { agentConfig: { model: "gpt-5-mini", permissions: "bypass-permissions" } },
+        },
+      ),
+    );
+  });
+
+  it("allows setting a custom reviewer model from another text-reviewer row before selecting it", async () => {
+    getMock.mockImplementation(async (path: string, options?: { params?: { path?: { agent?: string } } }) => {
+      if (path === "/api/v1/agents/{agent}/models") {
+        const agent = options?.params?.path?.agent ?? "";
+        return {
+          data: {
+            agentId: agent,
+            selectionMode: agent === "opencode" ? "text" : "catalog",
+            models: [],
+            allowCustom: agent === "opencode",
+            source: "manual",
+            fetchedAt: "2026-08-30T00:00:00Z",
+            stale: false,
+          },
+          error: undefined,
+        };
+      }
+      return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
+    });
+    postMock.mockResolvedValue({
+      data: { reviewerHandleId: "", reviews: [] },
+      error: undefined,
+      response: { status: 200 },
+    });
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^custom opencode model$/i }));
+
+    const customInput = await screen.findByRole("textbox", { name: /custom opencode/i });
+    await userEvent.type(customInput, "private/custom-model");
+    await userEvent.click(screen.getByRole("menuitem", { name: /use “private\/custom-model” as a custom model/i }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/api/v1/sessions/{sessionId}/reviews/switch",
+        {
+          params: { path: { sessionId: "sess-1" } },
+          body: { harness: "opencode", agentConfig: { model: "private/custom-model" } },
+        },
+      ),
+    );
+    expect(postMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows custom reviewer models for text-selection catalogs with suggested models", async () => {
+    getMock.mockImplementation(async (path: string, options?: { params?: { path?: { agent?: string } } }) => {
+      if (path === "/api/v1/agents/{agent}/models") {
+        const agent = options?.params?.path?.agent ?? "";
+        if (agent === "opencode") {
+          return {
+            data: {
+              agentId: agent,
+              selectionMode: "text",
+              models: [
+                { id: "suggested-a", label: "Suggested A" },
+                { id: "suggested-b", label: "Suggested B" },
+              ],
+              allowCustom: true,
+              source: "manual",
+              fetchedAt: "2026-08-30T00:00:00Z",
+              stale: false,
+            },
+            error: undefined,
+          };
+        }
+        return {
+          data: {
+            agentId: agent,
+            selectionMode: "catalog",
+            models: [],
+            allowCustom: false,
+            source: "manual",
+            fetchedAt: "2026-08-30T00:00:00Z",
+            stale: false,
+          },
+          error: undefined,
+        };
+      }
+      return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
+    });
+    postMock.mockResolvedValue({
+      data: { reviewerHandleId: "", reviews: [] },
+      error: undefined,
+      response: { status: 200 },
+    });
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^opencode$/i }));
+    expect(await screen.findByRole("menuitem", { name: "Suggested A" })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^custom opencode model$/i }));
+    const customInput = await screen.findByRole("textbox", { name: /custom opencode/i });
+    await userEvent.type(customInput, "private/custom-model");
+    await userEvent.click(screen.getByRole("menuitem", { name: /use “private\/custom-model” as a custom model/i }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/api/v1/sessions/{sessionId}/reviews/switch",
+        {
+          params: { path: { sessionId: "sess-1" } },
+          body: { harness: "opencode", agentConfig: { model: "private/custom-model" } },
+        },
+      ),
+    );
+  });
+
+  it("allows a custom reviewer model for text-selection harnesses", async () => {
+    getMock.mockImplementation(async (path: string, options?: { params?: { path?: { agent?: string } } }) => {
+      if (path === "/api/v1/agents/{agent}/models") {
+        const agent = options?.params?.path?.agent ?? "";
+        return {
+          data: {
+            agentId: agent,
+            selectionMode: agent === "opencode" ? "text" : "catalog",
+            models: [],
+            allowCustom: agent === "opencode",
+            source: "manual",
+            fetchedAt: "2026-08-30T00:00:00Z",
+            stale: false,
+          },
+          error: undefined,
+        };
+      }
+      return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
+    });
+    postMock.mockResolvedValue({
+      data: { reviewerHandleId: "", reviews: [] },
+      error: undefined,
+      response: { status: 200 },
+    });
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^opencode$/i }));
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/api/v1/sessions/{sessionId}/reviews/switch",
+        {
+          params: { path: { sessionId: "sess-1" } },
+          body: { harness: "opencode" },
+        },
+      ),
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /^custom opencode model$/i }));
+    const customInput = await screen.findByRole("textbox", { name: /custom opencode/i });
+    await userEvent.type(customInput, "private/custom-model");
+    await userEvent.click(screen.getByRole("menuitem", { name: /use “private\/custom-model” as a custom model/i }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenLastCalledWith(
+        "/api/v1/sessions/{sessionId}/reviews/switch",
+        {
+          params: { path: { sessionId: "sess-1" } },
+          body: { harness: "opencode", agentConfig: { model: "private/custom-model" } },
+        },
+      ),
+    );
+  });
+
+  it("does not save an empty reviewer config just by opening a harness submenu", async () => {
+    getMock.mockImplementation(async (path: string, options?: { params?: { path?: { agent?: string } } }) => {
+      if (path === "/api/v1/agents/{agent}/models" && options?.params?.path?.agent === "codex") {
+        return {
+          data: {
+            agentId: "codex",
+            selectionMode: "catalog",
+            models: [
+              { id: "gpt-5", label: "GPT-5", isDefault: true },
+              { id: "gpt-5-mini", label: "GPT-5 Mini" },
+            ],
+            allowCustom: false,
+            source: "official-catalog",
+            fetchedAt: "2026-08-29T00:00:00Z",
+            stale: false,
+          },
+          error: undefined,
+        };
+      }
+      return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
+    });
+    postMock.mockResolvedValue({
+      data: { reviewerHandleId: "", reviews: [] },
+      error: undefined,
+      response: { status: 200 },
+    });
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /codex/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: "GPT-5 Mini" })).toBeInTheDocument(),
+    );
+    expect(postMock).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5 Mini" }));
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/api/v1/sessions/{sessionId}/reviews/switch",
+        {
+          params: { path: { sessionId: "sess-1" } },
+          body: { agentConfig: { model: "gpt-5-mini" } },
+        },
+      ),
+    );
+    expect(postMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears hidden session reviewer config when returning an explicit default-matching reviewer to project default", async () => {
+    mockCommonGets([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")]);
+    postMock.mockResolvedValue({
+      data: { reviewerHandleId: "", reviews: [] },
+      response: { status: 200 },
+    });
+
+    renderWithQuery(
+      <SessionInspector
+        session={session([pr(3, "open")], {
+          provider: "codex",
+          reviewerHarness: "codex",
+          reviewerConfig: { permissions: "bypass-permissions" },
+        })}
+      />,
+    );
+    await openReviewsSection();
+
+    const picker = await screen.findByRole("button", {
+      name: /Select reviewer agent/,
+    });
+    await userEvent.click(picker);
+    await userEvent.click(screen.getByRole("menuitem", { name: /codex/i }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenLastCalledWith(
+        "/api/v1/sessions/{sessionId}/reviews/switch",
+        {
+          params: { path: { sessionId: "sess-1" } },
+          body: { harness: undefined, agentConfig: undefined },
+        },
+      ),
     );
   });
 
