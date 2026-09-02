@@ -16,6 +16,7 @@ import type { SessionPRSummary } from "../hooks/useSessionScmSummary";
 import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
 import { sessionWorkspaceFilesQueryKey } from "../hooks/useSessionWorkspaceFiles";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { useUiStore } from "../stores/ui-store";
 import type {
   PRState,
@@ -33,6 +34,10 @@ const { getMock, navigateMock, patchMock, putMock, postMock } = vi.hoisted(
     postMock: vi.fn(),
   }),
 );
+
+function postCallsFor(path: string) {
+  return postMock.mock.calls.filter(([calledPath]) => calledPath === path);
+}
 
 function setRenderedOverflow(element: HTMLElement, overflowing: boolean) {
   Object.defineProperties(element, {
@@ -176,13 +181,22 @@ function commonGetsResponder(
   reviews: unknown[] = [],
 ) {
   return async (path: string) => {
-    if (path === "/api/v1/agents") {
-      const agents = ["claude-code", "codex", "opencode"].map((id) => ({
-        id,
-        label: id,
-      }));
+    if (path === "/api/v1/agents/readiness") {
+      const agents = ["claude-code", "codex", "opencode"].map((id) => agentReadiness(id));
+      return { data: { agents } };
+    }
+    if (path === "/api/v1/agents/{agent}/models") {
       return {
-        data: { supported: agents, installed: agents, authorized: agents },
+        data: {
+          agentId: "unknown",
+          selectionMode: "text",
+          models: [],
+          allowCustom: false,
+          source: "manual",
+          fetchedAt: "2026-08-30T00:00:00Z",
+          stale: false,
+        },
+        error: undefined,
       };
     }
     if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
@@ -1867,14 +1881,9 @@ describe("SessionInspector summary reviews", () => {
   // alongside the catalog's properly-cased "Claude Code".
   it("labels the default reviewer with its display name, not the raw id", async () => {
     getMock.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/agents") {
-        const agents = ["claude-code", "codex", "opencode"].map((id) => ({
-          id,
-          label: id,
-        }));
-        return {
-          data: { supported: agents, installed: agents, authorized: agents },
-        };
+      if (path === "/api/v1/agents/readiness") {
+        const agents = ["claude-code", "codex", "opencode"].map((id) => agentReadiness(id));
+        return { data: { agents } };
       }
       if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
         return {
@@ -1920,14 +1929,9 @@ describe("SessionInspector summary reviews", () => {
 
   it("configures session auto-review and disables manual controls", async () => {
     getMock.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/agents") {
-        const agents = ["claude-code", "codex", "opencode"].map((id) => ({
-          id,
-          label: id,
-        }));
-        return {
-          data: { supported: agents, installed: agents, authorized: agents },
-        };
+      if (path === "/api/v1/agents/readiness") {
+        const agents = ["claude-code", "codex", "opencode"].map((id) => agentReadiness(id));
+        return { data: { agents } };
       }
       if (path === "/api/v1/sessions/{sessionId}/reviews") {
         return {
@@ -2013,14 +2017,9 @@ describe("SessionInspector summary reviews", () => {
       body: "",
     };
     getMock.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/agents") {
-        const agents = ["claude-code", "codex", "opencode"].map((id) => ({
-          id,
-          label: id,
-        }));
-        return {
-          data: { supported: agents, installed: agents, authorized: agents },
-        };
+      if (path === "/api/v1/agents/readiness") {
+        const agents = ["claude-code", "codex", "opencode"].map((id) => agentReadiness(id));
+        return { data: { agents } };
       }
       if (path === "/api/v1/sessions/{sessionId}/reviews") {
         return {
@@ -3037,7 +3036,7 @@ describe("SessionInspector summary reviews", () => {
         },
       ),
     );
-    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(postCallsFor("/api/v1/sessions/{sessionId}/reviews/switch")).toHaveLength(1);
   });
 
   it("allows custom reviewer models for text-selection catalogs with suggested models", async () => {
@@ -3197,7 +3196,7 @@ describe("SessionInspector summary reviews", () => {
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "GPT-5 Mini" })).toBeInTheDocument(),
     );
-    expect(postMock).not.toHaveBeenCalled();
+    expect(postCallsFor("/api/v1/sessions/{sessionId}/reviews/switch")).toHaveLength(0);
 
     await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5 Mini" }));
     await waitFor(() =>
@@ -3209,7 +3208,7 @@ describe("SessionInspector summary reviews", () => {
         },
       ),
     );
-    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(postCallsFor("/api/v1/sessions/{sessionId}/reviews/switch")).toHaveLength(1);
   });
 
   it("clears hidden session reviewer config when returning an explicit default-matching reviewer to project default", async () => {
