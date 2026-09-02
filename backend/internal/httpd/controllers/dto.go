@@ -1492,6 +1492,29 @@ type SendConversationMessageResponse struct {
 	Duplicate bool `json:"duplicate"`
 }
 
+// SteerConversationRequest is guidance for a turn that is already running.
+type SteerConversationRequest struct {
+	// Text is the correction to hand the agent mid-turn.
+	Text string `json:"text"`
+	// Attachments are native image prompt blocks delivered with the correction.
+	Attachments []ConversationImageContentRequest `json:"attachments,omitempty"`
+	// ClientMessageID makes a retry idempotent: the same handle updates the recorded
+	// guidance instead of adding a second copy of it, and the provider echoes it back
+	// on the item it replays so a client can recognize its own steer.
+	ClientMessageID string `json:"clientMessageId,omitempty"`
+}
+
+// SteerConversationResponse reports the turn the guidance joined.
+type SteerConversationResponse struct {
+	// ProviderTurnID is the turn that absorbed it. Against Codex this is the turn
+	// that was already running — steering does not open a new one — so a client
+	// matches it against the turn it is already rendering.
+	ProviderTurnID string `json:"providerTurnId"`
+	// ActivityID is the timeline row recording the guidance, so an optimistic bubble
+	// can be reconciled with the durable one rather than shown twice.
+	ActivityID string `json:"activityId,omitempty"`
+}
+
 // EditConversationMessageRequest changes the readable text of one durable human
 // prompt. Structured content is intentionally absent: the service reuses the
 // server-side blocks recorded with the original message.

@@ -3367,6 +3367,7 @@ export interface components {
             transition: components["schemas"]["SessionInterfaceTransition"];
         };
         SteerConversationRequest: {
+            attachments?: components["schemas"]["ConversationImageContentRequest"][];
             clientMessageId?: string;
             text: string;
         };
