@@ -59,7 +59,6 @@ type Agent interface {
 	SessionInfo(ctx context.Context, session SessionRef) (info SessionInfo, ok bool, err error)
 }
 
-<<<<<<< HEAD
 // AgentAuthChecker is the optional capability for adapters whose native CLI has
 // a cheap local authentication status probe.
 type AgentAuthChecker interface {
@@ -238,14 +237,14 @@ type PromptReadinessHints struct {
 	PollInterval time.Duration
 	Timeout      time.Duration
 	Lines        int
-=======
+}
+
 // UsageProvider is an optional interface that agent adapters can implement to
 // report token usage, cost, and model data from locally-stored session state.
 // The metrics collector checks for this via type assertion rather than adding
 // it to Agent directly, since most adapters don't support usage extraction yet.
 type UsageProvider interface {
 	SessionUsage(ctx context.Context, session SessionRef) (usage *domain.AgentUsage, ok bool, err error)
->>>>>>> b5bc0b6e61a1ae964382c5760b41853bf7443dbc
 }
 
 // AgentResolver maps a session's harness onto the Agent adapter that drives it,
