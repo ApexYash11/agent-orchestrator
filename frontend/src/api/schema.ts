@@ -2124,6 +2124,8 @@ export interface components {
             agentId: string;
             allowCustom: boolean;
             binaryVersion?: string;
+            /** @enum {string} */
+            customModelEntry: "none" | "direct" | "configured";
             /** Format: date-time */
             fetchedAt: string;
             models: components["schemas"]["AgentModelInfo"][];
