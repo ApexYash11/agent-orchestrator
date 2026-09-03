@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -189,6 +190,21 @@ type fakeAgentSwitchLifecycleStore struct {
 	hasActiveSwitch      bool
 	native               map[domain.AgentNativeSessionID]domain.AgentNativeSession
 	acknowledgementCalls []targetAcknowledgementCall
+	ackForceNoChange     bool
+	ackErr               error
+	getSwitchErr         error
+}
+
+func (f *fakeAgentSwitchLifecycleStore) GetAgentSwitch(_ context.Context, id domain.AgentSwitchID) (domain.AgentSwitch, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getSwitchErr != nil {
+		return domain.AgentSwitch{}, false, f.getSwitchErr
+	}
+	if !f.hasActiveSwitch || f.activeSwitch.ID != id {
+		return domain.AgentSwitch{}, false, nil
+	}
+	return f.activeSwitch, true, nil
 }
 
 func newFakeAgentSwitchLifecycleStore() *fakeAgentSwitchLifecycleStore {
@@ -270,6 +286,12 @@ func (f *fakeAgentSwitchLifecycleStore) AcknowledgeAgentSwitchTarget(_ context.C
 	f.acknowledgementCalls = append(f.acknowledgementCalls, targetAcknowledgementCall{
 		switchID: switchID, sessionID: sessionID, generation: generation, at: at,
 	})
+	if f.ackErr != nil {
+		return false, f.ackErr
+	}
+	if f.ackForceNoChange {
+		return false, nil
+	}
 	if !f.hasActiveSwitch || f.activeSwitch.ID != switchID || f.activeSwitch.SessionID != sessionID ||
 		f.activeSwitch.State != domain.AgentSwitchDelivering || f.activeSwitch.TargetGenerationID != generation ||
 		f.activeSwitch.TargetAcknowledgedAt != nil {
@@ -1177,6 +1199,84 @@ func TestActivity_TargetPromptSubmitAcknowledgesDeliveringAgentSwitch(t *testing
 	acknowledged := store.active().TargetAcknowledgedAt
 	if acknowledged == nil || !acknowledged.Equal(now) {
 		t.Fatalf("target acknowledgement timestamp = %v, want %v", acknowledged, now)
+	}
+}
+
+func TestAcknowledgeAgentSwitchTargetReadsBackChangedFalseOutcomes(t *testing.T) {
+	now := time.Date(2026, 8, 28, 10, 0, 0, 0, time.UTC)
+	base := domain.AgentSwitch{
+		ID: "switch-ack-readback", SessionID: "session-ack-readback",
+		FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchDelivering, SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
+	}
+	signal := ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit", LaunchID: "target-generation"}
+
+	t.Run("duplicate acknowledgement is suppressed", func(t *testing.T) {
+		store := &fakeAgentSwitchLifecycleStore{fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base}
+		acknowledgedAt := now.Add(-time.Second)
+		store.activeSwitch.TargetAcknowledgedAt = &acknowledgedAt
+		manager := New(store, nil)
+		if err := manager.acknowledgeAgentSwitchTarget(context.Background(), base.SessionID, signal, now); err != nil {
+			t.Fatalf("duplicate acknowledgement: %v", err)
+		}
+	})
+
+	t.Run("impossible unchanged current predicate is surfaced", func(t *testing.T) {
+		store := &fakeAgentSwitchLifecycleStore{fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base, ackForceNoChange: true}
+		manager := New(store, nil)
+		if err := manager.acknowledgeAgentSwitchTarget(context.Background(), base.SessionID, signal, now); err == nil {
+			t.Fatal("unchanged exact acknowledgement predicate returned nil")
+		}
+	})
+}
+
+func TestAcknowledgeAgentSwitchTargetOwnsPostAdmissionErrors(t *testing.T) {
+	now := time.Date(2026, 8, 28, 10, 0, 0, 0, time.UTC)
+	base := domain.AgentSwitch{
+		ID: "switch-ack-owner", SessionID: "session-ack-owner",
+		FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex,
+		State: domain.AgentSwitchDelivering, SourceGenerationID: "source-generation", TargetGenerationID: "target-generation",
+	}
+	signal := ports.ActivitySignal{Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit", LaunchID: "target-generation"}
+
+	tests := []struct {
+		name  string
+		store *fakeAgentSwitchLifecycleStore
+	}{
+		{
+			name: "acknowledgement failure",
+			store: &fakeAgentSwitchLifecycleStore{
+				fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base,
+				ackErr: errors.New("ack write failed"),
+			},
+		},
+		{
+			name: "read-back failure",
+			store: &fakeAgentSwitchLifecycleStore{
+				fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base,
+				ackForceNoChange: true, getSwitchErr: errors.New("read-back failed"),
+			},
+		},
+		{
+			name: "unchanged exact predicate",
+			store: &fakeAgentSwitchLifecycleStore{
+				fakeStore: newFakeStore(), hasActiveSwitch: true, activeSwitch: base,
+				ackForceNoChange: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := New(tt.store, nil)
+			err := manager.acknowledgeAgentSwitchTarget(context.Background(), base.SessionID, signal, now)
+			if err == nil {
+				t.Fatal("acknowledgement error = nil")
+			}
+			if got := ownership.OwnerOf(err); got != ownership.OwnerAgentSwitchSaga {
+				t.Fatalf("acknowledgement owner = %q, want %q (error: %v)", got, ownership.OwnerAgentSwitchSaga, err)
+			}
+		})
 	}
 }
 

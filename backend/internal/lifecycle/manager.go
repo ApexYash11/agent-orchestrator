@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
@@ -769,11 +770,25 @@ func (m *Manager) acknowledgeAgentSwitchTarget(ctx context.Context, id domain.Se
 	if !found || sw.State != domain.AgentSwitchDelivering {
 		return nil
 	}
-	_, err = store.AcknowledgeAgentSwitchTarget(ctx, sw.ID, id, domain.AgentGenerationID(signal.LaunchID), at)
-	if err != nil {
-		return fmt.Errorf("lifecycle: acknowledge agent switch %s target: %w", sw.ID, err)
+	changed, ackErr := store.AcknowledgeAgentSwitchTarget(ctx, sw.ID, id, domain.AgentGenerationID(signal.LaunchID), at)
+	if changed && ackErr == nil {
+		return nil
 	}
-	return nil
+	current, found, readErr := store.GetAgentSwitch(ctx, sw.ID)
+	if readErr != nil {
+		return ownership.Own(fmt.Errorf("lifecycle: read back agent switch %s acknowledgement: %w", sw.ID, readErr), ownership.OwnerAgentSwitchSaga)
+	}
+	if !found || current.State.Terminal() || current.State != domain.AgentSwitchDelivering ||
+		current.TargetGenerationID != domain.AgentGenerationID(signal.LaunchID) || current.TargetAcknowledgedAt != nil {
+		return nil
+	}
+	if ackErr != nil {
+		return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: %w", sw.ID, ackErr), ownership.OwnerAgentSwitchSaga)
+	}
+	if changed {
+		return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: commit was not observable", sw.ID), ownership.OwnerAgentSwitchSaga)
+	}
+	return ownership.Own(fmt.Errorf("lifecycle: acknowledge agent switch %s target: changed=false with unchanged durable predicate", sw.ID), ownership.OwnerAgentSwitchSaga)
 }
 
 // toolFlight tracks one session's in-flight tool executions and the pending
@@ -1306,8 +1321,8 @@ func (m *Manager) ActivateAgentSwitchTarget(
 	return writer.ActivateAgentSwitchTarget(ctx, activation)
 }
 
-// ActivateChatAgentSwitchTarget atomically transfers a stopped Chat session to
-// the structured controller generation that Chat Service already claimed.
+// ActivateChatAgentSwitchTarget atomically transfers a stopped Chat session
+// from the fenced source generation to the structured target controller.
 func (m *Manager) ActivateChatAgentSwitchTarget(
 	ctx context.Context,
 	activation domain.AgentSwitchChatTargetActivation,

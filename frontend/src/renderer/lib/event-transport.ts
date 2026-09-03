@@ -8,6 +8,7 @@ import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
 import { conversationQueryKey, conversationQueryRoot } from "../hooks/useConversation";
 import { agentSwitchesQueryRoot } from "../hooks/useAgentSwitches";
 import { sessionUsageQueryRoot } from "../hooks/useSessionUsageSummaries";
+import { agentSwitchVisibility } from "./agent-switch-visibility";
 import { codexAccountsQueryKey, writeCodexAccounts } from "../hooks/codex-accounts-state";
 import type { components } from "../../api/schema";
 
@@ -49,6 +50,7 @@ const CDC_EVENT_TYPES = [
 export function createEventTransport(queryClient: QueryClient): EventTransport {
 	return {
 		connect() {
+			let healthAttempt = 0;
 			let debounce: ReturnType<typeof setTimeout> | undefined;
 			const pendingConversationSessions = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
@@ -164,6 +166,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				// EventSource is unavailable in jsdom (tests) and some preview surfaces; guard it.
 				if (typeof EventSource === "undefined") return;
 				if (!hasTrustedApiBaseUrl()) {
+					healthAttempt += 1;
 					source?.close();
 					accountSource?.close();
 					source = undefined;
@@ -171,6 +174,8 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					sourceBaseUrl = undefined;
 					accountSourceBaseUrl = undefined;
 					setEventsConnectionState("disconnected");
+					agentSwitchVisibility.setTransportHealthy("active", false);
+					agentSwitchVisibility.setTransportHealthy("history", false);
 					return;
 				}
 				const baseUrl = getApiBaseUrl();
@@ -200,18 +205,40 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				sourceBaseUrl = baseUrl;
 				try {
 					source = new EventSource(`${baseUrl.replace(/\/+$/, "")}/api/v1/events`);
+					const connectedSource = source;
 					source.onopen = () => {
+						if (source !== connectedSource) return;
+						healthAttempt += 1;
 						retries = 0;
 						setEventsConnectionState("connected");
+						agentSwitchVisibility.setTransportHealthy("active", true);
+						agentSwitchVisibility.setTransportHealthy("history", true);
 						// Events emitted during the gap were lost; refetch once on (re)open.
 						refreshWorkspaces();
 					};
 					source.onerror = () => {
+						if (source !== connectedSource) return;
 						// While readyState is CONNECTING the browser retries on its own;
 						// either way the stream is not delivering, so surface it instead
 						// of looping silently against a dead daemon.
 						setEventsConnectionState("disconnected");
 						if (source?.readyState === EVENTSOURCE_CLOSED) scheduleRetry();
+						const attempt = ++healthAttempt;
+						void queryClient.refetchQueries(
+							{ queryKey: workspaceQueryKey, type: "active" },
+							{ throwOnError: true },
+						).then(
+							() => {
+								if (attempt !== healthAttempt || source !== connectedSource) return;
+								agentSwitchVisibility.setTransportHealthy("active", true);
+								agentSwitchVisibility.setTransportHealthy("history", true);
+							},
+							() => {
+								if (attempt !== healthAttempt || source !== connectedSource) return;
+								agentSwitchVisibility.setTransportHealthy("active", false);
+								agentSwitchVisibility.setTransportHealthy("history", false);
+							},
+						);
 					};
 					source.onmessage = refreshWorkspaces; // unnamed events, if any
 					for (const type of CDC_EVENT_TYPES) {
@@ -234,6 +261,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			connectSource();
 
 			return () => {
+				healthAttempt += 1;
 				if (debounce) clearTimeout(debounce);
 				if (retryTimer) clearTimeout(retryTimer);
 				removeDaemonListener();

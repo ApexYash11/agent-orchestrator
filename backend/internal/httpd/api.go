@@ -57,8 +57,9 @@ type APIDeps struct {
 	HostID string
 	// Endpoints reports how this daemon can currently be reached, for the
 	// phone's endpoint-refresh route.
-	Endpoints controllers.EndpointSource
-	Installer controllers.Installer
+	Endpoints         controllers.EndpointSource
+	Installer         controllers.Installer
+	AgentSwitchPolicy AgentSwitchPolicyControl
 
 	// Presence tracks which mobile devices are currently running the app.
 	// Nil disables presence tracking (the roster then reports every device offline).

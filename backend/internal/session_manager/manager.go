@@ -303,6 +303,7 @@ type runtimeController interface {
 	// IsAlive reports whether the handle's runtime session still exists. Used by
 	// Reconcile on boot to adopt crash-surviving sessions and reap leaked ones.
 	IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error)
+	ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult
 }
 
 // RestoreMode reports whether a restore continued an agent-native transcript or
@@ -360,11 +361,15 @@ type Store interface {
 // Manager coordinates internal session spawn, restore, kill, and cleanup over
 // the outbound ports. User-facing read-model assembly lives in the service package.
 type Manager struct {
-	runtime        runtimeController
-	agents         ports.AgentResolver
-	workspace      ports.Workspace
-	store          Store
-	agentReadiness ports.AgentReadinessProvider
+	runtime   runtimeController
+	agents    ports.AgentResolver
+	workspace ports.Workspace
+	store     Store
+	// agentSwitchReporting supplies the exact authorization snapshot immediately
+	// before each failure-aware store transaction. Nil is fail-closed.
+	agentSwitchReporting ports.AgentSwitchReportingPolicy
+	daemonRunID          string
+	agentReadiness       ports.AgentReadinessProvider
 	// messenger is a sessionguard.Guard wrapping the raw messenger, so every
 	// pane write is guarded (re-read state, refuse a blocked session) without
 	// each call site re-deriving the check. Send/confirmActive use Deliver for
@@ -680,11 +685,13 @@ const (
 
 // Deps are the collaborators a Session Manager needs; New wires them together.
 type Deps struct {
-	Runtime   runtimeController
-	Agents    ports.AgentResolver
-	Workspace ports.Workspace
-	Store     Store
-	Messenger ports.AgentMessenger
+	Runtime         runtimeController
+	Agents          ports.AgentResolver
+	Workspace       ports.Workspace
+	Store           Store
+	ReportingPolicy ports.AgentSwitchReportingPolicy
+	DaemonRunID     string
+	Messenger       ports.AgentMessenger
 	// Defaults supplies the daemon-owned default session interface for spawns that
 	// name no mode. Nil means always use the compatibility default.
 	Defaults SessionModeDefaults
@@ -736,6 +743,8 @@ func New(d Deps) *Manager {
 		agents:                         d.Agents,
 		workspace:                      d.Workspace,
 		store:                          d.Store,
+		agentSwitchReporting:           d.ReportingPolicy,
+		daemonRunID:                    strings.TrimSpace(d.DaemonRunID),
 		defaults:                       d.Defaults,
 		chat:                           d.Chat,
 		lcm:                            d.Lifecycle,
@@ -2041,7 +2050,12 @@ func (m *Manager) stopAgentController(ctx context.Context, rec domain.SessionRec
 	if handle.ID == "" || strings.TrimSpace(rec.Metadata.RuntimeLaunchID) == "" {
 		return ErrIncompleteHandle
 	}
-	return m.stopSourceRuntime(ctx, handle)
+	return m.stopSourceRuntime(ctx, ports.FencedRuntimeRef{
+		Handle:         handle,
+		SessionID:      rec.ID,
+		Generation:     strings.TrimSpace(rec.Metadata.RuntimeLaunchID),
+		NativeIdentity: strings.TrimSpace(rec.Metadata.AgentSessionID),
+	})
 }
 
 func (m *Manager) recordAgentExited(ctx context.Context, rec domain.SessionRecord) error {

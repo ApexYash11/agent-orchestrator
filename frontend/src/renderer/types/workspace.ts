@@ -58,6 +58,7 @@ export type AgentSwitchSummary = {
 	id: string;
 	state: string;
 	targetHarness: string;
+	updatedAt?: string;
 };
 
 export type WorkspaceSession = {

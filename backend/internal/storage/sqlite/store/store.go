@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
@@ -23,6 +25,10 @@ type Store struct {
 	qw      *gen.Queries // bound to the single writer connection
 	qr      *gen.Queries // bound to the reader pool
 	writeMu *contextMutex
+
+	agentSwitchFailureEventMetadata *domain.AgentSwitchEventMetadata
+	agentSwitchFailureEventEncoder  ports.AgentSwitchFailureEventEncoder
+	agentSwitchFailureCommit        func(*sql.Tx) error
 }
 
 type contextMutex struct {
@@ -84,11 +90,12 @@ func (s *Store) conversationReader(ctx context.Context) *gen.Queries {
 // NewStore wraps an opened writer + reader *sql.DB (see Open) as a Store.
 func NewStore(writeDB, readDB *sql.DB) *Store {
 	return &Store{
-		writeDB: writeDB,
-		readDB:  readDB,
-		qw:      gen.New(writeDB),
-		qr:      gen.New(readDB),
-		writeMu: newContextMutex(),
+		writeDB:                  writeDB,
+		readDB:                   readDB,
+		qw:                       gen.New(writeDB),
+		qr:                       gen.New(readDB),
+		writeMu:                  newContextMutex(),
+		agentSwitchFailureCommit: func(tx *sql.Tx) error { return tx.Commit() },
 	}
 }
 

@@ -59,6 +59,7 @@ import {
 	interfaceTransitionIsActive,
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
+import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
 import { useWorkspaceSession } from "../hooks/useWorkspaceQuery";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
 import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
@@ -510,6 +511,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => stopTerminalLiveResize, [stopTerminalLiveResize]);
 
 	const session = workspaceQuery.data;
+	const routeVisibilityOperation =
+		session?.activeAgentSwitch &&
+		session.activeAgentSwitch.state !== "completed" &&
+		session.activeAgentSwitch.state !== "failed"
+			? "active"
+			: "history";
+	useAgentSwitchRouteVisibility(`session/${sessionId}`, routeVisibilityOperation);
 	const codexAccounts = useCodexAccountsQuery(session?.provider === "codex");
 	const codexAccountActions = useCodexAccountActions(queryClient);
 	const codexAccountSwitch = codexAccounts.data?.currentSwitch;
@@ -1575,6 +1583,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
 									workspaceActiveTabKey={activeWorkspaceTabKey}
+									workspaceFileActive={Boolean(fileTabs.activePath)}
 									auxiliaryTabOrder={resolvedAuxiliaryTabOrder}
 									onAuxiliaryTabOrderChange={setAuxiliaryTabOrder}
 									controllerTransitioning={chatControllerTransitioning}
@@ -1610,6 +1619,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									handoffDialogOpen={handoffDialogOpen}
 									workspaceTabs={centerFileTabs}
 									workspaceActiveTabKey={activeWorkspaceTabKey}
+									workspaceFileActive={Boolean(fileTabs.activePath)}
 									auxiliaryTabOrder={resolvedAuxiliaryTabOrder}
 									onAuxiliaryTabOrderChange={setAuxiliaryTabOrder}
 								/>

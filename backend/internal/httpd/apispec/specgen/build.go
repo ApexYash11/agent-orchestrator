@@ -193,6 +193,8 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersPromoteQueuedTurnResponse":                 "PromoteQueuedTurnResponse",
 	// httpd/envelope
 	"EnvelopeAPIError": "APIError",
+	// observe/ownership
+	"OwnershipOwner": "ReportingOwner",
 	// domain
 	"DomainProjectID":                 "ProjectID",
 	"DomainSessionID":                 "SessionID",
