@@ -10,6 +10,7 @@ import { DaemonStartupLoader } from "../components/DaemonStartupLoader";
 import { NotificationRuntime } from "../components/NotificationCenter";
 import { TrayRuntime } from "../components/TrayRuntime";
 import { GlobalNewTaskDialog } from "../components/GlobalNewTaskDialog";
+import { GlobalToast } from "../components/GlobalToast";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { KeyboardShortcutsDialog } from "../components/KeyboardShortcutsDialog";
 import { KeyboardShortcutsSettingsDialog } from "../components/settings/KeyboardShortcutsSettingsDialog";
@@ -37,6 +38,7 @@ import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
 import { aoBridge } from "../lib/bridge";
 import { handleModifierLinkClick } from "../lib/external-link-policy";
 import { recordProjectOpened } from "../lib/project-history";
+import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { cn } from "../lib/utils";
 import {
 	isLinuxPlatform,
@@ -67,14 +69,26 @@ function errorMessage(error: unknown) {
 	return error instanceof Error ? error.message : "Could not load projects";
 }
 
+function normalizeProjectPath(path: string): string {
+	if (!path) return path;
+	const trimmed = path.trim().replace(/[\\/]+$/, "");
+	return trimmed === "" ? path : trimmed;
+}
+
+function findRegisteredWorkspaceByPath(workspaces: WorkspaceSummary[], path: string): WorkspaceSummary | undefined {
+	const normalizedPath = normalizeProjectPath(path);
+	return workspaces.find((workspace) => normalizeProjectPath(workspace.path) === normalizedPath);
+}
 type CreateProjectConfigInput = {
 	workerAgent: string;
 	orchestratorAgent: string;
 	trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
+	defaultBranch?: string;
 };
 
 export function createProjectConfig(input: CreateProjectConfigInput): components["schemas"]["ProjectConfig"] {
 	return {
+		...(input.defaultBranch ? { defaultBranch: input.defaultBranch } : {}),
 		worker: { agent: input.workerAgent as components["schemas"]["RoleOverride"]["agent"] },
 		orchestrator: { agent: input.orchestratorAgent as components["schemas"]["RoleOverride"]["agent"] },
 		...(input.trackerIntake ? { trackerIntake: input.trackerIntake } : {}),
@@ -314,6 +328,7 @@ function ShellLayout() {
 	const orchestratorReplacementErrors = useUiStore((state) => state.orchestratorReplacementErrors);
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const setOrchestratorStartupError = useUiStore((state) => state.setOrchestratorStartupError);
+	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const replacementErrorProjectId = Object.keys(orchestratorReplacementErrors)[0] ?? null;
 	const isStartupLoading =
 		!usesPreviewWorkspaceData &&
@@ -370,42 +385,16 @@ function ShellLayout() {
 			updateWorkspaces((current) => [workspace, ...current.filter((item) => item.id !== workspace.id)]);
 			setOrchestratorStartupError(workspace.id, null);
 			try {
-				void captureRendererEvent("ao.renderer.orchestrator_spawn_requested", {
-					project_id: workspace.id,
-					source,
-				});
-				const {
-					data: spawnData,
-					error: spawnError,
-					response: spawnResponse,
-				} = await apiClient.POST("/api/v1/sessions", {
-					body: {
-						projectId: workspace.id,
-						kind: "orchestrator",
-						harness: input.orchestratorAgent as components["schemas"]["SpawnSessionRequest"]["harness"],
-					},
-				});
-				if (spawnError || !spawnData?.session?.id) {
-					const message = spawnError
-						? apiErrorMessage(spawnError, `Failed to spawn orchestrator (${spawnResponse.status})`)
-						: `Failed to spawn orchestrator (${spawnResponse.status})`;
-					throw new Error(message);
-				}
-				void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", {
-					project_id: workspace.id,
-					source,
-				});
-				const sessionId = spawnData.session.id;
+				const sessionId = await spawnOrchestrator(
+					workspace.id,
+					source === "project_clone" ? "project_clone" : "project_add",
+				);
 				await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 				void navigate({
 					to: "/projects/$projectId/sessions/$sessionId",
 					params: { projectId: workspace.id, sessionId },
 				});
 			} catch (spawnError) {
-				void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", {
-					project_id: workspace.id,
-					source,
-				});
 				void navigate({ to: "/projects/$projectId", params: { projectId: workspace.id } });
 				const message = spawnError instanceof Error ? spawnError.message : "Could not start orchestrator";
 				const startupMessage = `Project added, but orchestrator did not start: ${message}`;
@@ -422,6 +411,7 @@ function ShellLayout() {
 			orchestratorAgent: string;
 			trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
 			asWorkspace?: boolean;
+			defaultBranch?: string;
 		}) => {
 			void addRendererExceptionStep("Project add requested", {
 				source: "project-add",
@@ -443,6 +433,17 @@ function ShellLayout() {
 			if (error) {
 				const failure = new Error(apiErrorMessage(error)) as Error & { code?: string };
 				failure.code = apiErrorCode(error);
+				if (failure.code === "PATH_ALREADY_REGISTERED") {
+					const registeredWorkspace = findRegisteredWorkspaceByPath(
+						queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? workspacesRef.current,
+						input.path,
+					);
+					if (registeredWorkspace) {
+						showGlobalToast("Project already added", "Opened the registered project for this folder.");
+						void navigate({ to: "/projects/$projectId", params: { projectId: registeredWorkspace.id } });
+						return;
+					}
+				}
 				void captureRendererException(failure, {
 					source: "project-add",
 					operation: "project_add",
@@ -453,7 +454,7 @@ function ShellLayout() {
 			if (!data?.project) throw new Error("Project creation returned no project");
 			await completeProjectCreation(data.project, input, "project_add");
 		},
-		[completeProjectCreation],
+		[completeProjectCreation, navigate, queryClient, showGlobalToast],
 	);
 
 	const cloneProject = useCallback(
@@ -820,6 +821,7 @@ function ShellLayout() {
 					</div>
 				) : null}
 				<GlobalNewTaskDialog />
+				<GlobalToast />
 				<SettingsDialog />
 				<KeyboardShortcutsDialog
 					open={isKeyboardShortcutsOpen}
