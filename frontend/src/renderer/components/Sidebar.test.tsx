@@ -1562,17 +1562,52 @@ describe("Sidebar", () => {
 		expect(dialog).toHaveTextContent("repository folder");
 	});
 
-	it("renames a session inline by double-clicking its name", async () => {
+	it("renames a session inline by double-clicking its full navigation target", async () => {
 		const user = userEvent.setup();
 		const workspaceWithSession = { ...workspace, sessions: [session] };
 		renderSidebar({ workspaces: [workspaceWithSession] });
 
-		await user.dblClick(screen.getByText("fix login"));
+		await user.dblClick(screen.getByRole("button", { name: "Open fix login" }));
+		expect(navigateMock).not.toHaveBeenCalled();
 		const input = screen.getByLabelText("Rename fix login");
 		await user.clear(input);
-		await user.type(input, "polish login{Enter}");
+		await user.type(input, "  polish login  {Enter}");
 
 		await waitFor(() => expect(renameSessionMock).toHaveBeenCalledWith("proj-1-1", "polish login"));
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
+	it("still opens a session after an unpaired single click", async () => {
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		fireEvent.click(screen.getByRole("button", { name: "Open fix login" }), { detail: 1 });
+		expect(navigateMock).not.toHaveBeenCalled();
+
+		await waitFor(
+			() =>
+				expect(navigateMock).toHaveBeenCalledWith({
+					to: "/projects/$projectId/sessions/$sessionId",
+					params: { projectId: "proj-1", sessionId: "proj-1-1" },
+				}),
+			{ timeout: 1_000 },
+		);
+	});
+
+	it("starts the same inline rename from the session context menu", async () => {
+		const user = userEvent.setup();
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		fireEvent.contextMenu(screen.getByRole("button", { name: "Open fix login" }));
+		const renameItem = await screen.findByRole("menuitem", { name: "Rename fix login" });
+		const menu = renameItem.closest('[role="menu"]');
+		if (!menu) throw new Error("Session context menu not found");
+		expect(within(menu as HTMLElement).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Rename"]);
+		expect(renameItem).toHaveTextContent(/^Rename$/);
+		expect(renameItem.querySelector("svg")).toBeInTheDocument();
+		await user.click(renameItem);
+
+		expect(screen.getByRole("textbox", { name: "Rename fix login" })).toHaveFocus();
+		expect(navigateMock).not.toHaveBeenCalled();
 	});
 
 	it("caps the inline rename input at 20 characters", async () => {
@@ -1636,6 +1671,20 @@ describe("Sidebar", () => {
 		const input = screen.getByLabelText("Rename fix login");
 		await user.clear(input);
 		await user.type(input, "discard me{Escape}");
+
+		expect(renameSessionMock).not.toHaveBeenCalled();
+		expect(screen.getByLabelText("Open fix login")).toBeInTheDocument();
+	});
+
+	it.each(["", "fix login"])("does not persist the no-op rename %j", async (nextName) => {
+		const user = userEvent.setup();
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		await user.dblClick(screen.getByRole("button", { name: "Open fix login" }));
+		const input = screen.getByLabelText("Rename fix login");
+		await user.clear(input);
+		if (nextName) await user.type(input, nextName);
+		await user.keyboard("{Enter}");
 
 		expect(renameSessionMock).not.toHaveBeenCalled();
 		expect(screen.getByLabelText("Open fix login")).toBeInTheDocument();
