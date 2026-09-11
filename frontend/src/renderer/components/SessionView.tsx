@@ -554,10 +554,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[allShellTerminals, sessionId],
 	);
 	const resolvedAuxiliaryTabOrder = useMemo(() => {
+		const openFileKeys = fileTabs.openPaths.map((path) => `file:${path}`);
+		const openShellKeys = shellTerminals.map((shell) => shell.handleId);
 		const available = [
 			...(reviewerTerminal ? [`reviewer:${reviewerTerminal.handleId}`] : []),
-			...shellTerminals.map((shell) => shell.handleId),
-			...fileTabs.openPaths.map((path) => `file:${path}`),
+			...openFileKeys,
+			...openShellKeys,
 		];
 		const availableKeys = new Set(available);
 		const resolved = auxiliaryTabOrder.filter((key) => availableKeys.has(key));
@@ -566,6 +568,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		}
 		return resolved;
 	}, [auxiliaryTabOrder, fileTabs.openPaths, reviewerTerminal, shellTerminals]);
+	useEffect(() => {
+		setAuxiliaryTabOrderBySession((current) => {
+			const currentOrder = current[sessionId] ?? [];
+			const newKeys = resolvedAuxiliaryTabOrder.filter((key) => !currentOrder.includes(key));
+			if (newKeys.length === 0) {
+				return current;
+			}
+			return { ...current, [sessionId]: [...currentOrder, ...newKeys] };
+		});
+	}, [resolvedAuxiliaryTabOrder, sessionId]);
 	const openShellTerminal = useOpenShellTerminal();
 	const closeShellTerminal = useCloseShellTerminal();
 	const renameShellTerminal = useRenameShellTerminal();
