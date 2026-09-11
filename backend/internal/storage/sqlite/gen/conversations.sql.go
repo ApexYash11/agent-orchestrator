@@ -13,6 +13,56 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+const acceptConversationEditDelivery = `-- name: AcceptConversationEditDelivery :execrows
+UPDATE conversation_edit_deliveries
+SET state = 'accepted',
+    source_branch_id = ?,
+    active_branch_id = ?,
+    turn_id = ?,
+    handled_by_session_id = ?,
+    provider_turn_id = ?,
+    turn_state = ?,
+    turn_requested_at = ?,
+    rejection_kind = '',
+    rejection_message = '',
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved'
+`
+
+type AcceptConversationEditDeliveryParams struct {
+	SourceBranchID     string
+	ActiveBranchID     string
+	TurnID             string
+	HandledBySessionID string
+	ProviderTurnID     string
+	TurnState          string
+	TurnRequestedAt    sql.NullTime
+	SettledAt          sql.NullTime
+	ConversationID     string
+	ClientMessageID    string
+}
+
+func (q *Queries) AcceptConversationEditDelivery(ctx context.Context, arg AcceptConversationEditDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, acceptConversationEditDelivery,
+		arg.SourceBranchID,
+		arg.ActiveBranchID,
+		arg.TurnID,
+		arg.HandledBySessionID,
+		arg.ProviderTurnID,
+		arg.TurnState,
+		arg.TurnRequestedAt,
+		arg.SettledAt,
+		arg.ConversationID,
+		arg.ClientMessageID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const activateConversationBranch = `-- name: ActivateConversationBranch :execrows
 UPDATE conversations
 SET active_branch_id = ?, updated_at = ?
@@ -272,6 +322,34 @@ type AttachLegacyCompactionsToRollbackAnchorParams struct {
 func (q *Queries) AttachLegacyCompactionsToRollbackAnchor(ctx context.Context, arg AttachLegacyCompactionsToRollbackAnchorParams) error {
 	_, err := q.db.ExecContext(ctx, attachLegacyCompactionsToRollbackAnchor, arg.AnchorTurnID, arg.UpdatedAt, arg.TargetConversationID)
 	return err
+}
+
+const beginConversationEditProviderWork = `-- name: BeginConversationEditProviderWork :execrows
+UPDATE conversation_edit_deliveries
+SET provider_work_started = 1
+WHERE conversation_id = ?1
+  AND client_message_id = ?2
+  AND state = 'reserved' AND provider_work_started = 0
+  AND EXISTS (
+    SELECT 1 FROM conversations c JOIN sessions s ON s.id = c.session_id
+    WHERE c.id = conversation_edit_deliveries.conversation_id
+      AND s.controller_generation = ?3
+      AND s.session_mode = 'chat' AND s.is_terminated = 0
+  )
+`
+
+type BeginConversationEditProviderWorkParams struct {
+	ConversationID  string
+	ClientMessageID string
+	Generation      string
+}
+
+func (q *Queries) BeginConversationEditProviderWork(ctx context.Context, arg BeginConversationEditProviderWorkParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, beginConversationEditProviderWork, arg.ConversationID, arg.ClientMessageID, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const bindConversationTurnProviderID = `-- name: BindConversationTurnProviderID :exec
@@ -744,6 +822,32 @@ func (q *Queries) InsertConversationBranch(ctx context.Context, arg InsertConver
 	return err
 }
 
+const insertConversationEditDeliveryReservation = `-- name: InsertConversationEditDeliveryReservation :execrows
+INSERT OR IGNORE INTO conversation_edit_deliveries (
+    conversation_id, client_message_id, request_json, state, created_at, provider_work_started
+) VALUES (?, ?, ?, 'reserved', ?, 0)
+`
+
+type InsertConversationEditDeliveryReservationParams struct {
+	ConversationID  string
+	ClientMessageID string
+	RequestJson     string
+	CreatedAt       time.Time
+}
+
+func (q *Queries) InsertConversationEditDeliveryReservation(ctx context.Context, arg InsertConversationEditDeliveryReservationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertConversationEditDeliveryReservation,
+		arg.ConversationID,
+		arg.ClientMessageID,
+		arg.RequestJson,
+		arg.CreatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const insertConversationMessage = `-- name: InsertConversationMessage :exec
 INSERT INTO conversation_messages (
     id, conversation_id, turn_id, sequence, revision, role, origin,
@@ -1077,6 +1181,39 @@ func (q *Queries) RecomputeConversationCompactedAt(ctx context.Context, arg Reco
 	return err
 }
 
+const rejectConversationEditDelivery = `-- name: RejectConversationEditDelivery :execrows
+UPDATE conversation_edit_deliveries
+SET state = 'rejected',
+    rejection_kind = ?,
+    rejection_message = ?,
+    settled_at = ?
+WHERE conversation_id = ?
+  AND client_message_id = ?
+  AND state = 'reserved'
+`
+
+type RejectConversationEditDeliveryParams struct {
+	RejectionKind    string
+	RejectionMessage string
+	SettledAt        sql.NullTime
+	ConversationID   string
+	ClientMessageID  string
+}
+
+func (q *Queries) RejectConversationEditDelivery(ctx context.Context, arg RejectConversationEditDeliveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, rejectConversationEditDelivery,
+		arg.RejectionKind,
+		arg.RejectionMessage,
+		arg.SettledAt,
+		arg.ConversationID,
+		arg.ClientMessageID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const releaseQueuedConversationTurnPromotion = `-- name: ReleaseQueuedConversationTurnPromotion :execrows
 UPDATE conversation_turns
 SET promotion_started_at = NULL
@@ -1202,6 +1339,56 @@ func (q *Queries) ResolveConversationApproval(ctx context.Context, arg ResolveCo
 		arg.RequestID,
 	)
 	return err
+}
+
+const selectCompletedEditReplacement = `-- name: SelectCompletedEditReplacement :one
+SELECT t.id, t.conversation_id, t.handled_by_session_id, t.provider_turn_id, t.controller_generation, t.state, t.error_message, t.requested_at, t.started_at, t.completed_at, t.diff_json, t.rolled_back_at, t.plan_json, t.branch_id, t.promotion_started_at, t.promoted_to_turn_id, t.retry_of_turn_id, b.parent_branch_id
+FROM conversation_messages m
+JOIN conversation_turns t ON t.id = m.turn_id
+JOIN conversation_branches b ON b.id = m.branch_id
+JOIN conversation_edit_deliveries d ON d.conversation_id = m.conversation_id
+  AND d.client_message_id = m.client_message_id
+WHERE d.conversation_id = ? AND d.client_message_id = ?
+  AND d.state = 'reserved' AND t.state = 'completed'
+  AND b.replaced_turn_id = json_extract(d.request_json, '$.sourceTurnId')
+  AND m.role = 'user'
+LIMIT 1
+`
+
+type SelectCompletedEditReplacementParams struct {
+	ConversationID  string
+	ClientMessageID string
+}
+
+type SelectCompletedEditReplacementRow struct {
+	ConversationTurn ConversationTurn
+	ParentBranchID   sql.NullString
+}
+
+func (q *Queries) SelectCompletedEditReplacement(ctx context.Context, arg SelectCompletedEditReplacementParams) (SelectCompletedEditReplacementRow, error) {
+	row := q.db.QueryRowContext(ctx, selectCompletedEditReplacement, arg.ConversationID, arg.ClientMessageID)
+	var i SelectCompletedEditReplacementRow
+	err := row.Scan(
+		&i.ConversationTurn.ID,
+		&i.ConversationTurn.ConversationID,
+		&i.ConversationTurn.HandledBySessionID,
+		&i.ConversationTurn.ProviderTurnID,
+		&i.ConversationTurn.ControllerGeneration,
+		&i.ConversationTurn.State,
+		&i.ConversationTurn.ErrorMessage,
+		&i.ConversationTurn.RequestedAt,
+		&i.ConversationTurn.StartedAt,
+		&i.ConversationTurn.CompletedAt,
+		&i.ConversationTurn.DiffJson,
+		&i.ConversationTurn.RolledBackAt,
+		&i.ConversationTurn.PlanJson,
+		&i.ConversationTurn.BranchID,
+		&i.ConversationTurn.PromotionStartedAt,
+		&i.ConversationTurn.PromotedToTurnID,
+		&i.ConversationTurn.RetryOfTurnID,
+		&i.ParentBranchID,
+	)
+	return i, err
 }
 
 const selectConversationActivities = `-- name: SelectConversationActivities :many
@@ -1856,6 +2043,41 @@ func (q *Queries) SelectConversationEditAnchor(ctx context.Context, arg SelectCo
 		&i.HasPriorContext,
 		&i.OriginalDeliveryContentJson,
 		&i.RetryActiveBranch,
+	)
+	return i, err
+}
+
+const selectConversationEditDelivery = `-- name: SelectConversationEditDelivery :one
+SELECT conversation_id, client_message_id, request_json, state, source_branch_id, active_branch_id, turn_id, handled_by_session_id, provider_turn_id, turn_state, turn_requested_at, rejection_kind, rejection_message, created_at, settled_at, provider_work_started FROM conversation_edit_deliveries
+WHERE conversation_id = ? AND client_message_id = ?
+LIMIT 1
+`
+
+type SelectConversationEditDeliveryParams struct {
+	ConversationID  string
+	ClientMessageID string
+}
+
+func (q *Queries) SelectConversationEditDelivery(ctx context.Context, arg SelectConversationEditDeliveryParams) (ConversationEditDelivery, error) {
+	row := q.db.QueryRowContext(ctx, selectConversationEditDelivery, arg.ConversationID, arg.ClientMessageID)
+	var i ConversationEditDelivery
+	err := row.Scan(
+		&i.ConversationID,
+		&i.ClientMessageID,
+		&i.RequestJson,
+		&i.State,
+		&i.SourceBranchID,
+		&i.ActiveBranchID,
+		&i.TurnID,
+		&i.HandledBySessionID,
+		&i.ProviderTurnID,
+		&i.TurnState,
+		&i.TurnRequestedAt,
+		&i.RejectionKind,
+		&i.RejectionMessage,
+		&i.CreatedAt,
+		&i.SettledAt,
+		&i.ProviderWorkStarted,
 	)
 	return i, err
 }
