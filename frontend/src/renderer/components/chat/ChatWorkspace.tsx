@@ -1,4 +1,4 @@
-import { attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
+import type { ConversationContentSummary } from "../../types/conversation";
 import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
 /**
  * The Chat surface for a session whose persisted mode is `chat`.
@@ -34,11 +34,22 @@ import { ArrowDown, Loader2, TriangleAlert, Undo2 } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
-import { activateChatDraftScope, chatDraftScopeKey, type ChatDraftScope } from "../../lib/chat-drafts";
-import { purgeFileAttachmentsForSession } from "../../hooks/useFileAttachments";
+import {
+	activateChatDraftScope,
+	chatDraftScopeKey,
+	chatQueuedAttachmentScopeKey,
+	readChatSessionDraft,
+	writeChatQueuedEdit,
+	type ChatDraftQueuedEdit,
+	type ChatDraftAttachment,
+	type ChatDraftRetainedAttachment,
+	type ChatDraftScope,
+} from "../../lib/chat-drafts";
+import { purgeFileAttachments, purgeFileAttachmentsForSession } from "../../hooks/useFileAttachments";
+import { setChatDraftBoundary } from "../../lib/chat-draft-boundary";
 import { sameContent, useStableList } from "../../lib/stable-list";
 import { useTabScrollEdges } from "../../hooks/useTabScrollEdges";
-import { getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
+import { apiErrorCode, getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
 import { aoBridge } from "../../lib/bridge";
 import { isDialogOrMenuOpen } from "../../lib/dom-selectors";
 import {
@@ -49,7 +60,7 @@ import {
 import { isLinuxPlatform, isMacPlatform } from "../../lib/platform";
 import { handleTerminalTabListKeyDown } from "../../lib/terminal-tabs";
 import { agentLabel } from "../../lib/agent-options";
-import type { ConversationContentSummary, ApprovalMode } from "../../types/conversation";
+import type { ApprovalMode } from "../../types/conversation";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import { sidebarOccupiesLayout, useUiStore } from "../../stores/ui-store";
 import type { TerminalTarget } from "../../types/terminal";
@@ -106,7 +117,7 @@ import {
 	type ChatModel,
 	type ChatSkill,
 	type ChatSteerOutcome,
-		type ConversationActivity,
+	type ConversationActivity,
 	type ConversationBranchPoint,
 	type ConversationItem,
 	type ConversationMessage,
@@ -370,7 +381,7 @@ export interface ChatWorkspaceProps {
 		text: string,
 		attachments?: { mimeType: string; data: string }[],
 		clientMessageId?: string,
-
+		recoverOnly?: boolean,
 	) => Promise<ChatSteerOutcome | void>;
 	sendPending?: boolean;
 	steerPending?: boolean;
@@ -679,60 +690,151 @@ function ChatWorkspaceContent({
 	const queuedMessages = useQueuedMessages(snapshot);
 	const stablePromoteQueuedTurn = useStableCallback(onPromoteQueuedTurn);
 	const stableCancelQueuedTurn = useStableCallback(onCancelQueuedTurn);
-	const [queueEdit, setQueueEdit] = useState<{
-		turnId: string; text: string; revision: number; attachments: StoredComposerAttachment[];
-	} | undefined>();
+	const [queueEdit, setQueueEdit] = useState<ChatDraftQueuedEdit | undefined>(
+		() => readChatSessionDraft(draftScope).queuedEdit,
+	);
+	const queueEditRef = useRef(queueEdit);
+	const [queueDraftError, setQueueDraftError] = useState<string>();
+	const unprovenQueueWrite = useRef<{ expectedRevision?: string; written: { revisions: (string | undefined)[] } } | undefined>(undefined);
+	const updateQueueDraft = useCallback((edit: Omit<ChatDraftQueuedEdit, "revision"> | undefined, expectedRevision?: string) => {
+		const previous = unprovenQueueWrite.current;
+		const result = writeChatQueuedEdit(draftScope, edit, expectedRevision, undefined,
+			previous?.expectedRevision === expectedRevision ? previous?.written : undefined);
+		setQueueDraftError(result.ok ? undefined : "chat.draft.queueSaveLocalFailed");
+		if (result.ok) {
+			const retired = queueEditRef.current;
+			unprovenQueueWrite.current = undefined;
+			queueEditRef.current = result.draft.queuedEdit;
+			setQueueEdit(result.draft.queuedEdit);
+			if (retired && (!result.draft.queuedEdit || retired.ownerId !== result.draft.queuedEdit.ownerId)) {
+				purgeFileAttachments(chatQueuedAttachmentScopeKey(draftScope,
+					`${retired.turnId}:${retired.ownerId ?? retired.expectedRevision ?? "legacy"}`));
+			}
+		} else if (result.attempted) {
+			unprovenQueueWrite.current = { expectedRevision, written: result.attempted };
+		}
+		return result;
+	}, [draftScope]);
+	useEffect(() => {
+		setChatDraftBoundary(snapshot.sessionId, "queued-edit", queueDraftError ? "persistence-failed" : undefined);
+		return () => setChatDraftBoundary(snapshot.sessionId, "queued-edit", undefined);
+	}, [queueDraftError, snapshot.sessionId]);
+	// Text equality cannot prove an attachment-only edit was accepted. Keep an
+	// uncertain edit and its original daemon revision until a save is acknowledged.
+	const changeQueuedDraft = useCallback((text: string) => {
+		const current = queueEditRef.current;
+		if (!current || current.clientMessageId || current.turnId !== queueEdit?.turnId || current.ownerId !== queueEdit.ownerId || current.text === text) return;
+		const result = updateQueueDraft({ ...current, text, saving: undefined, clientMessageId: undefined }, current.revision);
+		if (!result.ok) {
+			queueEditRef.current = { ...current, text };
+			setQueueEdit(queueEditRef.current);
+		}
+	}, [queueEdit?.turnId, queueEdit?.ownerId, updateQueueDraft]);
+	const changeQueuedAttachments = useCallback((field: "attachments" | "stagedAttachments", attachments: ChatDraftRetainedAttachment[] | ChatDraftAttachment[]) => {
+		const current = queueEditRef.current;
+		if (!current || current.clientMessageId || current.turnId !== queueEdit?.turnId || current.ownerId !== queueEdit.ownerId) return;
+		if (JSON.stringify(current[field] ?? []) === JSON.stringify(attachments)) return;
+		const next = { ...current, [field]: attachments, saving: undefined, clientMessageId: undefined };
+		const result = updateQueueDraft(next, current.revision);
+		if (!result.ok) {
+			queueEditRef.current = next;
+			setQueueEdit(next);
+		}
+	}, [queueEdit?.turnId, queueEdit?.ownerId, updateQueueDraft]);
+	const changeQueuedStagedAttachments = useCallback((attachments: ChatDraftAttachment[]) => {
+		changeQueuedAttachments("stagedAttachments", attachments);
+	}, [changeQueuedAttachments]);
+	const changeQueuedRetainedAttachments = useCallback((attachments: ChatDraftRetainedAttachment[]) => {
+		changeQueuedAttachments("attachments", attachments);
+	}, [changeQueuedAttachments]);
 	const handleCancelQueuedTurn = useCallback(
 		async (turnId: string) => {
 			if (!onCancelQueuedTurn) return;
+			if (queueEditRef.current?.turnId === turnId && queueEditRef.current.clientMessageId) return;
 			await stableCancelQueuedTurn(turnId);
-			setQueueEdit((current) => (current?.turnId === turnId ? undefined : current));
+			const current = queueEditRef.current;
+			if (current?.turnId === turnId && !current.clientMessageId) updateQueueDraft(undefined, current.revision);
 		},
-		[stableCancelQueuedTurn],
+		[queueEdit, stableCancelQueuedTurn, updateQueueDraft],
 	);
+	// Keep the dispatch target with this composer instance while attachment staging
+	// awaits. A newer queue editor must not redirect an older ordinary send.
 	const handleComposerSend = useCallback(
 		async (text: string, attachments?: Parameters<NonNullable<typeof onSend>>[1], clientMessageId?: string, retainedContent?: number[]) => {
 			if (queueEdit) {
 				if (!onEditQueuedTurn) {
-					throw new Error("Queued message edits are unavailable right now.");
+					throw new Error("chat.draft.queueUnavailable");
 				}
-				await onEditQueuedTurn(queueEdit.turnId, text, {
-					...(attachments?.length ? { attachments } : {}),
-					retainedContent, expectedRevision: queueEdit.revision,
-				});
-				setQueueEdit(undefined);
+				if (!queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId)) {
+					throw new Error("chat.draft.queueMissing");
+				}
+				const currentEdit = queueEditRef.current;
+				if (!currentEdit || currentEdit.turnId !== queueEdit.turnId || currentEdit.ownerId !== queueEdit.ownerId) {
+					throw new Error("chat.draft.queueReplaced");
+				}
+				const prepared = updateQueueDraft({
+					...currentEdit,
+					saving: true,
+					clientMessageId: currentEdit.clientMessageId ?? crypto.randomUUID(),
+					nativeImages: currentEdit.nativeImages ?? Boolean(nativeImages),
+				}, currentEdit.revision);
+				if (!prepared.ok || !prepared.draft.queuedEdit) throw new Error("chat.draft.queuePrepareFailed");
+				try {
+					await onEditQueuedTurn(queueEdit.turnId, text, {
+						clientMessageId: prepared.draft.queuedEdit.clientMessageId,
+						...(attachments?.length ? { attachments } : {}),
+						retainedContent: queueEdit.attachments === undefined ? undefined : retainedContent,
+						expectedRevision: queueEdit.expectedRevision,
+					});
+				} catch (error) {
+					// These outcomes follow the daemon's atomic receipt lookup, so even
+					// a recovered retry proves this exact edit was never accepted.
+					if ([
+						"CHAT_TURN_NOT_QUEUED",
+						"CHAT_QUEUED_EDIT_CONFLICT",
+						"CHAT_QUEUED_CONTENT_INVALID",
+						"CHAT_QUEUED_TEXT_REQUIRED",
+					].includes(apiErrorCode(error) ?? "")) {
+						updateQueueDraft({
+							...prepared.draft.queuedEdit,
+							clientMessageId: undefined, saving: undefined, nativeImages: undefined,
+						}, prepared.draft.queuedEdit.revision);
+					}
+					throw error;
+				}
+				if (queueEditRef.current?.ownerId === queueEdit.ownerId) {
+					if (!updateQueueDraft(undefined, prepared.draft.queuedEdit.revision).ok) throw new Error("chat.draft.queueClearFailed");
+				}
 				return;
 			}
 			return onSend?.(text, attachments, clientMessageId);
 		},
-		[onEditQueuedTurn, onSend, queueEdit],
+		[draftScope, onEditQueuedTurn, onSend, nativeImages, queueEdit, queuedMessages, updateQueueDraft],
 	);
 	const stableInterrupt = useStableCallback(onInterrupt);
 	const stableSteer = useStableCallback(onSteer);
 	const beginQueuedEdit = useCallback(
 		(turnId: string, text: string) => {
-			if (newWorkDisabled) return;
+			if (newWorkDisabled || queueEditRef.current?.clientMessageId) return;
 			const message = queuedMessages.find((queued) => queued.turnId === turnId)?.message;
 			if (!message) return;
 			const parts = stagedAttachmentParts(text);
-			const content = message.content ?? [];
-			// Paths and native blocks have no shared persisted identity. Keep their
-			// removal independent, even when the image counts happen to match.
+			// Paths and native blocks have no shared persisted identity.
 			const attachments: StoredComposerAttachment[] = parts.attachments.map((path) => ({
 				id: path, name: attachmentName(path), path,
-				...(IMAGE_ATTACHMENT_PATH.test(path) ? {
-					dataUrl: attachmentURL(getApiBaseUrl(), snapshot.sessionId, path),
-				} : {}),
 			}));
-			content.forEach((item, index) => {
+			(message.content ?? []).forEach((item, index) => {
 				attachments.push({ id: `content-${index}`, contentIndex: index, contentType: item.type,
 					name: item.name || (item.type === "image" ? `Image ${index + 1}` : item.uri || "Attachment") });
 			});
-			setQueueEdit({ turnId, text: parts.body, revision: message.revision, attachments });
+			updateQueueDraft({ turnId, ownerId: crypto.randomUUID(), text: parts.body, expectedRevision: message.revision, attachments, stagedAttachments: [] });
 		},
-		[newWorkDisabled, queuedMessages, snapshot.sessionId],
+		[newWorkDisabled, queuedMessages, updateQueueDraft],
 	);
-	const cancelQueuedEdit = useCallback(() => setQueueEdit(undefined), []);
+	const cancelQueuedEdit = useCallback(() => {
+		const current = queueEditRef.current;
+		if (current && !current.clientMessageId) updateQueueDraft(undefined, current.revision);
+	}, [updateQueueDraft]);
 	const promoteQueuedTurn = useCallback(
 		async (turnId: string) => stablePromoteQueuedTurn(turnId),
 		[stablePromoteQueuedTurn],
@@ -741,9 +843,23 @@ function ChatWorkspaceContent({
 		async (
 			text: string,
 			attachments?: { mimeType: string; data: string }[],
-					clientMessageId?: string,
+			clientMessageId?: string,
 		) => stableSteer(text, attachments, clientMessageId),
 		[stableSteer],
+	);
+	const acceptedClientMessageIds = useMemo(
+		() =>
+			new Set(
+				snapshot.items.flatMap((item) => {
+					if (
+						item.kind !== "activity" ||
+						item.detail?.event !== "steer" ||
+						!item.detail.clientMessageId
+					) return [];
+					return [item.detail.clientMessageId];
+				}),
+			),
+		[snapshot.items],
 	);
 	// The turn a confirmation is open for. Undo is not reversible and it changes what
 	// the agent knows, so it is never one click.
@@ -1012,6 +1128,7 @@ function ChatWorkspaceContent({
 				<QueuedMessageDock
 					messages={queuedMessages}
 					editingTurnId={queueEdit?.turnId}
+					disabled={Boolean(queueEdit?.clientMessageId)}
 					canSteer={canSteerQueuedMessage}
 					onPromoteQueuedTurn={newWorkDisabled ? undefined : promoteQueuedTurn}
 					onBeginQueuedEdit={
@@ -1033,12 +1150,13 @@ function ChatWorkspaceContent({
 			onReorderQueuedTurns,
 			promoteQueuedTurn,
 			promoteQueuedTurnPendingTurnId,
+			queueEdit?.clientMessageId,
 			queueEdit?.turnId,
 			queuedMessages,
 		],
 	);
 	const composerDraftSeed = useMemo(
-		() => (queueEdit ? { id: `${queueEdit.turnId}:${queueEdit.revision}`, text: queueEdit.text, attachments: queueEdit.attachments } : undefined),
+		() => (queueEdit ? { id: `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}`, text: queueEdit.text, attachments: queueEdit.attachments, stagedAttachments: queueEdit.stagedAttachments } : undefined),
 		[queueEdit],
 	);
 	// Empty chats center the prompt; once a turn or item exists the composer docks
@@ -1263,24 +1381,28 @@ function ChatWorkspaceContent({
 							>
 								{discarded > 0 ? <RolledBackNotice count={discarded} /> : null}
 								<ChatComposer
-									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.revision}` : "composer"}`}
+									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}
 									queuedDock={composerQueuedDock}
 									approval={composerApproval}
 									onSend={handleComposerSend}
 									draftSeed={composerDraftSeed}
 									editingQueuedTurnId={queueEdit?.turnId}
+									queuedEditRecovery={Boolean(queueEdit?.clientMessageId)}
 									savingQueuedEditPending={Boolean(
 										queueEdit?.turnId &&
 											editQueuedTurnPendingTurnId === queueEdit.turnId,
 									)}
 									onCancelQueuedEdit={cancelQueuedEdit}
+									onQueuedDraftChange={queueEdit ? changeQueuedDraft : undefined}
 									queuedDraftScope={queueEdit ? draftScope : undefined}
+									onQueuedAttachmentsChange={changeQueuedStagedAttachments}
+									onQueuedRetainedAttachmentsChange={changeQueuedRetainedAttachments}
 									onInterrupt={turn && !newWorkDisabled ? stableInterrupt : undefined}
-									commandError={commandError}
+									commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
 									settings={composerSettings}
 									busy={busy}
 									willQueue={Boolean(turn)}
-									disabled={snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled}
+									disabled={(snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
 									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
 									disabledPlaceholder={
 										controllerTransitioning || newWorkDisabled ? "" : undefined
@@ -1289,7 +1411,7 @@ function ChatWorkspaceContent({
 									filePaths={filePaths}
 									filePathsTruncated={filePathsTruncated}
 									onStageAttachments={newWorkDisabled ? undefined : onStageAttachments}
-									nativeImages={nativeImages}
+									nativeImages={queueEdit?.clientMessageId ? queueEdit.nativeImages ?? nativeImages : nativeImages}
 									autoFocus={!reviewerActive}
 									autoFocusKey={snapshot.sessionId}
 									// Steering is only meaningful into a turn that is running. A queued turn
@@ -1305,6 +1427,7 @@ function ChatWorkspaceContent({
 									compactBlocked={Boolean(turn)}
 									draftSessionId={queueEdit ? undefined : snapshot.sessionId}
 									draftSessionIncarnation={draftScope.incarnation}
+									acceptedClientMessageIds={acceptedClientMessageIds}
 								/>
 							</div>
 						</div>
