@@ -117,6 +117,7 @@ import {
 	TELEMETRY_CLEAR_RENDERER_QUEUES_CHANNEL,
 	TELEMETRY_POLICY_CHANGED_CHANNEL,
 	TELEMETRY_RENDERER_QUEUES_CLEARED_CHANNEL,
+	telemetryPolicyRetryable,
 	type RendererTelemetryCapture,
 	type TelemetryPolicyView,
 } from "./shared/telemetry-policy";
@@ -2034,7 +2035,7 @@ ipcMain.on(AGENT_SWITCH_VISIBILITY_IPC_CHANNEL, (event, request: unknown) => {
 });
 
 function failClosedTelemetryPolicyView(): TelemetryPolicyView {
-	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
+	return { eventsEnabled: false, consentGeneration: "unavailable", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "cleanup_failed", environmentVeto: true, durabilitySupported: false, reason: "invalid_authority" };
 }
 async function chooseDirectory(title: string, defaultPath?: string): Promise<string | null> {
 	if (defaultPath) await mkdir(defaultPath, { recursive: true });
@@ -2582,7 +2583,7 @@ app.whenReady().then(async () => {
 	telemetryPolicyController = policyController;
 	try { await policyController.initialize(); }
 	catch (error) { console.error("telemetry policy bootstrap failed; reporting remains disabled:", error); }
-	setInterval(() => { if (policyController.snapshot().state !== "applied") void policyController.retryPendingCleanup(); }, 1_000).unref();
+	setInterval(() => { if (telemetryPolicyRetryable(policyController.snapshot())) void policyController.retryPendingCleanup(); }, 1_000).unref();
 	// Capture install provenance BEFORE relocation. moveToApplicationsFolder()
 	// relaunches from /Applications WITHOUT forwarding our --installed-via arg, and
 	// code past a successful move never runs in this instance, so a post-move-only
