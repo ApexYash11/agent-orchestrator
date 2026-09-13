@@ -103,7 +103,7 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 		if err := hookutil.AtomicWriteFile(scriptPath, []byte(script), 0o700); err != nil {
 			return fmt.Errorf("cline.GetAgentHooks: write %s: %w", spec.Event, err)
 		}
-		written = append(written, spec.Event)
+		written = append(written, clineHookScriptName(spec.Event))
 	}
 	if err := hookutil.EnsureWorkspaceGitignore(hooksDir, written...); err != nil {
 		return fmt.Errorf("cline.GetAgentHooks: gitignore: %w", err)
@@ -204,9 +204,26 @@ func renderBashClineHookScript(subcommand string) string {
 func renderPowerShellClineHookScript(subcommand string) string {
 	var b strings.Builder
 	b.WriteString(clineHookMarker + "\n")
-	// Forward stdin to the AO dispatcher; swallow any error so a missing/old
-	// `ao` binary can never block Cline's own execution.
-	b.WriteString("try { $input | " + clineHookCommandPrefix + subcommand + " 2>$null } catch {}\n")
+	// Forward raw process-stdin bytes to the AO dispatcher; swallow any error
+	// so a missing/old `ao` binary can never block Cline's own execution.
+	// Cline spawns `powershell -File <script>` and writes the JSON payload to
+	// the child process stdin. Piping a decoded string (`$input`, or
+	// `[Console]::In.ReadToEnd()` piped to a native exe) re-encodes it via the
+	// pipeline (UTF-16 with BOM trailer/CRLF), which breaks the JSON the `ao`
+	// hook dispatcher parses for the native session id. Copying the raw byte
+	// stream preserves it exactly.
+	b.WriteString("try {\n")
+	b.WriteString("  $psi = New-Object System.Diagnostics.ProcessStartInfo\n")
+	b.WriteString("  $psi.FileName = 'ao'\n")
+	b.WriteString("  $psi.Arguments = 'hooks cline " + subcommand + "'\n")
+	b.WriteString("  $psi.UseShellExecute = $false\n")
+	b.WriteString("  $psi.CreateNoWindow = $true\n")
+	b.WriteString("  $psi.RedirectStandardInput = $true\n")
+	b.WriteString("  $p = [System.Diagnostics.Process]::Start($psi)\n")
+	b.WriteString("  if ([Console]::IsInputRedirected) { [Console]::OpenStandardInput().CopyTo($p.StandardInput.BaseStream) }\n")
+	b.WriteString("  $p.StandardInput.Close()\n")
+	b.WriteString("  $p.WaitForExit()\n")
+	b.WriteString("} catch {}\n")
 	// Cline requires a JSON result on stdout; never block the agent.
 	b.WriteString(`Write-Output '{"cancel": false}'` + "\n")
 	return b.String()

@@ -258,7 +258,11 @@ func TestGetAgentHooksInstallsClineHooks(t *testing.T) {
 		if !strings.Contains(content, clineHookMarker) {
 			t.Fatalf("%s missing AO marker:\n%s", spec.Event, content)
 		}
-		if !strings.Contains(content, clineHookCommandPrefix+spec.Subcommand) {
+		if runtime.GOOS == "windows" {
+			if !strings.Contains(content, "hooks cline "+spec.Subcommand) {
+				t.Fatalf("%s missing ps1 forward arguments %q:\n%s", spec.Event, "hooks cline "+spec.Subcommand, content)
+			}
+		} else if !strings.Contains(content, clineHookCommandPrefix+spec.Subcommand) {
 			t.Fatalf("%s missing forward command %q:\n%s", spec.Event, clineHookCommandPrefix+spec.Subcommand, content)
 		}
 		info, err := os.Stat(scriptPath)
@@ -533,8 +537,11 @@ func TestRenderPowerShellClineHookScript(t *testing.T) {
 	if strings.Contains(got, "#!/usr/bin/env bash") {
 		t.Fatalf("ps1 hook script must not carry a bash shebang:\n%s", got)
 	}
-	if !strings.Contains(got, "$input | "+clineHookCommandPrefix+"session-start") {
-		t.Fatalf("ps1 hook script must forward stdin to the dispatcher:\n%s", got)
+	if !strings.Contains(got, "[Console]::OpenStandardInput().CopyTo($p.StandardInput.BaseStream)") {
+		t.Fatalf("ps1 hook script must forward raw stdin bytes to the dispatcher:\n%s", got)
+	}
+	if strings.Contains(got, "$input") || strings.Contains(got, "ReadToEnd()") {
+		t.Fatalf("ps1 hook script must not decode+re-encode stdin through the pipeline:\n%s", got)
 	}
 	if !strings.Contains(got, `Write-Output '{"cancel": false}'`) {
 		t.Fatalf("ps1 hook script must emit the continuation result:\n%s", got)
@@ -572,12 +579,26 @@ func TestGetAgentHooksWritesPlatformScriptNames(t *testing.T) {
 			t.Fatalf("expected AO hook script at %s", scriptPath)
 		}
 		// The other platform's naming must never be written alongside.
-		other := spec.Event
+		other := spec.Event + ".ps1"
 		if runtime.GOOS == "windows" {
-			other = spec.Event + ".ps1"
+			other = spec.Event
 		}
-		if clineHookScriptName(spec.Event) != other && hookutil.FileExists(filepath.Join(hooksDir, other)) {
+		if hookutil.FileExists(filepath.Join(hooksDir, other)) {
 			t.Fatalf("unexpected cross-platform script %s for %s", other, spec.Event)
+		}
+	}
+
+	// The generated .gitignore must cover the exact filenames written above,
+	// otherwise (notably the Windows `<Event>.ps1` form) the hooks stay
+	// untracked and keep session worktrees dirty.
+	gitignore, err := os.ReadFile(filepath.Join(hooksDir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read hooks .gitignore: %v", err)
+	}
+	for _, spec := range clineManagedHooks {
+		want := "/" + clineHookScriptName(spec.Event)
+		if !strings.Contains(string(gitignore), want+"\n") {
+			t.Fatalf(".gitignore missing entry %q:\n%s", want, gitignore)
 		}
 	}
 }
