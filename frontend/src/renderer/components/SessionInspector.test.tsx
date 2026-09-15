@@ -1197,12 +1197,12 @@ describe("SessionInspector completion controls", () => {
     });
   });
 
-  it("shows only direct termination controls for ad hoc sessions", async () => {
+  it("shows only direct termination controls for standalone agent sessions", async () => {
     renderWithQuery(
       <SessionInspector
         session={session([], {
           workspaceId: STANDALONE_WORKSPACE_ID,
-          workspaceName: "Ad hoc agents",
+          workspaceName: "Agents",
           status: "idle",
         })}
       />,
