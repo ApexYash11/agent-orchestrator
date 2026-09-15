@@ -504,6 +504,8 @@
 	"inspector.timeline.draft": "초안",
 	"inspector.timeline.merged": "병합됨",
 	"inspector.timeline.opened": "열림",
+	"inspector.timeline.createdStandaloneSession": "Created standalone session",
+	"inspector.timeline.createdWorkingDirectory": "Created working directory",
 	"inspector.unableCancelReview": "리뷰를 중지할 수 없습니다",
 	"inspector.unableKillReviewSession": "리뷰 세션을 종료할 수 없습니다",
 	"inspector.unableRestoreReviewSession": "리뷰 세션을 복원할 수 없습니다",

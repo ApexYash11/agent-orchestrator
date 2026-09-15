@@ -504,6 +504,8 @@
 	"inspector.timeline.draft": "草稿",
 	"inspector.timeline.merged": "已合并",
 	"inspector.timeline.opened": "已打开",
+	"inspector.timeline.createdStandaloneSession": "Created standalone session",
+	"inspector.timeline.createdWorkingDirectory": "Created working directory",
 	"inspector.unableCancelReview": "无法停止评审",
 	"inspector.unableKillReviewSession": "无法终止评审会话",
 	"inspector.unableRestoreReviewSession": "无法恢复评审会话",

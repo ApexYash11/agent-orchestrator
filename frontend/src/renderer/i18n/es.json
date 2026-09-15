@@ -506,6 +506,8 @@
 	"inspector.timeline.draft": "Borrador",
 	"inspector.timeline.merged": "Fusionado",
 	"inspector.timeline.opened": "Abierto",
+	"inspector.timeline.createdStandaloneSession": "Created standalone session",
+	"inspector.timeline.createdWorkingDirectory": "Created working directory",
 	"inspector.unableCancelReview": "No se pudo detener la revisión",
 	"inspector.unableKillReviewSession": "No se pudo terminar la sesión de revisión",
 	"inspector.unableRestoreReviewSession": "No se pudo restaurar la sesión de revisión",

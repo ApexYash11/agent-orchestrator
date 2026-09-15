@@ -504,6 +504,8 @@
 	"inspector.timeline.draft": "Entwurf",
 	"inspector.timeline.merged": "Gemerged",
 	"inspector.timeline.opened": "Geöffnet",
+	"inspector.timeline.createdStandaloneSession": "Created standalone session",
+	"inspector.timeline.createdWorkingDirectory": "Created working directory",
 	"inspector.unableCancelReview": "Review konnte nicht gestoppt werden",
 	"inspector.unableKillReviewSession": "Review-Sitzung konnte nicht beendet werden",
 	"inspector.unableRestoreReviewSession": "Review-Sitzung konnte nicht wiederhergestellt werden",
