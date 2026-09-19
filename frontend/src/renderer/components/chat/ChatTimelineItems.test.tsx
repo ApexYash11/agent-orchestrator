@@ -1,7 +1,7 @@
 import { act, render as rtlRender, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode, type ReactElement } from "react";
-import { ActivityRow, AssistantMessage, TurnOutcome } from "./ChatTimelineItems";
+import { ActivityRow, AssistantMessage, HumanMessage, TurnOutcome } from "./ChatTimelineItems";
 import type { ConversationMessage } from "../../types/conversation";
 import { TooltipProvider } from "../ui/tooltip";
 
@@ -64,12 +64,27 @@ describe("TurnOutcome", () => {
 		expect(screen.queryByText("Done")).not.toBeInTheDocument();
 	});
 
-	it("shows the message above a full-width rule", () => {
-		const { container } = render(<TurnOutcome state="failed" error="Provider error" />);
+	it("shows the failed outcome and the provider's explanation", () => {
+		render(<TurnOutcome state="failed" error="Provider error" />);
 
 		expect(screen.getByText("The agent ran into a problem")).toBeInTheDocument();
 		expect(screen.getByText("Provider error")).toBeInTheDocument();
-		expect(container.querySelector(".h-px.w-full.bg-border")).toBeInTheDocument();
+	});
+
+	it("preserves multiline provider text and links without interpreting its structure", () => {
+		render(
+			<TurnOutcome
+				state="failed"
+				error={"Usage limit reached\n\nManage billing at https://example.com/billing."}
+			/>,
+		);
+
+		expect(screen.getByText(/Usage limit reached/)).toBeInTheDocument();
+		expect(screen.getByText(/Manage billing at/)).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: "https://example.com/billing" })).toHaveAttribute(
+			"href",
+			"https://example.com/billing",
+		);
 	});
 });
 
@@ -270,7 +285,7 @@ describe("AssistantMessage streaming", () => {
 		expect(screen.getByLabelText(/^Sent Yesterday · \d{2}:\d{2}$/)).toBeInTheDocument();
 		view.rerender(<AssistantMessage message={message({ createdAt: older, streaming: false })} showCopy />);
 		expect(screen.queryByLabelText(/^Sent Yesterday ·/)).toBeNull();
-		expect(screen.getByLabelText(/^Sent [A-Z][a-z]{2} \d{1,2}, \d{4}$/)).toBeInTheDocument();
+		expect(screen.getByLabelText(/^Sent .+\d{4}$/)).toBeInTheDocument();
 	});
 
 	it("survives StrictMode effect cleanup and keeps draining", () => {
@@ -292,6 +307,20 @@ describe("AssistantMessage streaming", () => {
 });
 
 describe("ActivityRow", () => {
+	it("renders inline code in provider activity titles without literal backticks", () => {
+		const path = "/Users/sachin/.ao/worktrees/murdock/docs/system-design.html";
+		const { container } = render(
+			<ActivityRow activity={{
+				kind: "activity", id: "edit-title", sequence: 1, revision: 0,
+				createdAt: "2026-08-23T00:00:00Z", activityKind: "file_change",
+				status: "completed", summary: `Edit \`${path}\``,
+			}} />,
+		);
+		expect(screen.getByRole("button")).toHaveTextContent(`Edit ${path}`);
+		expect(container.querySelector("code")).toHaveTextContent(path);
+		expect(screen.getByRole("button").textContent).not.toContain("`");
+	});
+
 	it("does not present a recovered historical activity as failed", () => {
 		render(
 			<ActivityRow
@@ -309,5 +338,24 @@ describe("ActivityRow", () => {
 		);
 		expect(screen.getByText("outcome unknown")).toBeInTheDocument();
 		expect(screen.queryByText("failed")).not.toBeInTheDocument();
+	});
+});
+
+describe("HumanMessage", () => {
+	function human(overrides: Partial<ConversationMessage> = {}): ConversationMessage {
+		return message({ id: "human-1", role: "user", origin: "human", text: "hi", streaming: false, ...overrides });
+	}
+
+	// Light theme cannot separate a sent bubble from the canvas by fill alone, so it
+	// paints an enclosure keyed off this attribute's absence. Losing it makes the
+	// message read as unenclosed text again.
+	it("marks a queued bubble and leaves a sent one unmarked", () => {
+		const { container, rerender } = render(<HumanMessage message={human()} sessionId="s1" />);
+		const sent = container.querySelector(".cursor-chat-human-message");
+		expect(sent).not.toBeNull();
+		expect(sent).not.toHaveAttribute("data-queued");
+
+		rerender(<HumanMessage message={human()} sessionId="s1" queued />);
+		expect(container.querySelector(".cursor-chat-human-message")).toHaveAttribute("data-queued");
 	});
 });

@@ -47,6 +47,10 @@ func TestBuildSystemPrompt_WorkerIncludesRulesAndOrchestrator(t *testing.T) {
 		"## Orchestrator Coordination",
 		`ao send --session mer-orchestrator --message "<your message>"`,
 		"## Pull Requests for This Session",
+		"For a workspace project whose recorded session branch",
+		"`<session-branch>-<topic>`",
+		"Keep the full collision suffix",
+		"ao session claim-pr <full-pr-url>",
 		"## Docker Containers Started By This Session",
 		"## Project Rules",
 		"Always run focused tests.",
@@ -90,8 +94,8 @@ func TestBuildSystemPrompt_OrchestratorRequiresConfirmationAndAOOnlyDelegation(t
 		"ao session claim-pr <worker-session-id> <pr-ref>",
 		"must pass the target worker session explicitly",
 		"Add `--model <id>` when the human or task explicitly requests a specific model",
-		"retry the same spawn without `--model`",
-		"tell the human you fell back to the default model",
+		"Never drop an explicitly requested `--model` or substitute another model automatically",
+		"ask the human to choose an alternative",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("orchestrator prompt missing %q:\n%s", want, got)
