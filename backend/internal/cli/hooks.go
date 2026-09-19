@@ -116,9 +116,9 @@ func normalizeHookPayload(payload []byte) []byte {
 }
 
 // hookAgentSessionID extracts the native resume handle shared by Agy, Copilot,
-// Codex, Claude Code, and other hook payloads. It is independent of activity
-// derivation because SessionStart is intentionally metadata-only for harnesses
-// where process startup is not proof that a turn is active.
+// Codex, Claude Code, Cline, and other hook payloads. It is independent of
+// activity derivation because SessionStart is intentionally metadata-only for
+// harnesses where process startup is not proof that a turn is active.
 func hookAgentSessionID(payload []byte) string {
 	payload = normalizeHookPayload(payload)
 	var p struct {
@@ -126,6 +126,9 @@ func hookAgentSessionID(payload []byte) string {
 		SessionIDCamel      string `json:"sessionId"`
 		ConversationID      string `json:"conversation_id"`
 		ConversationIDCamel string `json:"conversationId"`
+		// Cline exposes the resumable task handle as top-level taskId.
+		TaskIDCamel string `json:"taskId"`
+		TaskIDSnake string `json:"task_id"`
 	}
 	_ = json.Unmarshal(payload, &p)
 	id := strings.TrimSpace(p.SessionID)
@@ -137,6 +140,12 @@ func hookAgentSessionID(payload []byte) string {
 	}
 	if id == "" {
 		id = strings.TrimSpace(p.ConversationIDCamel)
+	}
+	if id == "" {
+		id = strings.TrimSpace(p.TaskIDCamel)
+	}
+	if id == "" {
+		id = strings.TrimSpace(p.TaskIDSnake)
 	}
 	if len(id) > maxActivityMetaLen {
 		return ""

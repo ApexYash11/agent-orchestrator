@@ -105,6 +105,24 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 		}
 		written = append(written, clineHookScriptName(spec.Event))
 	}
+	// Drop pre-fix marker-owned scripts under the other platform's name (on
+	// Windows, the extensionless bash form written before .ps1 discovery was
+	// understood). Without this, upgrade-seeded worktrees keep the old files
+	// as untracked entries once .gitignore is rewritten with only the new
+	// names, leaving the worktree dirty and blocking normal teardown.
+	// User-authored files at the legacy path (no marker) are never touched.
+	for _, spec := range clineManagedHooks {
+		legacy := clineLegacyScriptName(spec.Event)
+		if legacy == clineHookScriptName(spec.Event) {
+			continue
+		}
+		legacyPath := filepath.Join(hooksDir, legacy)
+		if hookutil.FileExists(legacyPath) && isManagedClineHook(legacyPath) {
+			if err := os.Remove(legacyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("cline.GetAgentHooks: remove legacy %s: %w", spec.Event, err)
+			}
+		}
+	}
 	if err := hookutil.EnsureWorkspaceGitignore(hooksDir, written...); err != nil {
 		return fmt.Errorf("cline.GetAgentHooks: gitignore: %w", err)
 	}
@@ -128,12 +146,14 @@ func (p *Plugin) UninstallHooks(ctx context.Context, workspacePath string) error
 	}
 
 	for _, spec := range clineManagedHooks {
-		scriptPath := filepath.Join(hooksDir, clineHookScriptName(spec.Event))
-		if !hookutil.FileExists(scriptPath) || !isManagedClineHook(scriptPath) {
-			continue
-		}
-		if err := os.Remove(scriptPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("cline.UninstallHooks: remove %s: %w", spec.Event, err)
+		for _, name := range clineAllScriptNames(spec.Event) {
+			scriptPath := filepath.Join(hooksDir, name)
+			if !hookutil.FileExists(scriptPath) || !isManagedClineHook(scriptPath) {
+				continue
+			}
+			if err := os.Remove(scriptPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("cline.UninstallHooks: remove %s: %w", spec.Event, err)
+			}
 		}
 	}
 	return nil
@@ -155,9 +175,11 @@ func (p *Plugin) AreHooksInstalled(ctx context.Context, workspacePath string) (b
 	}
 
 	for _, spec := range clineManagedHooks {
-		scriptPath := filepath.Join(hooksDir, clineHookScriptName(spec.Event))
-		if hookutil.FileExists(scriptPath) && isManagedClineHook(scriptPath) {
-			return true, nil
+		for _, name := range clineAllScriptNames(spec.Event) {
+			scriptPath := filepath.Join(hooksDir, name)
+			if hookutil.FileExists(scriptPath) && isManagedClineHook(scriptPath) {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
@@ -175,6 +197,28 @@ func clineHookScriptName(event string) string {
 		return event + ".ps1"
 	}
 	return event
+}
+
+// clineLegacyScriptName returns the filename a pre-fix install wrote for the
+// event on the other platform: the extensionless bash form on Windows, the
+// `.ps1` form on Unix (for Windows-created workspaces moved across platforms).
+func clineLegacyScriptName(event string) string {
+	if runtime.GOOS == "windows" {
+		return event
+	}
+	return event + ".ps1"
+}
+
+// clineAllScriptNames returns every filename AO may have written for the event
+// (current platform first, legacy second) so install migration, uninstall, and
+// installed-detection all recognize pre-fix workspaces.
+func clineAllScriptNames(event string) []string {
+	current := clineHookScriptName(event)
+	legacy := clineLegacyScriptName(event)
+	if legacy == current {
+		return []string{current}
+	}
+	return []string{current, legacy}
 }
 
 // renderClineHookScript builds an executable wrapper that forwards the Cline

@@ -603,6 +603,78 @@ func TestGetAgentHooksWritesPlatformScriptNames(t *testing.T) {
 	}
 }
 
+func TestGetAgentHooksMigratesLegacyScripts(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "cline"}
+	workspace := t.TempDir()
+	hooksDir := filepath.Join(workspace, clineHooksDirName, clineHooksSubDir)
+	if err := os.MkdirAll(hooksDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed an upgrade workspace: pre-fix marker-owned scripts under the other
+	// platform's name plus an AO-managed .gitignore covering only those names.
+	var gitignore strings.Builder
+	gitignore.WriteString(hookutil.GitignoreSentinel + "\n/.gitignore\n")
+	userLegacy := clineLegacyScriptName(clineManagedHooks[0].Event)
+	for _, spec := range clineManagedHooks {
+		legacy := clineLegacyScriptName(spec.Event)
+		if legacy == clineHookScriptName(spec.Event) {
+			t.Fatalf("legacy and current names coincide for %s on %s", spec.Event, runtime.GOOS)
+		}
+		if legacy == userLegacy {
+			// A user-authored file at a legacy path (no marker) must survive.
+			if err := os.WriteFile(filepath.Join(hooksDir, legacy), []byte("#!/usr/bin/env bash\necho user\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(hooksDir, legacy), []byte(clineHookMarker+"\nlegacy\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		gitignore.WriteString("/" + legacy + "\n")
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, ".gitignore"), []byte(gitignore.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := ports.WorkspaceHookConfig{DataDir: t.TempDir(), SessionID: "sess-1", WorkspacePath: workspace}
+	if err := plugin.GetAgentHooks(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, spec := range clineManagedHooks {
+		current := clineHookScriptName(spec.Event)
+		if !hookutil.FileExists(filepath.Join(hooksDir, current)) {
+			t.Fatalf("expected migrated hook script at %s", current)
+		}
+		legacyPath := filepath.Join(hooksDir, clineLegacyScriptName(spec.Event))
+		if clineLegacyScriptName(spec.Event) == userLegacy {
+			data, err := os.ReadFile(legacyPath)
+			if err != nil {
+				t.Fatalf("user-authored legacy file was removed: %v", err)
+			}
+			if strings.Contains(string(data), clineHookMarker) {
+				t.Fatalf("user-authored legacy file was overwritten: %s", data)
+			}
+			continue
+		}
+		if hookutil.FileExists(legacyPath) {
+			t.Fatalf("legacy marker-owned script %s not removed for %s", clineLegacyScriptName(spec.Event), spec.Event)
+		}
+	}
+
+	content, err := os.ReadFile(filepath.Join(hooksDir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read hooks .gitignore: %v", err)
+	}
+	for _, spec := range clineManagedHooks {
+		want := "/" + clineHookScriptName(spec.Event)
+		if !strings.Contains(string(content), want+"\n") {
+			t.Fatalf(".gitignore missing migrated entry %q:\n%s", want, content)
+		}
+	}
+}
+
 func contains(values []string, needle string) bool {
 	for _, value := range values {
 		if value == needle {
