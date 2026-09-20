@@ -283,7 +283,7 @@ func commitWorkspaceGitignore(ctx context.Context, parent string, changed bool) 
 	if err := guardNoGitlinks(ctx, parent); err != nil {
 		return err
 	}
-		if _, err := gitOutput(ctx, parent, "-c", "user.name=Agent Orchestrator", "-c", "user.email=ao@example.com", "commit", "-m", "chore: configure AO workspace ignores", "--", ".gitignore"); err != nil {
+	if _, err := gitOutput(ctx, parent, "-c", "user.name=Agent Orchestrator", "-c", "user.email=ao@example.com", "commit", "-m", "chore: configure AO workspace ignores", "--", ".gitignore"); err != nil {
 		return apierr.Invalid("WORKSPACE_PARENT_COMMIT_FAILED", "Failed to commit workspace parent .gitignore", map[string]any{"error": err.Error()})
 	}
 	return nil
