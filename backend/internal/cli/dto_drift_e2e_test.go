@@ -120,8 +120,8 @@ func authorizedCodexInventory() agentsvc.Inventory {
 // the CLI's request body. Every other method is a no-op so it satisfies the
 // projectsvc.Manager interface.
 type fakeProjectManager struct {
-	added     projectsvc.AddInput
-	addedRepo projectsvc.AddWorkspaceRepoInput
+	added       projectsvc.AddInput
+	addedRepo   projectsvc.AddWorkspaceRepoInput
 	removedRepo struct {
 		name        string
 		deleteFiles bool

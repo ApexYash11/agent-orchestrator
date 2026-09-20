@@ -41,7 +41,7 @@ func (m *Service) AddWorkspaceRepo(ctx context.Context, id domain.ProjectID, in 
 	if row.Kind.WithDefault() != domain.ProjectKindWorkspace {
 		return Project{}, apierr.Invalid("NOT_A_WORKSPACE_PROJECT", "Only workspace projects have child repositories", map[string]any{
 			"kind":         string(row.Kind.WithDefault()),
-			"suggestedFix": fmt.Sprintf("Register a workspace with `ao project add --path <parent> --as-workspace`, then attach the child to it."),
+			"suggestedFix": "Register a workspace with `ao project add --path <parent> --as-workspace`, then attach the child to it.",
 		})
 	}
 	if err := ensureDirectoryPath(childPath); err != nil {
@@ -62,8 +62,8 @@ func (m *Service) AddWorkspaceRepo(ctx context.Context, id domain.ProjectID, in 
 	for _, repo := range existing {
 		if repo.Name == name {
 			return Project{}, apierr.Conflict("REPO_ALREADY_REGISTERED", "A child repository with this name is already registered", map[string]any{
-				"existingRepo":     repo.Name,
-				"suggestedFix":     fmt.Sprintf("Run `ao project repo rm --project %s %s` first, or attach with `--name` to register under a different name.", row.ID, name),
+				"existingRepo": repo.Name,
+				"suggestedFix": fmt.Sprintf("Run `ao project repo rm --project %s %s` first, or attach with `--name` to register under a different name.", row.ID, name),
 			})
 		}
 	}

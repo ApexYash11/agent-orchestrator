@@ -1960,7 +1960,7 @@ func TestWorkspaceRepoSingleUpsertDelete(t *testing.T) {
 	if err := s.UpsertWorkspaceRepo(ctx, domain.WorkspaceRepoRecord{
 		ProjectID: "ws", Name: "cli", RelativePath: "cli",
 		RepoOriginURL: "https://example.com/cli.git", DefaultBranch: "main",
-		RegisteredAt:  now, GitStatus: domain.GitStatusReady,
+		RegisteredAt: now, GitStatus: domain.GitStatusReady,
 	}); err != nil {
 		t.Fatalf("upsert single repo: %v", err)
 	}
