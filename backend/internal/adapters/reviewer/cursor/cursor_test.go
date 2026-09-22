@@ -187,6 +187,7 @@ func TestReviewCancelUsesTwoInterrupts(t *testing.T) {
 func TestPreLaunchWritesIsolatedReviewerConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	userConfigPath := filepath.Join(home, ".cursor", cursorConfigFileName)
 	if err := os.MkdirAll(filepath.Dir(userConfigPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -273,6 +274,7 @@ func TestPreLaunchWritesIsolatedReviewerConfig(t *testing.T) {
 func TestPreLaunchSeedsAuthInfoIntoIsolatedReviewerConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	userConfigPath := filepath.Join(home, ".cursor", cursorConfigFileName)
 	if err := os.MkdirAll(filepath.Dir(userConfigPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -311,6 +313,9 @@ func TestPreLaunchSeedsAuthInfoIntoIsolatedReviewerConfig(t *testing.T) {
 }
 
 func TestPreLaunchWithoutPromptRootOmitsExternalRead(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	inv := ports.ReviewInvocation{ReviewerID: "review-w1", DataDir: t.TempDir(), WorkspacePath: t.TempDir()}
 	if err := New().PreLaunch(context.Background(), inv); err != nil {
 		t.Fatalf("PreLaunch: %v", err)
@@ -330,6 +335,166 @@ func TestPreLaunchHonorsContextCancellation(t *testing.T) {
 	}
 	if _, err := os.Stat(reviewerProfileDir(inv)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("profile created after cancellation: %v", err)
+	}
+}
+
+func TestPreLaunchDisablesDeclaredMCPServers(t *testing.T) {
+	home := isolateUserHome(t)
+	writeMCPJson(t, filepath.Join(home, ".cursor", "mcp.json"), "user-server")
+	workspace := t.TempDir()
+	writeMCPJson(t, filepath.Join(workspace, ".cursor", "mcp.json"), "zeta-server", "alpha-server", "user-server")
+	calls := stubMCPServerDisable(t)
+
+	inv := ports.ReviewInvocation{
+		ReviewerID:    "review-w1",
+		DataDir:       t.TempDir(),
+		WorkspacePath: workspace,
+	}
+	if err := New().PreLaunch(context.Background(), inv); err != nil {
+		t.Fatalf("PreLaunch: %v", err)
+	}
+
+	if len(*calls) != 1 {
+		t.Fatalf("disable calls = %d, want 1 (%#v)", len(*calls), *calls)
+	}
+	got := (*calls)[0]
+	want := []string{"alpha-server", "user-server", "zeta-server"}
+	if !reflect.DeepEqual(got.ids, want) {
+		t.Fatalf("ids = %#v, want %#v", got.ids, want)
+	}
+	if got.inv.WorkspacePath != workspace || got.inv.DataDir != inv.DataDir || got.inv.ReviewerID != inv.ReviewerID {
+		t.Fatalf("invocation = %+v, want workspace/dataDir/reviewer of %+v", got.inv, inv)
+	}
+}
+
+func TestPreLaunchSkipsMCPServerDisableWithoutDeclarations(t *testing.T) {
+	isolateUserHome(t)
+	calls := stubMCPServerDisable(t)
+
+	inv := ports.ReviewInvocation{
+		ReviewerID:    "review-w1",
+		DataDir:       t.TempDir(),
+		WorkspacePath: t.TempDir(),
+	}
+	if err := New().PreLaunch(context.Background(), inv); err != nil {
+		t.Fatalf("PreLaunch: %v", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("disable calls = %d, want none (%#v)", len(*calls), *calls)
+	}
+}
+
+func TestPreLaunchRejectsMalformedMCPConfig(t *testing.T) {
+	isolateUserHome(t)
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, ".cursor"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".cursor", "mcp.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := stubMCPServerDisable(t)
+
+	err := New().PreLaunch(context.Background(), ports.ReviewInvocation{
+		ReviewerID:    "review-w1",
+		DataDir:       t.TempDir(),
+		WorkspacePath: workspace,
+	})
+	if err == nil || !strings.Contains(err.Error(), "MCP config") {
+		t.Fatalf("PreLaunch err = %v, want MCP config parse failure", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("disable calls = %d, want none", len(*calls))
+	}
+}
+
+func TestMCPDisableCommandPointsAtReviewerProfileAndWorkspace(t *testing.T) {
+	workspace := filepath.Join("ws", "checkout")
+	profile := filepath.Join("data", "cursor-reviewers", "abc")
+	t.Setenv(cursorDataDirEnv, filepath.Join("hijacked", "profile"))
+
+	binary := filepath.Join("bin", "cursor-agent")
+	cmd := mcpDisableCommand(context.Background(), binary, "srv", workspace, profile)
+
+	wantArgs := []string{binary, "mcp", "disable", "srv"}
+	if !reflect.DeepEqual(cmd.Args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", cmd.Args, wantArgs)
+	}
+	if cmd.Dir != workspace {
+		t.Fatalf("dir = %q, want %q", cmd.Dir, workspace)
+	}
+	var dataDirs []string
+	for _, entry := range cmd.Env {
+		if strings.HasPrefix(entry, cursorDataDirEnv+"=") {
+			dataDirs = append(dataDirs, entry)
+		}
+	}
+	if want := cursorDataDirEnv + "=" + profile; !reflect.DeepEqual(dataDirs, []string{want}) {
+		t.Fatalf("CURSOR_DATA_DIR entries = %#v, want exactly [%q]", dataDirs, want)
+	}
+}
+
+func TestExecMCPServerDisableValidatesInvocation(t *testing.T) {
+	err := execMCPServerDisable(context.Background(), ports.ReviewInvocation{
+		ReviewerID: "review-w1",
+		DataDir:    t.TempDir(),
+	}, []string{"srv"})
+	if err == nil || !strings.Contains(err.Error(), "workspace path") {
+		t.Fatalf("err = %v, want workspace path validation", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = execMCPServerDisable(ctx, ports.ReviewInvocation{
+		ReviewerID:    "review-w1",
+		DataDir:       t.TempDir(),
+		WorkspacePath: t.TempDir(),
+	}, []string{"srv"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context cancellation", err)
+	}
+}
+
+type recordedMCPDisable struct {
+	ids []string
+	inv ports.ReviewInvocation
+}
+
+func stubMCPServerDisable(t *testing.T) *[]recordedMCPDisable {
+	t.Helper()
+	original := disableMCPServers
+	calls := &[]recordedMCPDisable{}
+	disableMCPServers = func(_ context.Context, inv ports.ReviewInvocation, ids []string) error {
+		*calls = append(*calls, recordedMCPDisable{ids: append([]string(nil), ids...), inv: inv})
+		return nil
+	}
+	t.Cleanup(func() { disableMCPServers = original })
+	return calls
+}
+
+func isolateUserHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
+}
+
+func writeMCPJson(t *testing.T, path string, ids ...string) {
+	t.Helper()
+	servers := make(map[string]any, len(ids))
+	for _, id := range ids {
+		servers[id] = map[string]any{"command": "node", "args": []string{"server.js"}}
+	}
+	data, err := json.Marshal(map[string]any{"mcpServers": servers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
