@@ -183,6 +183,13 @@ func applyReviewerMCPDisable(ctx context.Context, inv ports.ReviewInvocation) er
 	if err != nil {
 		return err
 	}
+	// Validate here, ahead of the disableMCPServers seam, so a hostile id
+	// fails the review closed even where process execution is substituted.
+	// execMCPServerDisable re-checks at the spawn boundary as defense in
+	// depth.
+	if err := validateMCPServerIDs(ids); err != nil {
+		return err
+	}
 	if len(ids) == 0 {
 		return nil
 	}
@@ -196,6 +203,12 @@ var disableMCPServers = execMCPServerDisable
 
 func execMCPServerDisable(ctx context.Context, inv ports.ReviewInvocation, ids []string) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Reject before resolving the binary or spawning anything: an
+	// option-shaped id must never reach the CLI, where `-h`/`--help` would
+	// exit 0 having disabled nothing and silently leave the server enabled.
+	if err := validateMCPServerIDs(ids); err != nil {
 		return err
 	}
 	profileDir := reviewerProfileDir(inv)
@@ -222,10 +235,36 @@ func execMCPServerDisable(ctx context.Context, inv ports.ReviewInvocation, ids [
 	return nil
 }
 
+// validateMCPServerIDs rejects server ids that cannot be passed to
+// `cursor-agent mcp disable` unambiguously as a positional argument. Ids
+// beginning with `-` would be parsed as CLI options instead of the server id:
+// `-h`/`--help` exit 0 having disabled nothing (a silent bypass that leaves
+// the server enabled to stall the unattended review on approval), while other
+// option-shaped ids fail the disable outright. End-of-options `--` does not
+// help — verified against cursor-agent 2026.09.10, `mcp disable --
+// "--evil-flag"` still errors with `unknown option '--evil-flag'`. Rejecting
+// fails the review closed so the operator sees the misdeclared server instead
+// of a pane stuck forever on an approval screen. Empty ids cannot name a
+// server and are rejected for the same reason.
+func validateMCPServerIDs(ids []string) error {
+	for _, id := range ids {
+		switch {
+		case strings.TrimSpace(id) == "":
+			return fmt.Errorf("cursor reviewer: refuse to disable MCP server %q: empty identifiers cannot name a server; remove it from .cursor/mcp.json to review this workspace", id)
+		case strings.HasPrefix(id, "-"):
+			return fmt.Errorf("cursor reviewer: refuse to disable MCP server %q: identifiers starting with '-' would be parsed as cursor-agent options instead of the server id; rename or remove it from .cursor/mcp.json to review this workspace", id)
+		}
+	}
+	return nil
+}
+
 // mcpDisableCommand builds the Cursor CLI invocation that records one server
 // id as disabled in the reviewer profile for the review workspace. The
 // workspace working directory makes Cursor write the disable list under the
-// same project slug the reviewer pane will read.
+// same project slug the reviewer pane will read. The id is passed bare (no
+// `--` separator): ids that would need one are rejected by
+// validateMCPServerIDs because this CLI does not honor end-of-options for
+// them, and everything reaching this point is a safe positional argument.
 func mcpDisableCommand(ctx context.Context, binary, id, workspacePath, profileDir string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, binary, "mcp", "disable", id) //nolint:gosec // binary is adapter-resolved, args are static.
 	cmd.Dir = workspacePath

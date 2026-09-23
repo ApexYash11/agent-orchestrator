@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -405,6 +407,91 @@ func TestPreLaunchRejectsMalformedMCPConfig(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("disable calls = %d, want none", len(*calls))
+	}
+}
+
+func TestPreLaunchRejectsOptionShapedMCPServerID(t *testing.T) {
+	home := isolateUserHome(t)
+	// `-x` in the host config covers the host read path; `--help` in the
+	// workspace config is the silent-bypass regression: `cursor-agent mcp
+	// disable --help` exits 0 having disabled nothing, so without rejection
+	// the server would stay enabled and stall the unattended review.
+	writeMCPJson(t, filepath.Join(home, ".cursor", "mcp.json"), "-x")
+	workspace := t.TempDir()
+	writeMCPJson(t, filepath.Join(workspace, ".cursor", "mcp.json"), "--help")
+	calls := stubMCPServerDisable(t)
+
+	err := New().PreLaunch(context.Background(), ports.ReviewInvocation{
+		ReviewerID:    "review-w1",
+		DataDir:       t.TempDir(),
+		WorkspacePath: workspace,
+	})
+	if err == nil || !strings.Contains(err.Error(), `"--help"`) {
+		t.Fatalf("PreLaunch err = %v, want refusal naming the option-shaped id", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("disable calls = %d, want none: the ambiguous id must never reach the CLI (%#v)", len(*calls), *calls)
+	}
+}
+
+func TestExecMCPServerDisableRejectsAmbiguousIDs(t *testing.T) {
+	for _, id := range []string{"--help", "-h", "-x", "-", "", "   "} {
+		// An empty DataDir would fail profile validation and a missing
+		// binary would fail resolution; the refusal must win over both to
+		// prove rejection happens before anything is spawned or resolved.
+		err := execMCPServerDisable(context.Background(), ports.ReviewInvocation{
+			ReviewerID: "review-w1",
+		}, []string{"good-server", id})
+		if err == nil || !strings.Contains(err.Error(), "refuse to disable") {
+			t.Fatalf("id %q: err = %v, want refusal before spawn", id, err)
+		}
+	}
+}
+
+// TestReviewerMCPConfigIDsEdgeCases covers the id shapes collection must pass
+// through intact: whitespace-padded and Unicode ids are legitimate server
+// names, duplicates across host and workspace collapse to one disable, and
+// large declarations are all collected in stable order.
+func TestReviewerMCPConfigIDsEdgeCases(t *testing.T) {
+	home := isolateUserHome(t)
+	writeMCPJson(t, filepath.Join(home, ".cursor", "mcp.json"), "host-b", "shared")
+	workspace := t.TempDir()
+	writeMCPJson(t, filepath.Join(workspace, ".cursor", "mcp.json"), "ws-a", "shared", "  padded  ", "サーバ-☃")
+
+	got, err := reviewerMCPConfigIDs(workspace)
+	if err != nil {
+		t.Fatalf("reviewerMCPConfigIDs: %v", err)
+	}
+	// Workspace ids first in byte-sorted order (space sorts before letters,
+	// non-ASCII bytes sort last), then unseen host ids.
+	want := []string{"  padded  ", "shared", "ws-a", "サーバ-☃", "host-b"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ids = %#v, want %#v", got, want)
+	}
+}
+
+func TestReviewerMCPConfigIDsCollectsLargeDeclarations(t *testing.T) {
+	isolateUserHome(t)
+	workspace := t.TempDir()
+	const count = 2000
+	ids := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		ids = append(ids, fmt.Sprintf("server-%04d", i))
+	}
+	writeMCPJson(t, filepath.Join(workspace, ".cursor", "mcp.json"), ids...)
+
+	got, err := reviewerMCPConfigIDs(workspace)
+	if err != nil {
+		t.Fatalf("reviewerMCPConfigIDs: %v", err)
+	}
+	if len(got) != count {
+		t.Fatalf("ids = %d, want %d", len(got), count)
+	}
+	if !sort.StringsAreSorted(got) {
+		t.Fatal("ids are not in stable sorted order")
+	}
+	if got[0] != "server-0000" || got[count-1] != "server-1999" {
+		t.Fatalf("ids range = [%q..%q], want [server-0000..server-1999]", got[0], got[count-1])
 	}
 }
 
