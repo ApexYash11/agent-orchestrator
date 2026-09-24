@@ -1180,6 +1180,41 @@ describe("TaskComposer", () => {
 		expect(h.post.mock.calls[1][1].body).not.toHaveProperty("mode");
 	});
 
+	it("starts a standalone Unreal task in Chat after approval-less retry", async () => {
+		h.agentCatalog = { agents: [agentReadiness("unreal-agent", "Unreal Agent")] };
+		h.get.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/settings") {
+				return { data: { defaultSessionMode: "tui", chatHarnesses: ["unreal-agent"] } };
+			}
+			if (path.includes("/models")) {
+				return { data: { agent: "unreal-agent", selectionMode: "text", models: [], allowCustom: true } };
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+		h.post
+			.mockResolvedValueOnce({
+				error: {
+					code: "SESSION_MODE_UNSUPPORTED",
+					message: "This provider cannot satisfy the selected approval policy",
+					details: { missingCapabilities: ["approvals"], allowedApprovalModes: ["bypass-permissions"] },
+				},
+			})
+			.mockResolvedValueOnce({ data: { session: { id: "sess-unreal" } } });
+		const onCreated = vi.fn();
+
+		render(<Wrap><TaskComposer projectId="__standalone__" onCreated={onCreated} /></Wrap>);
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "unreal-agent"));
+		fireEvent.change(task(), { target: { value: "Say hello" } });
+		fireEvent.click(startTask());
+		fireEvent.click(await screen.findByRole("button", { name: "Start without approvals" }));
+
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("sess-unreal"));
+		expect(h.post.mock.calls[0][1].body).toMatchObject({ harness: "unreal-agent", mode: "chat" });
+		expect(h.post.mock.calls[1][1].body).toMatchObject({
+			harness: "unreal-agent", mode: "chat", approvalMode: "bypass-permissions",
+		});
+	});
+
 	it("reports dirty then clears it on unmount", () => {
 		const onDirtyChange = vi.fn();
 		const { unmount } = render(

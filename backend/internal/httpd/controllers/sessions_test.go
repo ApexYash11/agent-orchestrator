@@ -1523,6 +1523,20 @@ func TestSessionsAPI_SpawnsStandaloneWorkerWithoutProjectID(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_SpawnsStandaloneUnrealChatWithApprovalMode(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
+		`{"kind":"worker","harness":"unreal-agent","mode":"chat","approvalMode":"bypass-permissions","prompt":"hello"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("spawn Unreal Chat = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.Harness != domain.HarnessUnreal || svc.lastSpawn.RequestedMode != domain.SessionModeChat || svc.lastSpawn.AgentConfig.Permissions != domain.PermissionModeBypassPermissions {
+		t.Fatalf("spawn config = %#v, want Unreal Chat with bypass permissions", svc.lastSpawn)
+	}
+}
+
 func TestSessionsAPI_SpawnsQwenChat(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
