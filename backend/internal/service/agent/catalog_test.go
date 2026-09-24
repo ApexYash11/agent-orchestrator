@@ -1497,7 +1497,7 @@ func TestModelsLeaderCancellationDoesNotCancelCoalescedLoad(t *testing.T) {
 	}
 }
 
-func TestModelsDoesNotResolveProjectWorkingDirectory(t *testing.T) {
+func TestModelsResolvesProjectWorkingDirectory(t *testing.T) {
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"proj-1": {ID: "proj-1", Path: "/work/project"},
 	}}
@@ -1508,12 +1508,12 @@ func TestModelsDoesNotResolveProjectWorkingDirectory(t *testing.T) {
 	if _, err := svc.Models(context.Background(), "codex", "proj-1", false); err != nil {
 		t.Fatal(err)
 	}
-	if projects.gotID != "" {
-		t.Fatalf("project lookup id = %q, want no project lookup", projects.gotID)
+	if projects.gotID != "proj-1" {
+		t.Fatalf("project lookup id = %q, want proj-1", projects.gotID)
 	}
 }
 
-func TestModelsDoesNotPassProjectEnvironmentToDiscovery(t *testing.T) {
+func TestModelsPassesProjectEnvironmentToDiscovery(t *testing.T) {
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"proj-1": {
 			ID:   "proj-1",
@@ -1536,8 +1536,32 @@ func TestModelsDoesNotPassProjectEnvironmentToDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Models) != 1 || discoverer.lastRequest.WorkingDir != "" || len(discoverer.lastRequest.Env) != 0 {
-		t.Fatalf("catalog=%#v request=%#v, want global discovery", got, discoverer.lastRequest)
+	if len(got.Models) != 1 || discoverer.lastRequest.WorkingDir != "/work/project" || discoverer.lastRequest.Env["OPENCODE_CONFIG"] != "/work/project/opencode.json" {
+		t.Fatalf("catalog=%#v request=%#v, want project discovery", got, discoverer.lastRequest)
+	}
+}
+
+func TestModelsCachesProjectScopesIndependently(t *testing.T) {
+	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
+		"proj-a": {ID: "proj-a", Path: "/work/a", Config: domain.ProjectConfig{Env: map[string]string{"ANTHROPIC_MODEL": "model-a"}}},
+		"proj-b": {ID: "proj-b", Path: "/work/b", Config: domain.ProjectConfig{Env: map[string]string{"ANTHROPIC_MODEL": "model-b"}}},
+	}}
+	cache := &fakeModelCache{}
+	discoverer := successfulModelDiscoverer()
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, projects, discoverer)
+
+	for _, projectID := range []string{"proj-a", "proj-b"} {
+		if _, err := svc.Models(context.Background(), "claude-code", projectID, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := discoverer.discoverCalls.Load(); got != 2 {
+		t.Fatalf("discoveries = %d, want one per project scope", got)
+	}
+	for _, projectID := range []string{"proj-a", "proj-b"} {
+		if _, ok, err := cache.GetAgentModelCatalog(context.Background(), "claude-code", projectID); err != nil || !ok {
+			t.Fatalf("cache scope %s = found %v err %v", projectID, ok, err)
+		}
 	}
 }
 
@@ -1723,6 +1747,120 @@ func TestModelsKeepsFullerCacheWhenRefreshReturnsPartialCatalog(t *testing.T) {
 	}
 }
 
+func TestClaudeModelsUsesMatchingProviderCache(t *testing.T) {
+	validatedAt := time.Now()
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1", Efforts: []string{"high"}}},
+		Source: "provider", FetchedAt: validatedAt, ValidatedAt: validatedAt,
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "same-fingerprint", CatalogJSON: string(data),
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "same-fingerprint",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+		},
+		err: errors.New("provider unavailable"),
+	}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discoverer.discoverCalls.Load() != 0 {
+		t.Fatalf("discovery calls = %d, want matching provider cache", discoverer.discoverCalls.Load())
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "us.anthropic.claude-opus-v1" || got.Stale {
+		t.Fatalf("catalog = %#v, want fresh provider cache", got)
+	}
+}
+
+func TestClaudeModelsRevalidationKeepsMatchingProviderCacheOnFailure(t *testing.T) {
+	validatedAt := time.Now().Add(-24 * time.Hour)
+	lastSuccessAt := validatedAt
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models:        []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1", Efforts: []string{"high"}}},
+		Source:        "provider",
+		FetchedAt:     validatedAt,
+		ValidatedAt:   validatedAt,
+		LastSuccessAt: &lastSuccessAt,
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "same-fingerprint", CatalogJSON: string(data),
+			LastSuccessAt: lastSuccessAt,
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "same-fingerprint",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+		},
+		err: errors.New("provider unavailable"),
+	}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
+
+	got, err := svc.RevalidateModels(context.Background(), "claude-code", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discoverer.discoverCalls.Load() != 1 {
+		t.Fatalf("discovery calls = %d, want provider revalidation", discoverer.discoverCalls.Load())
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "us.anthropic.claude-opus-v1" || !got.Stale {
+		t.Fatalf("catalog = %#v, want stale provider cache", got)
+	}
+}
+
+func TestClaudeModelsRejectProviderCacheWhenCredentialFingerprintChanges(t *testing.T) {
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1"}}, Source: "provider",
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "credential-a", CatalogJSON: string(data),
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "credential-b",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+		},
+		err: errors.New("provider unavailable"),
+	}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 2 || got.Models[0].ID != "sonnet" || got.Models[1].ID != "opus" || got.Source != "catalog" || !got.Stale {
+		t.Fatalf("catalog = %#v, want current-credential fallback", got)
+	}
+}
+
 func TestModelsUsesGlobalCacheWhenDiscoveryFails(t *testing.T) {
 	newer := cachedModelRecord(t, "cursor", "", time.Now().Add(-time.Hour), false)
 	var newerCatalog ports.AgentModelCatalog
@@ -1809,7 +1947,7 @@ func TestInvalidateAgentInstallationInvalidatesAdapterBinary(t *testing.T) {
 	}
 }
 
-func TestModelsFingerprintsTheSameGlobalInputsDiscoveryReads(t *testing.T) {
+func TestModelsFingerprintsTheSameProjectInputsDiscoveryReads(t *testing.T) {
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"proj-1": {
 			ID:     "proj-1",
@@ -1829,7 +1967,7 @@ func TestModelsFingerprintsTheSameGlobalInputsDiscoveryReads(t *testing.T) {
 	if _, err := svc.Models(context.Background(), "claude-code", "proj-1", false); err != nil {
 		t.Fatal(err)
 	}
-	// Fingerprinting and discovery must use the same global inputs.
+	// Fingerprinting and discovery must use the same project inputs.
 	fingerprinted := discoverer.lastFingerprintRequest.Load()
 	if fingerprinted == nil {
 		t.Fatal("catalog fingerprint was never requested")
@@ -1837,8 +1975,8 @@ func TestModelsFingerprintsTheSameGlobalInputsDiscoveryReads(t *testing.T) {
 	if !reflect.DeepEqual(*fingerprinted, discoverer.lastRequest) {
 		t.Fatalf("fingerprint request = %#v, want the discovery request %#v", *fingerprinted, discoverer.lastRequest)
 	}
-	if fingerprinted.WorkingDir != "" || len(fingerprinted.Env) != 0 {
-		t.Fatalf("fingerprint request = %#v, want project-independent inputs", *fingerprinted)
+	if fingerprinted.WorkingDir != "/work/project" || fingerprinted.Env["ANTHROPIC_MODEL"] != "opus" {
+		t.Fatalf("fingerprint request = %#v, want project inputs", *fingerprinted)
 	}
 }
 
