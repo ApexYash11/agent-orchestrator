@@ -160,6 +160,7 @@ export function TaskComposer({
 
 	const createCloudTask = useCallback(
 		async (input: CreateTaskInput): Promise<string> => {
+			if (input.attachments?.length) throw new Error(t("newTask.cloudAttachmentsUnsupported", { defaultValue: "File attachments are not supported for cloud tasks yet." }));
 			void captureRendererEvent("ao.renderer.task_create_requested", { project_id: input.projectId });
 			if (!cloudOrg?.id) throw new Error(t("newTask.unableToStart"));
 			try {
@@ -189,6 +190,7 @@ export function TaskComposer({
 			void captureRendererEvent("ao.renderer.task_create_requested", { project_id: input.projectId });
 			try {
 				const { data, error } = await apiClient.POST("/api/v1/orchestrators/delegate", {
+					headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 					body: {
 						projectId: input.projectId,
 						brief: input.brief,
@@ -236,6 +238,7 @@ export function TaskComposer({
 			void captureRendererEvent("ao.renderer.task_create_requested", { scope: "standalone" });
 			const displayName = input.brief.trim().slice(0, 100) || input.agent || "Standalone agent";
 			const { data, error } = await apiClient.POST("/api/v1/sessions", {
+				headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 				body: {
 					kind: "worker",
 					harness: input.agent as components["schemas"]["SpawnSessionRequest"]["harness"],

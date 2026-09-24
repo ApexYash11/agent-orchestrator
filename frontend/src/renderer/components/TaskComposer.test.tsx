@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
 	ensureTargetedReadiness: vi.fn(),
 	agentValues: [] as string[],
 	agentCatalog: undefined as { agents: ReturnType<typeof import("../test/agent-readiness-fixtures").agentReadiness>[] } | undefined,
+	cloudProjects: [] as Array<{ id: string; displayName: string; repositoryUrl: string; defaultBranch: string; config: Record<string, unknown> }>,
 }));
 
 vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
@@ -63,7 +64,7 @@ vi.mock("../lib/api-client", () => ({
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: h.capture }));
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({
-	useCloudProjectsQuery: () => ({ data: undefined }),
+	useCloudProjectsQuery: () => ({ data: h.cloudProjects }),
 	cloudProjectsQueryKey: ["cloud-projects"] as const,
 	useCloudSessionsQuery: () => ({ data: [] }),
 	cloudSessionsQueryKey: ["cloud-sessions"] as const,
@@ -76,6 +77,7 @@ vi.mock("../hooks/useCloudOrg", () => ({
 vi.mock("../hooks/useCloudCp", () => ({
 	useCloudCp: () => ({ client: undefined }),
 }));
+
 
 import { TaskComposer } from "./TaskComposer";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
@@ -119,6 +121,7 @@ afterEach(() => {
 	h.ensureReadiness.mockReset();
 	h.ensureTargetedReadiness.mockReset();
 	h.agentCatalog = undefined;
+	h.cloudProjects.length = 0;
 	vi.unstubAllGlobals();
 	h.agentValues.length = 0;
 	window.localStorage.removeItem("ao.taskComposer.preferences.v1");
@@ -901,9 +904,27 @@ describe("TaskComposer", () => {
 		const body = h.post.mock.calls[0][1].body as {
 			attachments?: Array<{ mimeType: string; data: string }>;
 		};
+		expect(h.post.mock.calls[0][1].headers).toEqual({ "X-AO-Attachment-Upload": "1" });
 		expect(body.attachments).toHaveLength(1);
 		expect(body.attachments?.[0].mimeType).toBe("text/plain");
 		expect(body.attachments?.[0].data.length).toBeGreaterThan(0);
+	});
+
+	it("rejects cloud task attachments instead of silently dropping them", async () => {
+		h.cloudProjects.push({ id: "cloud-1", displayName: "Cloud", repositoryUrl: "https://example.com/repo", defaultBranch: "main", config: {} });
+		const onCreated = vi.fn();
+		const { container } = render(<Wrap><TaskComposer projectId="cloud-1" onCreated={onCreated} /></Wrap>);
+		const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+		fireEvent.change(input, { target: { files: [new File(["notes"], "notes.txt", { type: "text/plain" })] } });
+		expect(await screen.findByText("notes.txt")).toBeInTheDocument();
+
+		fireEvent.change(task(), { target: { value: "Read the notes" } });
+		await waitForTaskReady();
+		fireEvent.click(startTask());
+
+		expect(await screen.findByRole("alert")).toHaveTextContent("File attachments are not supported for cloud tasks yet.");
+		expect(onCreated).not.toHaveBeenCalled();
+		expect(h.post).not.toHaveBeenCalled();
 	});
 
 	it("waits for a selected file read before submitting", async () => {
@@ -1016,6 +1037,7 @@ describe("TaskComposer", () => {
 		fireEvent.click(screen.getByText("Start task"));
 
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
+		expect(h.post.mock.calls[0][1].headers).toBeUndefined();
 		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("attachments");
 	});
 
