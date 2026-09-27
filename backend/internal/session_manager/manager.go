@@ -1374,8 +1374,15 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 	if cfg.EffortOverride {
 		resolved.Effort = requested.Effort
 	}
-	if cfg.Harness != domain.HarnessCodex && cfg.Harness != domain.HarnessClaudeCode {
+	if cfg.Harness != domain.HarnessCodex && cfg.Harness != domain.HarnessClaudeCode && cfg.Harness != domain.HarnessCommandCode {
 		resolved.Effort = ""
+		return resolved, nil
+	}
+	if cfg.Harness == domain.HarnessCommandCode {
+		// Command Code's `cmd --list-models` catalog advertises no per-model
+		// effort levels, so there is nothing to validate against: forward the
+		// raw level (empty keeps the adapter default) and let `cmd --effort`
+		// reject unknown values at launch.
 		return resolved, nil
 	}
 	modelID := strings.TrimSpace(resolved.Model)
@@ -4975,6 +4982,7 @@ func systemPromptFileRequired(harness domain.AgentHarness) bool {
 	case domain.HarnessAider,
 		domain.HarnessAgy,
 		domain.HarnessAuggie,
+		domain.HarnessCommandCode,
 		domain.HarnessKiro,
 		domain.HarnessOpenCode,
 		domain.HarnessCopilot,
