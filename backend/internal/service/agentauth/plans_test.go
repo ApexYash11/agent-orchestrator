@@ -51,6 +51,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		{"omp", "Log in to OMP", "omp", "Select Open login after OMP finishes starting", "https://github.com/can1357/oh-my-pi", "/login\r", ActionLogin, []string{"omp"}},
 		{"fx", "Log in to fx", "fx", "Select Vercel, Codex, or Grok in fx's native login flow", "https://fx.sh/docs", "", ActionLogin, []string{"fx", "login"}},
 		{"deepseek-harness", "Set up DeepSeek", "dsh", "Opens DeepSeek's Models page to store an API key and pick a model route; leave it running until the key is saved", "https://github.com/deepseek-ai/deepseek-harness", "", ActionSetup, []string{"dsh", "--profile", "web"}},
+		{"command-code", "Log in to Command Code", "cmd", "Native browser flow; an API key can be pasted in the terminal", "https://commandcode.ai/docs/quickstart", "", ActionLogin, []string{"cmd", "login"}},
 	}
 
 	svc := New(foundExecutables(cases), nil)
@@ -88,7 +89,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(data), "command") || strings.Contains(string(data), "terminalInput") || strings.Contains(string(data), "initialInput") {
+		if strings.Contains(string(data), `"command":`) || strings.Contains(string(data), `"terminalInput":`) || strings.Contains(string(data), `"initialInput":`) {
 			t.Fatalf("plan %q serialized trusted command data: %s", want.id, data)
 		}
 	}
