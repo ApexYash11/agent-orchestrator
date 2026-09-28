@@ -12,6 +12,7 @@ export const AGENT_OPTIONS = [
 	"crush",
 	"cursor",
 	"qwen",
+	"gemini",
 	"copilot",
 	"goose",
 	"auggie",
@@ -28,6 +29,7 @@ export const AGENT_OPTIONS = [
 	"prime-agent",
 	"autohand",
 	"omp",
+	"fx",
 	"unreal-agent",
 	"command-code",
 ] as const;
@@ -52,6 +54,7 @@ export const AGENT_LABELS: Record<AgentId, string> = {
 	crush: "Crush",
 	cursor: "Cursor",
 	qwen: "Qwen",
+ gemini: "Gemini CLI",
 	copilot: "GitHub Copilot",
 	goose: "Goose",
 	auggie: "Auggie",
@@ -68,6 +71,7 @@ export const AGENT_LABELS: Record<AgentId, string> = {
 	"prime-agent": "Prime Agent",
 	autohand: "Autohand",
 	omp: "OMP",
+	fx: "fx",
 	"unreal-agent": "Unreal Agent",
 	"command-code": "Command Code",
 };
