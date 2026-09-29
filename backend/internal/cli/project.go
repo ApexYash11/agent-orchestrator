@@ -310,13 +310,19 @@ func newProjectReposCommand(ctx *commandContext) *cobra.Command {
 
 // fetchProjectRepos loads one project and returns its registered workspace
 // children. Non-workspace projects are a runtime error (exit 1), not usage.
+// An empty kind is a legacy single-repo response, so it normalizes to
+// single_repo to match the list path and the backward-compatibility rule.
 func fetchProjectRepos(cmd *cobra.Command, ctx *commandContext, id string) (projectReposResult, error) {
 	var res projectGetResult
 	if err := ctx.getJSON(cmd.Context(), "projects/"+url.PathEscape(id), &res); err != nil {
 		return projectReposResult{}, err
 	}
-	if res.Project.Kind != "" && res.Project.Kind != "workspace" {
-		return projectReposResult{}, fmt.Errorf("project %s is not a workspace project (kind=%s)", res.Project.ID, res.Project.Kind)
+	kind := res.Project.Kind
+	if kind == "" {
+		kind = "single_repo"
+	}
+	if kind != "workspace" {
+		return projectReposResult{}, fmt.Errorf("project %s is not a workspace project (kind=%s)", res.Project.ID, kind)
 	}
 	repos := res.Project.WorkspaceRepos
 	if repos == nil {

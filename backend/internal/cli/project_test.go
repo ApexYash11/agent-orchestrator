@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 )
 
 type projectCapture struct {
@@ -512,6 +516,28 @@ func TestProjectRepos_NonWorkspace(t *testing.T) {
 	}
 }
 
+func TestProjectRepos_LegacyEmptyKindIsSingleRepo(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := projectServer(t, http.StatusOK, `{"status":"ok","project":{"id":"legacy","name":"Legacy","path":"/repo/legacy"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repos", "legacy")
+	if err == nil {
+		t.Fatal("expected non-workspace error for legacy response without kind")
+	}
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1", got)
+	}
+	if !strings.Contains(err.Error(), "not a workspace project") {
+		t.Fatalf("error = %v, want not-a-workspace", err)
+	}
+	if !strings.Contains(err.Error(), "single_repo") {
+		t.Fatalf("error = %v, want normalized single_repo kind", err)
+	}
+}
+
 func TestProjectRepos_TooManyArgs(t *testing.T) {
 	setConfigEnv(t)
 	_, _, err := executeCLI(t, Deps{}, "project", "repos", "a", "b")
@@ -567,5 +593,54 @@ func TestProjectGet_WorkspaceReposShowDefaultBranch(t *testing.T) {
 	}
 	if !strings.Contains(out, "api: api (https://example.com/api.git) [dev]") {
 		t.Fatalf("output missing bracketed default branch:\n%s", out)
+	}
+}
+
+// workspaceReposContractManager serves a real projectsvc.Project through the
+// real controllers/router so the hand-mirrored CLI DTOs are exercised against
+// the actual producer wire shape. A JSON-tag rename on either side empties
+// DefaultBranch here while the hand-written JSON tests above still pass.
+type workspaceReposContractManager struct {
+	fakeProjectManager
+}
+
+func (m *workspaceReposContractManager) Get(_ context.Context, id domain.ProjectID) (projectsvc.GetResult, error) {
+	project := projectsvc.Project{
+		ID:   id,
+		Name: "WS",
+		Kind: domain.ProjectKindWorkspace,
+		Path: "/ws",
+		WorkspaceRepos: []projectsvc.WorkspaceRepo{
+			{Name: "api", RelativePath: "api", Repo: "https://example.com/api.git", DefaultBranch: "dev", GitStatus: "ready"},
+		},
+	}
+	return projectsvc.GetResult{Status: "ok", Project: &project}, nil
+}
+
+func TestProjectRepos_WorkspaceDefaultBranchContract(t *testing.T) {
+	startDriftTestDaemon(t, &fakeSessionService{}, &workspaceReposContractManager{})
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repos", "ws", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var got projectReposResult
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode json output: %v\nout=%s", err, out)
+	}
+	if len(got.Repos) != 1 || got.Repos[0].DefaultBranch != "dev" {
+		t.Fatalf("contract repos = %#v, want one repo with defaultBranch dev", got)
+	}
+
+	textOut, textErrOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repos", "ws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, textErrOut)
+	}
+	if !strings.Contains(textOut, "dev") {
+		t.Fatalf("text output missing producer defaultBranch:\n%s", textOut)
 	}
 }
