@@ -24,6 +24,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/project"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
@@ -2464,6 +2465,312 @@ func TestManager_RemoveWorkspaceRepoDeleteFiles(t *testing.T) {
 	}
 	if _, err := m.RemoveWorkspaceRepo(ctx, "ws-rm-files", "cli", true); err != nil {
 		t.Fatalf("RemoveWorkspaceRepo delete-files: %v", err)
+	}
+	if _, err := os.Stat(child); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("child dir should be deleted, stat err = %v", err)
+	}
+}
+
+// newManagerOnStore builds a Manager over an isolated sqlite store and hands
+// the store back so tests can plant session rows the service only reads.
+func newManagerOnStore(t *testing.T) (project.Manager, *sqlite.Store) {
+	t.Helper()
+	t.Setenv("GIT_CEILING_DIRECTORIES", os.TempDir())
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return project.New(store), store
+}
+
+func gitHead(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v (%s)", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitStatusPorcelain(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v (%s)", err, out)
+	}
+	return string(out)
+}
+
+func repoNames(projects []project.WorkspaceRepo) []string {
+	names := make([]string, 0, len(projects))
+	for _, r := range projects {
+		names = append(names, r.Name)
+	}
+	return names
+}
+
+func createWorkspaceSession(t *testing.T, store *sqlite.Store, projectID string) domain.SessionRecord {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	rec, err := store.CreateSession(context.Background(), domain.SessionRecord{
+		ProjectID: domain.ProjectID(projectID),
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessClaudeCode,
+		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: now},
+		Metadata:  domain.SessionMetadata{Branch: "feat/x", WorkspacePath: "/ws"},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	return rec
+}
+
+func TestManager_AddWorkspaceRepoSamePathDifferentNameConflicts(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m := newManager(t)
+	parent := workspaceParentWithChild(t, m, "ws-add-alias")
+
+	child := gitRepoWithCommit(t, filepath.Join(parent, "cli"))
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-add-alias", project.AddWorkspaceRepoInput{Path: child}); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	// The same directory under a different --name must be the same stable
+	// 409 the name clash returns, not a 500 from the UNIQUE
+	// (project_id, relative_path) constraint.
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-add-alias", project.AddWorkspaceRepoInput{Path: child, Name: ptr("alias")}); err == nil {
+		t.Fatal("expected conflict for same path under a different name")
+	} else {
+		wantCode(t, err, "REPO_ALREADY_REGISTERED")
+	}
+	got, err := m.Get(ctx, "ws-add-alias")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if names := repoNames(got.Project.WorkspaceRepos); len(names) != 2 {
+		t.Fatalf("WorkspaceRepos = %v, want api + cli only", names)
+	}
+}
+
+func TestManager_AddWorkspaceRepoGitignoreFailureRollsBack(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m, store := newManagerOnStore(t)
+	parent := workspaceParentWithChild(t, m, "ws-add-rollback-ignore")
+	headBefore := gitHead(t, parent)
+
+	// A directory at the .gitignore path makes the ignore write fail after
+	// the registry row is already durable.
+	ignorePath := filepath.Join(parent, ".gitignore")
+	if err := os.Remove(ignorePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(ignorePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	child := gitRepoWithCommit(t, filepath.Join(parent, "cli"))
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-add-rollback-ignore", project.AddWorkspaceRepoInput{Path: child}); err == nil {
+		t.Fatal("expected gitignore failure")
+	} else {
+		wantCode(t, err, "WORKSPACE_PARENT_GITIGNORE_FAILED")
+	}
+	// The failed attach must leave nothing durable behind: no registry row
+	// and the parent commit untouched. The blocking directory is left alone —
+	// rollback must not delete a path it never owned.
+	repos, err := store.ListWorkspaceRepos(ctx, "ws-add-rollback-ignore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range repos {
+		if r.Name == "cli" {
+			t.Fatalf("repos = %#v, want cli rolled back", repos)
+		}
+	}
+	if head := gitHead(t, parent); head != headBefore {
+		t.Fatalf("HEAD = %s, want %s", head, headBefore)
+	}
+	if info, err := os.Lstat(ignorePath); err != nil || !info.IsDir() {
+		t.Fatalf(".gitignore dir disturbed: info=%v err=%v", info, err)
+	}
+}
+
+func TestManager_AddWorkspaceRepoCommitFailureRollsBack(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m, store := newManagerOnStore(t)
+	parent := workspaceParentWithChild(t, m, "ws-add-rollback-commit")
+	headBefore := gitHead(t, parent)
+	ignoreBefore, err := os.ReadFile(filepath.Join(parent, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Stage a gitlink in the parent index so the post-write guard inside the
+	// parent commit fails after the registry row and .gitignore are durable.
+	// The bogus path keeps the fixture independent of .gitignore contents.
+	apiSHA := gitHead(t, filepath.Join(parent, "api"))
+	if out, err := exec.Command("git", "-C", parent, "update-index", "--add", "--cacheinfo", "160000,"+apiSHA+",stale-link").CombinedOutput(); err != nil {
+		t.Fatalf("stage gitlink: %v (%s)", err, out)
+	}
+	child := gitRepoWithCommit(t, filepath.Join(parent, "cli"))
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-add-rollback-commit", project.AddWorkspaceRepoInput{Path: child}); err == nil {
+		t.Fatal("expected commit-guard failure")
+	} else {
+		wantCode(t, err, "WORKSPACE_PARENT_GITLINK")
+	}
+	repos, err := store.ListWorkspaceRepos(ctx, "ws-add-rollback-commit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range repos {
+		if r.Name == "cli" {
+			t.Fatalf("repos = %#v, want cli rolled back", repos)
+		}
+	}
+	if ignoreAfter, err := os.ReadFile(filepath.Join(parent, ".gitignore")); err != nil {
+		t.Fatal(err)
+	} else if string(ignoreAfter) != string(ignoreBefore) {
+		t.Fatalf(".gitignore = %q, want %q", ignoreAfter, ignoreBefore)
+	}
+	if head := gitHead(t, parent); head != headBefore {
+		t.Fatalf("HEAD = %s, want %s", head, headBefore)
+	}
+	if status := gitStatusPorcelain(t, parent); strings.Contains(status, ".gitignore") {
+		t.Fatalf("git status carries the failed attach:\n%s", status)
+	}
+}
+
+// failWorkspaceRepoListAfterStore fails the nth ListWorkspaceRepos call so
+// tests can break the read-model load at the end of an otherwise successful
+// attach.
+type failWorkspaceRepoListAfterStore struct {
+	project.Store
+	calls  int
+	failOn int
+}
+
+func (s *failWorkspaceRepoListAfterStore) ListWorkspaceRepos(ctx context.Context, projectID string) ([]domain.WorkspaceRepoRecord, error) {
+	s.calls++
+	if s.calls == s.failOn {
+		return nil, errors.New("forced workspace repo list failure")
+	}
+	return s.Store.ListWorkspaceRepos(ctx, projectID)
+}
+
+func TestManager_AddWorkspaceRepoReadFailureRollsBack(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	t.Setenv("GIT_CEILING_DIRECTORIES", os.TempDir())
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	// Add itself never lists repos; the attach then lists once for the
+	// duplicate preflight and once for the read-model load. Failing the
+	// second call breaks the tail of an otherwise successful attach.
+	m := project.NewWithDeps(project.Deps{Store: &failWorkspaceRepoListAfterStore{Store: store, failOn: 2}})
+	parent := workspaceParentWithChild(t, m, "ws-add-rollback-read")
+	headBefore := gitHead(t, parent)
+	ignoreBefore, err := os.ReadFile(filepath.Join(parent, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	child := gitRepoWithCommit(t, filepath.Join(parent, "cli"))
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-add-rollback-read", project.AddWorkspaceRepoInput{Path: child}); err == nil {
+		t.Fatal("expected read failure")
+	} else {
+		wantCode(t, err, "PROJECT_LOAD_FAILED")
+	}
+	// The .gitignore write and the parent commit both succeeded before the
+	// read failed, so rollback must undo all three: the row, the ignore
+	// bytes, and the commit it created.
+	repos, err := store.ListWorkspaceRepos(ctx, "ws-add-rollback-read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range repos {
+		if r.Name == "cli" {
+			t.Fatalf("repos = %#v, want cli rolled back", repos)
+		}
+	}
+	if ignoreAfter, err := os.ReadFile(filepath.Join(parent, ".gitignore")); err != nil {
+		t.Fatal(err)
+	} else if string(ignoreAfter) != string(ignoreBefore) {
+		t.Fatalf(".gitignore = %q, want %q", ignoreAfter, ignoreBefore)
+	}
+	if head := gitHead(t, parent); head != headBefore {
+		t.Fatalf("HEAD = %s, want %s", head, headBefore)
+	}
+	if status := gitStatusPorcelain(t, parent); strings.Contains(status, ".gitignore") {
+		t.Fatalf("git status carries the failed attach:\n%s", status)
+	}
+}
+
+func TestManager_RemoveWorkspaceRepoDeleteFilesRefusedWhileSessionsLive(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m, store := newManagerOnStore(t)
+	parent := workspaceParentWithChild(t, m, "ws-rm-guard")
+
+	child := gitRepoWithCommit(t, filepath.Join(parent, "cli"))
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-rm-guard", project.AddWorkspaceRepoInput{Path: child}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	// Materialize a live session holding a worktree row for the child, the
+	// way spawn records `git worktree add` checkouts.
+	sess := createWorkspaceSession(t, store, "ws-rm-guard")
+	if err := store.UpsertSessionWorktree(ctx, domain.SessionWorktreeRecord{
+		SessionID: sess.ID, RepoName: "cli", Branch: "ao/ws-rm-guard-1",
+		BaseSHA: "abc", WorktreePath: filepath.Join(t.TempDir(), "ws-rm-guard-1", "cli"),
+		State: "active",
+	}); err != nil {
+		t.Fatalf("plant worktree row: %v", err)
+	}
+	if _, err := m.RemoveWorkspaceRepo(ctx, "ws-rm-guard", "cli", true); err == nil {
+		t.Fatal("expected REPO_IN_USE for destructive detach with a live session")
+	} else {
+		wantCode(t, err, "REPO_IN_USE")
+	}
+	// The refusal must leave the registration and the files untouched...
+	if _, err := os.Stat(child); err != nil {
+		t.Fatalf("child dir should survive refused detach: %v", err)
+	}
+	got, err := m.Get(ctx, "ws-rm-guard")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	found := false
+	for _, r := range got.Project.WorkspaceRepos {
+		if r.Name == "cli" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("WorkspaceRepos = %#v, want cli still registered", got.Project.WorkspaceRepos)
+	}
+	// ...while registry-only detach stays available.
+	if _, err := m.RemoveWorkspaceRepo(ctx, "ws-rm-guard", "cli", false); err != nil {
+		t.Fatalf("registry-only detach: %v", err)
+	}
+	if _, err := os.Stat(child); err != nil {
+		t.Fatalf("child dir should survive registry-only detach: %v", err)
+	}
+	// A terminated session no longer guards the checkout: re-attach, end the
+	// session, and destructive detach must go through.
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-rm-guard", project.AddWorkspaceRepoInput{Path: child}); err != nil {
+		t.Fatalf("re-add: %v", err)
+	}
+	sess.IsTerminated = true
+	if err := store.UpdateSession(ctx, sess); err != nil {
+		t.Fatalf("terminate session: %v", err)
+	}
+	if _, err := m.RemoveWorkspaceRepo(ctx, "ws-rm-guard", "cli", true); err != nil {
+		t.Fatalf("destructive detach after session end: %v", err)
 	}
 	if _, err := os.Stat(child); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("child dir should be deleted, stat err = %v", err)

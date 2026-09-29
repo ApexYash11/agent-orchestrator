@@ -45,3 +45,9 @@ ORDER BY CASE WHEN repo_name = '__root__' THEN 0 ELSE 1 END, repo_name;
 
 -- name: DeleteSessionWorktrees :exec
 DELETE FROM session_worktrees WHERE session_id = ?;
+
+-- name: CountActiveSessionWorktreesForRepo :one
+SELECT COUNT(*)
+FROM session_worktrees w
+JOIN sessions s ON s.id = w.session_id
+WHERE s.project_id = ? AND w.repo_name = ? AND s.is_terminated = 0;

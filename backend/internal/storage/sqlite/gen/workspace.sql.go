@@ -12,6 +12,25 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+const countActiveSessionWorktreesForRepo = `-- name: CountActiveSessionWorktreesForRepo :one
+SELECT COUNT(*)
+FROM session_worktrees w
+JOIN sessions s ON s.id = w.session_id
+WHERE s.project_id = ? AND w.repo_name = ? AND s.is_terminated = 0
+`
+
+type CountActiveSessionWorktreesForRepoParams struct {
+	ProjectID *domain.ProjectID
+	RepoName  string
+}
+
+func (q *Queries) CountActiveSessionWorktreesForRepo(ctx context.Context, arg CountActiveSessionWorktreesForRepoParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countActiveSessionWorktreesForRepo, arg.ProjectID, arg.RepoName)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteSessionWorktrees = `-- name: DeleteSessionWorktrees :exec
 DELETE FROM session_worktrees WHERE session_id = ?
 `

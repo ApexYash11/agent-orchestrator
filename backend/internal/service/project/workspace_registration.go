@@ -255,7 +255,7 @@ func adoptWorkspaceParent(ctx context.Context, parent string, repos []domain.Wor
 	if err != nil {
 		return apierr.Invalid("WORKSPACE_PARENT_GITIGNORE_FAILED", "Failed to update workspace parent .gitignore", map[string]any{"error": err.Error()})
 	}
-	if err := commitWorkspaceGitignore(ctx, parent, changed); err != nil {
+	if _, err := commitWorkspaceGitignore(ctx, parent, changed); err != nil {
 		return err
 	}
 	if err := recordWorkspaceDefault(ctx, parent); err != nil {
@@ -268,25 +268,27 @@ func adoptWorkspaceParent(ctx context.Context, parent string, repos []domain.Wor
 // after it changed, or when the parent has no commit yet. It is shared by
 // full registration (adoptWorkspaceParent) and single-repo attach
 // (AddWorkspaceRepo) so both leave the parent ignoring the same child set.
-func commitWorkspaceGitignore(ctx context.Context, parent string, changed bool) error {
+// It reports whether it created a commit so attach can undo exactly that
+// commit when a later step fails.
+func commitWorkspaceGitignore(ctx context.Context, parent string, changed bool) (bool, error) {
 	needsCommit := changed
 	if !needsCommit {
 		_, headErr := gitOutput(ctx, parent, "rev-parse", "--verify", "HEAD")
 		needsCommit = headErr != nil
 	}
 	if !needsCommit {
-		return nil
+		return false, nil
 	}
 	if _, err := gitOutput(ctx, parent, "add", ".gitignore"); err != nil {
-		return apierr.Invalid("WORKSPACE_PARENT_GITIGNORE_FAILED", "Failed to stage workspace parent .gitignore", map[string]any{"error": err.Error()})
+		return false, apierr.Invalid("WORKSPACE_PARENT_GITIGNORE_FAILED", "Failed to stage workspace parent .gitignore", map[string]any{"error": err.Error()})
 	}
 	if err := guardNoGitlinks(ctx, parent); err != nil {
-		return err
+		return false, err
 	}
 	if _, err := gitOutput(ctx, parent, "-c", "user.name=Agent Orchestrator", "-c", "user.email=ao@example.com", "commit", "-m", "chore: configure AO workspace ignores", "--", ".gitignore"); err != nil {
-		return apierr.Invalid("WORKSPACE_PARENT_COMMIT_FAILED", "Failed to commit workspace parent .gitignore", map[string]any{"error": err.Error()})
+		return false, apierr.Invalid("WORKSPACE_PARENT_COMMIT_FAILED", "Failed to commit workspace parent .gitignore", map[string]any{"error": err.Error()})
 	}
-	return nil
+	return true, nil
 }
 
 func recordWorkspaceDefault(ctx context.Context, parent string) error {

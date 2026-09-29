@@ -18,6 +18,9 @@ type Store interface {
 	ListWorkspaceRepos(ctx context.Context, projectID string) ([]domain.WorkspaceRepoRecord, error)
 	UpsertWorkspaceRepo(ctx context.Context, repo domain.WorkspaceRepoRecord) error
 	DeleteWorkspaceRepo(ctx context.Context, projectID, name string) (bool, error)
+	// CountActiveSessionWorktreesForRepo reports how many live sessions of a
+	// project still hold a worktree row for the named child repo.
+	CountActiveSessionWorktreesForRepo(ctx context.Context, projectID, repoName string) (int64, error)
 	UpdateProjectSettings(ctx context.Context, id string, displayName string, config domain.ProjectConfig) (bool, error)
 	SetProjectPermissions(ctx context.Context, id string, permissions domain.PermissionMode) (domain.ProjectRecord, bool, error)
 	ArchiveProject(ctx context.Context, id string, at time.Time) (bool, error)

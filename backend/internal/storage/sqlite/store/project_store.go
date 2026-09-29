@@ -127,6 +127,22 @@ func (s *Store) DeleteWorkspaceRepo(ctx context.Context, projectID, name string)
 	return n > 0, nil
 }
 
+// CountActiveSessionWorktreesForRepo reports how many live (non-terminated)
+// sessions of a project still hold a worktree row for the named child repo.
+// Destructive repo detach consults it so deleting the shared checkout cannot
+// strand live session worktrees.
+func (s *Store) CountActiveSessionWorktreesForRepo(ctx context.Context, projectID, repoName string) (int64, error) {
+	pid := domain.ProjectID(projectID)
+	n, err := s.qr.CountActiveSessionWorktreesForRepo(ctx, gen.CountActiveSessionWorktreesForRepoParams{
+		ProjectID: &pid,
+		RepoName:  repoName,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count active session worktrees for %s/%s: %w", projectID, repoName, err)
+	}
+	return n, nil
+}
+
 func upsertProject(ctx context.Context, q *gen.Queries, r domain.ProjectRecord, config sql.NullString) error {
 	kind := r.Kind.WithDefault()
 	return q.UpsertProject(ctx, gen.UpsertProjectParams{
