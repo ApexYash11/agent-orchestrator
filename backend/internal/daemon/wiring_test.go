@@ -49,6 +49,7 @@ func TestReviewerAgentAuthUsesLaunchReadinessAndPreservesStrictStates(t *testing
 		want  ports.AgentAuthStatus
 	}{
 		{name: "authorized", state: domain.AgentAuthenticationAuthorized, want: ports.AgentAuthStatusAuthorized},
+		{name: "configured", state: domain.AgentAuthenticationConfigured, want: ports.AgentAuthStatusConfigured},
 		{name: "not applicable", state: domain.AgentAuthenticationNotApplicable, want: ports.AgentAuthStatusAuthorized},
 		{name: "unauthorized", state: domain.AgentAuthenticationUnauthorized, want: ports.AgentAuthStatusUnauthorized},
 		{name: "unknown", state: domain.AgentAuthenticationUnknown, want: ports.AgentAuthStatusUnknown},
@@ -186,6 +187,8 @@ func TestWiring_AgentResolverResolvesRealAdapters(t *testing.T) {
 		{domain.HarnessPi, "pi"},
 		{domain.HarnessPrimeAgent, "prime-agent"},
 		{domain.HarnessAutohand, "autohand"},
+		{domain.HarnessFX, "fx"},
+		{domain.HarnessUnreal, "unreal-agent"},
 	} {
 		agent, ok := resolver.Agent(tc.harness)
 		if !ok {
@@ -672,7 +675,7 @@ func TestWiring_StartLifecycleThreadsMessengerIntoLCM(t *testing.T) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	messenger := &captureMessenger{}
-	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
+	stack := startLifecycle(ctx, t.TempDir(), store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
 	t.Cleanup(stack.Stop)
 	t.Cleanup(cancel)
 
@@ -744,7 +747,7 @@ func TestWiring_MergeConflictNudgeReArmsAfterConflictClears(t *testing.T) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	messenger := &captureMessenger{}
-	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
+	stack := startLifecycle(ctx, t.TempDir(), store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
 	t.Cleanup(stack.Stop)
 	t.Cleanup(cancel)
 
@@ -921,6 +924,7 @@ func (f *fakeSessionLifecycle) RestoreAll(_ context.Context) error {
 }
 
 func (*fakeSessionLifecycle) WaitAgentSwitchWorkers(context.Context) error { return nil }
+func (*fakeSessionLifecycle) WaitBackgroundWorkers(context.Context) error  { return nil }
 
 func (f *fakeSessionLifecycle) SetShellTerminalCloser(sessionmanager.ShellTerminalCloser) {}
 func (f *fakeSessionLifecycle) SetTerminalInputGate(sessionmanager.TerminalInputGate)     {}
@@ -931,6 +935,20 @@ func (f *fakeSessionLifecycle) AcquireSessionInput(domain.SessionID) (func(), bo
 func (f *fakeSessionLifecycle) SessionMutationInProgress(domain.SessionID) bool         { return false }
 func (f *fakeSessionLifecycle) SetReviewerTerminator(sessionmanager.ReviewerTerminator) {}
 func (f *fakeSessionLifecycle) SetHarnessUseGate(sessionmanager.HarnessUseGate)         {}
+func (f *fakeSessionLifecycle) CodexAccountSwitchInProgress() bool                      { return false }
+func (f *fakeSessionLifecycle) StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error) {
+	return domain.CodexAccountSwitch{}, nil
+}
+func (f *fakeSessionLifecycle) RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error) {
+	return domain.CodexAccountSwitch{}, nil
+}
+func (f *fakeSessionLifecycle) GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error) {
+	return domain.CodexAccountSwitch{}, false, nil
+}
+func (f *fakeSessionLifecycle) SetCodexAccountSwitchObserver(func()) {}
+func (f *fakeSessionLifecycle) PersistChatModel(_ context.Context, _ domain.SessionID, _ string) error {
+	return nil
+}
 
 // TestWiring_SessionLifecycleInterfaceInvokedByDaemon asserts the
 // sessionLifecycle interface is satisfied by *sessionmanager.Manager (compile

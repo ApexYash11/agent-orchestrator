@@ -48,7 +48,7 @@ func (q *Queries) DeleteWorkspaceReposByProject(ctx context.Context, projectID d
 }
 
 const getSessionWorktree = `-- name: GetSessionWorktree :one
-SELECT session_id, repo_name, branch, base_sha, worktree_path, preserved_ref, state, base_ref
+SELECT session_id, repo_name, branch, base_sha, worktree_path, preserved_ref, state, base_ref, creation_sha
 FROM session_worktrees
 WHERE session_id = ? AND repo_name = ?
 `
@@ -70,12 +70,13 @@ func (q *Queries) GetSessionWorktree(ctx context.Context, arg GetSessionWorktree
 		&i.PreservedRef,
 		&i.State,
 		&i.BaseRef,
+		&i.CreationSha,
 	)
 	return i, err
 }
 
 const listSessionWorktrees = `-- name: ListSessionWorktrees :many
-SELECT session_id, repo_name, branch, base_sha, worktree_path, preserved_ref, state, base_ref
+SELECT session_id, repo_name, branch, base_sha, worktree_path, preserved_ref, state, base_ref, creation_sha
 FROM session_worktrees
 WHERE session_id = ?
 ORDER BY CASE WHEN repo_name = '__root__' THEN 0 ELSE 1 END, repo_name
@@ -99,6 +100,7 @@ func (q *Queries) ListSessionWorktrees(ctx context.Context, sessionID domain.Ses
 			&i.PreservedRef,
 			&i.State,
 			&i.BaseRef,
+			&i.CreationSha,
 		); err != nil {
 			return nil, err
 		}
@@ -162,12 +164,13 @@ func (q *Queries) ListWorkspaceRepos(ctx context.Context, projectID domain.Proje
 }
 
 const upsertSessionWorktree = `-- name: UpsertSessionWorktree :exec
-INSERT INTO session_worktrees (session_id, repo_name, branch, base_sha, base_ref, worktree_path, preserved_ref, state)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO session_worktrees (session_id, repo_name, branch, base_sha, base_ref, creation_sha, worktree_path, preserved_ref, state)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (session_id, repo_name) DO UPDATE SET
     branch = excluded.branch,
     base_sha = excluded.base_sha,
     base_ref = excluded.base_ref,
+    creation_sha = excluded.creation_sha,
     worktree_path = excluded.worktree_path,
     preserved_ref = excluded.preserved_ref,
     state = excluded.state
@@ -179,6 +182,7 @@ type UpsertSessionWorktreeParams struct {
 	Branch       string
 	BaseSha      string
 	BaseRef      string
+	CreationSha  string
 	WorktreePath string
 	PreservedRef string
 	State        string
@@ -191,6 +195,7 @@ func (q *Queries) UpsertSessionWorktree(ctx context.Context, arg UpsertSessionWo
 		arg.Branch,
 		arg.BaseSha,
 		arg.BaseRef,
+		arg.CreationSha,
 		arg.WorktreePath,
 		arg.PreservedRef,
 		arg.State,

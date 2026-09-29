@@ -115,7 +115,7 @@ export default function MobileSessionRoute() {
 		case "loading":
 			return (
 				<View style={styles.center}>
-					<ActivityIndicator color={t.blue} />
+					<ActivityIndicator color={t.accent} />
 				</View>
 			);
 		case "unpaired":
@@ -144,13 +144,22 @@ export default function MobileSessionRoute() {
 		case "ended":
 			return (
 				<View style={styles.center}>
-					<EmptyState icon="archive" title="This session has ended" />
+					<EmptyState
+						icon="archive"
+						title="This session has ended"
+						action={<Button title="Open board" icon="activity" variant="ghost" onPress={() => router.navigate("/")} />}
+					/>
 				</View>
 			);
 		case "missing":
 			return (
 				<View style={styles.center}>
-					<EmptyState icon="search" title="Session not found" />
+					<EmptyState
+						icon="search"
+						title="Session not found"
+						message="It may have been deleted on your desktop."
+						action={<Button title="Open board" icon="activity" variant="ghost" onPress={() => router.navigate("/")} />}
+					/>
 				</View>
 			);
 		case "failed":

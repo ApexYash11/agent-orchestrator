@@ -34,6 +34,16 @@ func TestSpawnHelpListsPrimeAgentHarness(t *testing.T) {
 	}
 }
 
+func TestSpawnHelpListsFXHarness(t *testing.T) {
+	out, _, err := executeCLI(t, Deps{}, "spawn", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, ", fx,") {
+		t.Fatalf("spawn help does not list fx:\n%s", out)
+	}
+}
+
 // TestSpawnCommand_MissingProjectContext asserts `ao spawn` gives a project
 // setup hint when neither --project, AO_PROJECT_ID, nor cwd can resolve one.
 func TestSpawnCommand_MissingProjectContext(t *testing.T) {
@@ -266,11 +276,11 @@ func TestSpawnCommand_RequiresName(t *testing.T) {
 }
 
 // TestSpawnCommand_RejectsOverlongName asserts `ao spawn` rejects a --name
-// longer than 20 characters without contacting the daemon.
+// longer than 100 characters without contacting the daemon.
 func TestSpawnCommand_RejectsOverlongName(t *testing.T) {
-	_, _, err := executeCLI(t, Deps{}, "spawn", "--project", "demo", "--name", strings.Repeat("x", 21))
-	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "20 characters or fewer") {
-		t.Fatalf("err=%v exit=%d, want 20 characters or fewer", err, ExitCode(err))
+	_, _, err := executeCLI(t, Deps{}, "spawn", "--project", "demo", "--name", strings.Repeat("x", 101))
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "100 characters or fewer") {
+		t.Fatalf("err=%v exit=%d, want 100 characters or fewer", err, ExitCode(err))
 	}
 }
 
