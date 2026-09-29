@@ -107,7 +107,6 @@ func newTestServerWithStore(t *testing.T) (*httptest.Server, *sqlite.Store) {
 	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
 
 		Projects: projectsvc.New(store),
-
 	}, httpd.ControlDeps{}))
 
 	t.Cleanup(srv.Close)

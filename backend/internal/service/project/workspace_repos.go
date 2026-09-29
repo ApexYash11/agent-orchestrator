@@ -135,9 +135,9 @@ func snapshotWorkspaceAttachState(ctx context.Context, parent string) workspaceA
 		}
 	case errors.Is(err, os.ErrNotExist):
 		snap.gitignoreMissing = true
-	// Any other read error (a directory at the path, permissions) leaves both
-	// flags false: the failed step wrote nothing, so rollback must not touch
-	// the path either.
+		// Any other read error (a directory at the path, permissions) leaves both
+		// flags false: the failed step wrote nothing, so rollback must not touch
+		// the path either.
 	}
 	if head, err := gitOutput(ctx, parent, "rev-parse", "HEAD"); err == nil {
 		snap.head = strings.TrimSpace(head)
