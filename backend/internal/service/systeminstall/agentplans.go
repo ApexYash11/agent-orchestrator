@@ -12,6 +12,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetCodex:       "https://github.com/openai/codex",
 	TargetCursor:      "https://docs.cursor.com/en/cli/installation",
 	TargetOpencode:    "https://github.com/anomalyco/opencode",
+	TargetOpencodeV2:  "https://opencode.ai/v2/docs",
 	TargetAider:       "https://aider.chat/docs/install.html",
 	TargetCopilot:     "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
 	TargetGrok:        "https://docs.x.ai/build/overview",
@@ -21,7 +22,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetAuggie:      "https://docs.augmentcode.com/cli/overview",
 	TargetDroid:       "https://docs.factory.ai/droid-cli/cli-reference",
 	TargetCrush:       "https://github.com/charmbracelet/crush",
-	TargetCline:       "https://github.com/cline/cline",
+	TargetCline:       "https://cline/cline",
 	TargetGoose:       "https://goose-docs.ai/docs/getting-started/installation/",
 	TargetQwen:        "https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/",
 	TargetGemini:      "https://geminicli.com/docs/get-started/installation/",
@@ -38,6 +39,8 @@ var agentDocumentationURLs = map[Target]string{
 	TargetOMP:         "https://github.com/can1357/oh-my-pi",
 	TargetFX:          "https://fx.sh/docs",
 	TargetUnreal:      "https://github.com/unreallabsai/unreal-agent",
+	TargetMiMoCode:    "https://github.com/XiaomiMiMo/MiMo-Code",
+	TargetDeepSeek:    "https://github.com/deepseek-ai/deepseek-harness",
 	TargetCommandCode: "https://commandcode.ai/docs/quickstart",
 }
 
@@ -68,6 +71,15 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 			plans = []Plan{s.planNPM(target, "opencode-ai@latest"), s.planShellInstaller(target, "https://opencode.ai/install", "bash")}
 		default:
 			plans = []Plan{s.planNPM(target, "opencode-ai@latest")}
+		}
+	case TargetOpencodeV2:
+		switch s.goos {
+		case "darwin":
+			plans = []Plan{s.planBrew(target, "anomalyco/tap/opencode-v2"), s.planNPM(target, "@opencode/cli"), s.planShellInstaller(target, "https://opencode.ai/v2/install", "bash")}
+		case "linux":
+			plans = []Plan{s.planNPM(target, "@opencode/cli"), s.planShellInstaller(target, "https://opencode.ai/v2/install", "bash")}
+		default:
+			plans = []Plan{s.planNPM(target, "@opencode/cli")}
 		}
 	case TargetCopilot:
 		switch s.goos {
@@ -219,6 +231,12 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 			Target: target, Unsupported: true, Method: "manual",
 			Reason: "Unreal Agent is built into AO; update AO to update the harness.",
 		}}
+	case TargetMiMoCode:
+		plans = []Plan{s.planNPM(target, "@mimo-ai/cli")}
+	case TargetDeepSeek:
+		// DeepSeek Harness ships as one Node CLI that boots every profile
+		// (headless, ACP, web) from the same install, so npm is the only method.
+		plans = []Plan{s.planNPM(target, "@deepseek-ai/dsh")}
 	case TargetCommandCode:
 		plans = []Plan{s.planNPM(target, "command-code")}
 	default:
@@ -226,6 +244,7 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 	}
 	for index := range plans {
 		plans[index].DocsURL = agentDocumentationURLs[target]
+		plans[index].Notice = installNotice(target)
 		plans[index] = s.planForOperation(plans[index], operation)
 	}
 	return plans
