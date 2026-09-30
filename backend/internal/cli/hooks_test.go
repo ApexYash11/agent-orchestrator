@@ -1169,7 +1169,16 @@ func TestHooks_MuseUserPromptReportsActive(t *testing.T) {
 }
 
 func TestHooks_RegisteredHarnessSessionStartReportsAgentSessionID(t *testing.T) {
-	for _, agent := range []string{"opencode", "qwen", "gemini", "kimi", "kilocode", "goose", "command-code"} {
+	// Command Code is the one harness here whose SessionStart carries metadata
+	// only: it also fires on resume and clear, and a native restore delivers no
+	// prompt, so reporting it as active would strand a restored session at an
+	// empty prompt reading as working. It must still report the native id.
+	sessionStartState := map[string]string{
+		"opencode": "active", "qwen": "active", "gemini": "active",
+		"kimi": "active", "kilocode": "active", "goose": "active",
+		"command-code": "",
+	}
+	for agent, wantState := range sessionStartState {
 		t.Run(agent, func(t *testing.T) {
 			t.Setenv("AO_SESSION_ID", "ao-7")
 			cfg := setConfigEnv(t)
@@ -1190,7 +1199,7 @@ func TestHooks_RegisteredHarnessSessionStartReportsAgentSessionID(t *testing.T) 
 			if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
 				t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
 			}
-			want := setActivityAPIRequest{State: "active", Event: "session-start", AgentSessionID: agent + "-native-1"}
+			want := setActivityAPIRequest{State: wantState, Event: "session-start", AgentSessionID: agent + "-native-1"}
 			assertActivityRequest(t, req, want)
 		})
 	}
@@ -1265,7 +1274,9 @@ func TestHooks_CommandCodeSessionStartInjectsSystemPromptContext(t *testing.T) {
 	if err := json.Unmarshal([]byte(capture.body), &request); err != nil {
 		t.Fatalf("decode activity request: %v\n%s", err, capture.body)
 	}
-	want := setActivityAPIRequest{State: "active", Event: "session-start", AgentSessionID: "command-code-native-1"}
+	// Context injection is the reason SessionStart runs at all; the activity
+	// report stays metadata-only for Command Code.
+	want := setActivityAPIRequest{Event: "session-start", AgentSessionID: "command-code-native-1"}
 	assertActivityRequest(t, request, want)
 }
 
