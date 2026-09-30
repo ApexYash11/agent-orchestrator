@@ -22,7 +22,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetAuggie:      "https://docs.augmentcode.com/cli/overview",
 	TargetDroid:       "https://docs.factory.ai/droid-cli/cli-reference",
 	TargetCrush:       "https://github.com/charmbracelet/crush",
-	TargetCline:       "https://cline/cline",
+	TargetCline:       "https://github.com/cline/cline",
 	TargetGoose:       "https://goose-docs.ai/docs/getting-started/installation/",
 	TargetQwen:        "https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/",
 	TargetGemini:      "https://geminicli.com/docs/get-started/installation/",

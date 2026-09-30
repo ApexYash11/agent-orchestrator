@@ -97,7 +97,6 @@ func TestCommandCodeDispatchesAvailableLifecycleSignals(t *testing.T) {
 		event string
 		want  domain.ActivityState
 	}{
-		{event: "session-start", want: domain.ActivityActive},
 		{event: "pre-tool-use", want: domain.ActivityActive},
 		{event: "post-tool-use", want: domain.ActivityActive},
 		{event: "stop", want: domain.ActivityIdle},
@@ -108,6 +107,16 @@ func TestCommandCodeDispatchesAvailableLifecycleSignals(t *testing.T) {
 				t.Fatalf("Derive(command-code, %q) = (%q, %v), want (%q, true)", tc.event, got, ok, tc.want)
 			}
 		})
+	}
+}
+
+// SessionStart fires on resume and clear as well as startup, and a native
+// restore delivers no prompt, so it must report no activity. A restored session
+// at an empty prompt would otherwise read as working until the user's next turn.
+func TestCommandCodeSessionStartCarriesMetadataOnly(t *testing.T) {
+	got, ok := Derive("command-code", "session-start", []byte(`{"session_id":"native-1"}`))
+	if ok {
+		t.Fatalf("Derive(command-code, session-start) = (%q, true), want no activity signal", got)
 	}
 }
 
