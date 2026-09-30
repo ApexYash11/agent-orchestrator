@@ -12009,6 +12009,11 @@ components:
           items:
             $ref: '#/components/schemas/WorkspaceCommitSummary'
           type: array
+        commitsTruncated:
+          description: 'True when older commits were left out of commits: the list
+            keeps the newest 250, and stops at the last commit whose changes fit the
+            daemon''s size cap.'
+          type: boolean
         files:
           items:
             $ref: '#/components/schemas/WorkspaceFileSummary'
@@ -12117,6 +12122,11 @@ components:
           items:
             $ref: '#/components/schemas/WorkspaceCommitSummary'
           type: array
+        commitsTruncated:
+          description: 'True when older commits were left out of commits: the list
+            keeps the newest 250, and stops at the last commit whose changes fit the
+            daemon''s size cap.'
+          type: boolean
         compareBaseRef:
           type: string
         compareBaseSha:

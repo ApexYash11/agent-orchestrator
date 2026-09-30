@@ -512,8 +512,9 @@ type ListWorkspaceFilesResponse struct {
 	// (multi-repo) and scratch sessions.
 	Sections WorkspaceFileSections `json:"sections"`
 	// Commits are the commits between the compare base and HEAD, newest first.
-	Commits []WorkspaceCommitSummary `json:"commits"`
-	Summary WorkspaceSummary         `json:"summary"`
+	Commits          []WorkspaceCommitSummary `json:"commits"`
+	CommitsTruncated bool                     `json:"commitsTruncated,omitempty" description:"True when older commits were left out of commits: the list keeps the newest 250, and stops at the last commit whose changes fit the daemon's size cap."`
+	Summary          WorkspaceSummary         `json:"summary"`
 	// Degraded indicates that the primary file list is available but optional
 	// Git-state enrichment failed and can be retried.
 	Degraded     bool   `json:"degraded"`
@@ -530,9 +531,10 @@ type ListPRFilesResponse struct {
 	Files     []WorkspaceFileSummary `json:"files"`
 	// Commits are the pull request's own commits (base..head), newest first.
 	// File sizes are not read for commit files.
-	Commits   []WorkspaceCommitSummary `json:"commits"`
-	Truncated bool                     `json:"truncated"`
-	Summary   WorkspaceSummary         `json:"summary"`
+	Commits          []WorkspaceCommitSummary `json:"commits"`
+	CommitsTruncated bool                     `json:"commitsTruncated,omitempty" description:"True when older commits were left out of commits: the list keeps the newest 250, and stops at the last commit whose changes fit the daemon's size cap."`
+	Truncated        bool                     `json:"truncated"`
+	Summary          WorkspaceSummary         `json:"summary"`
 }
 
 // WorkspaceFileSections groups a session workspace's changed files by git
