@@ -84,8 +84,38 @@ in AO-owned storage under `~/.ao` and AO does not modify the project's
 
 ## Chat Mode
 
-Not supported. Command Code has no ACP or app-server transport, so it is
-Terminal UI-only and is not advertised as a Chat harness.
+**Supported** since Command Code v1.74.0, which ships a first-party ACP agent.
+
+AO launches `cmd acp` and speaks the Agent Client Protocol over stdio. Verified
+by a live handshake against v1.74.0 on 2026-10-02:
+
+```text
+protocolVersion 1
+loadSession      true                  -> resume works
+promptCapabilities{image: true, embeddedContext: true}
+mcpCapabilities  {http: true}
+sessionCapabilities{list: {}, resume: {}, close: {}}
+```
+
+`session/new` advertises five modes and two live config options:
+
+| AO permission mode | Command Code mode id        |
+| ------------------ | --------------------------- |
+| default            | `default`                   |
+| accept-edits       | `auto-accept`               |
+| auto               | `auto-accept`               |
+| bypass-permissions | `bypass`                    |
+
+The model picker and effort control come from the provider's own catalog
+(`model`, with 85 entries at the time of writing, and `effort` in category
+`thought_level`), so AO keeps no hardcoded model list. Command Code also
+advertises the `plan` and `dont-ask` modes, which have no AO equivalent and are
+reachable only through Command Code's own UI.
+
+The Chat binding lives in
+`backend/internal/adapters/chatdriver/commandcodeacp/` and is registered in
+`chatdriver/registry`, which is what makes the TUI ⇄ Chat toggle appear for this
+harness.
 
 ## Restore
 
