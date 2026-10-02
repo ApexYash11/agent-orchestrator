@@ -1044,3 +1044,20 @@ func TestSpawnEffortFlagWiring(t *testing.T) {
 		t.Fatalf("spawn request effort = %q, want high", req.Effort)
 	}
 }
+
+// TestSpawnEffortFlagRejectsUnsupportedHarness asserts `ao spawn --effort`
+// fails loudly for harnesses that cannot honor it instead of silently
+// discarding the override.
+func TestSpawnEffortFlagRejectsUnsupportedHarness(t *testing.T) {
+	for _, agent := range []string{"gemini", "aider", "amp"} {
+		t.Run(agent, func(t *testing.T) {
+			_, _, err := executeCLI(t, Deps{}, "spawn", "--standalone", "--agent", agent, "--name", "Worker", "--effort", "high")
+			if err == nil || ExitCode(err) != 2 {
+				t.Fatalf("err=%v exit=%d, want usage error", err, ExitCode(err))
+			}
+			if !strings.Contains(err.Error(), "--effort is only supported for codex and claude-code agents") {
+				t.Fatalf("err=%v, want --effort support hint", err)
+			}
+		})
+	}
+}

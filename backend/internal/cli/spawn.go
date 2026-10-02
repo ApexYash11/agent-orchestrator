@@ -133,6 +133,9 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				return err
 			}
 			opts.harness = harness
+			if strings.TrimSpace(opts.effort) != "" && harness != "codex" && harness != "claude-code" {
+				return usageError{fmt.Errorf("--effort is only supported for codex and claude-code agents")}
+			}
 
 			if isScratchProject(project) {
 				if strings.TrimSpace(opts.branch) != "" {
