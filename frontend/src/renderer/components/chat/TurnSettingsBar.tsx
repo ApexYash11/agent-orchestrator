@@ -159,9 +159,11 @@ export function TurnSettingsBar({
 		? displayModels.find((model) => model.id === reroute.toModel)?.displayName ?? reroute.toModel
 		: undefined;
 	const modelLabel = rerouted ?? chosenLabel;
-	const efforts = (selected ?? fallback)?.efforts ?? [];
-	const effortLabel =
+	const availableEfforts = (selected ?? fallback)?.efforts ?? [];
+	const efforts = availableEfforts.filter((effort) => effort.toLowerCase() !== "default");
+	const selectedEffort =
 		settings.reasoningEffort ?? (selected ?? fallback)?.defaultEffort ?? undefined;
+	const effortLabel = selectedEffort === "default" ? undefined : selectedEffort;
 	const approvalCopy = harness === "codex" ? CODEX_APPROVAL_COPY : APPROVAL_COPY;
 	const approvalOrder = harness === "codex" ? CODEX_APPROVAL_ORDER : APPROVAL_ORDER;
 	const approvalLabel = approvalCopy[settings.approvalMode ?? "default"].label;
@@ -215,7 +217,7 @@ export function TurnSettingsBar({
 				<div className="flex h-7 min-w-0 flex-wrap items-center gap-0.5">
 					{nativeModelMenu && onChange ? (
 						<ModelEffortPicker
-							models={displayModels}
+							models={harness === "claude-code" ? displayModels.filter((model) => model.id !== "default") : displayModels}
 							settings={settings}
 							onChange={onChange}
 							disabled={optionDisabled}
@@ -912,7 +914,11 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 	let executionMode: ChatConfigOption | undefined;
 	let mode: ChatConfigOption | undefined;
 	for (const rawOption of options) {
-		const option = rawOption.type === "select" ? resolveImplicitChoice(rawOption) : rawOption;
+		const option = rawOption.type === "select"
+			? isEffortOption(rawOption)
+				? withChoices(rawOption, rawOption.choices.filter((choice) => !isDefaultEffortChoice(choice)))
+				: resolveImplicitChoice(rawOption)
+			: rawOption;
 		if (option.type === "select" && option.choices.length === 0) continue;
 		if (isAgentOption(option)) continue;
 		if (isModelOption(option)) {
@@ -949,6 +955,13 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 	return { model: [...primaryModel, ...otherModel], effort, executionMode, toggles, mode, extra };
 }
 
+function isDefaultEffortChoice(choice: ChatConfigOption["choices"][number]): boolean {
+	const name = choice.name.trim().toLowerCase();
+	const value = choice.value.trim().toLowerCase();
+	return ["default", "provider default", "agent default", "model default", "use agent effort", "use provider effort", "use model effort"].includes(name)
+		|| ["default", "inherit", "provider-default", "agent-default", "model-default"].includes(value);
+}
+
 // ACP may expose a provider-owned choice whose description names a concrete
 // option. Keep its wire value so users can return to following the provider.
 function resolveImplicitChoice(option: ChatConfigOption): ChatConfigOption {
@@ -970,7 +983,7 @@ function resolveImplicitChoice(option: ChatConfigOption): ChatConfigOption {
 	const concrete = mapped.choices.find((choice) =>
 		choice.value !== implicit.value && choice.name.toLowerCase() === implicit.description?.trim().toLowerCase(),
 	);
-	const followLabel = isModelOption(mapped) ? "Use agent model" : isEffortOption(mapped) ? "Use agent effort" : "Use agent setting";
+	const followLabel = isModelOption(mapped) ? "Use agent model" : "Use agent setting";
 	if (concrete && mapped.currentValue !== concrete.value) {
 		const label = isDefaultPlaceholderLabel(concrete.name) ? concrete.value : concrete.name;
 		return {
