@@ -180,7 +180,7 @@ var shippedMigrations = map[int64]string{
 	174: "0174_conversation_account_cdc.sql",
 	175: "0175_codex_subagent_activity.sql",
 	176: "0176_claude_subagent_activity.sql",
-	177: "0177_allow_command_code_harness.sql",
+	178: "0178_allow_command_code_harness.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
