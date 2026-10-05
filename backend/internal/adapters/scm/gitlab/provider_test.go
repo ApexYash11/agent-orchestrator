@@ -1044,7 +1044,10 @@ func TestMergeabilityFromMR(t *testing.T) {
 // a CI/review/draft blocker forces MergeBlocked, the observation must carry
 // ConflictsCleared so lifecycle re-arms the merge-conflict nudge dedup. Statuses
 // where GitLab has not positively ruled conflicts out (conflict/unknown/
-// need_rebase) leave it false.
+// need_rebase) leave it false. Computed non-conflict statuses such as
+// ci_still_running and not_approved also rule conflicts out: a rebase
+// typically resets approvals or restarts CI, so the rebased MR lands exactly in
+// one of those branches while clean.
 func TestMergeabilityFromMR_ClearsConflictsWhenMRMergeable(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -1058,6 +1061,14 @@ func TestMergeabilityFromMR_ClearsConflictsWhenMRMergeable(t *testing.T) {
 		{"mergeable but review required", &restMR{DetailedMergeStatus: "mergeable"}, "passing", "review_required", true},
 		{"mergeable but draft", &restMR{DetailedMergeStatus: "mergeable", Draft: true}, "passing", "approved", true},
 		{"legacy can_be_merged", &restMR{MergeStatus: "can_be_merged"}, "passing", "approved", true},
+		{"ci still running after rebase", &restMR{DetailedMergeStatus: "ci_still_running"}, "passing", "approved", true},
+		{"ci must pass", &restMR{DetailedMergeStatus: "ci_must_pass"}, "passing", "approved", true},
+		{"not approved after rebase reset approvals", &restMR{DetailedMergeStatus: "not_approved"}, "passing", "review_required", true},
+		{"requested changes", &restMR{DetailedMergeStatus: "requested_changes"}, "passing", "changes_requested", true},
+		{"draft status", &restMR{DetailedMergeStatus: "draft_status", Draft: true}, "passing", "approved", true},
+		{"discussions not resolved", &restMR{DetailedMergeStatus: "discussions_not_resolved"}, "passing", "approved", true},
+		{"provider blocked set", &restMR{DetailedMergeStatus: "locked_paths"}, "passing", "approved", true},
+		{"unknown future status is not proof", &restMR{DetailedMergeStatus: "some_future_status"}, "passing", "approved", false},
 		{"conflict", &restMR{DetailedMergeStatus: "conflict"}, "passing", "approved", false},
 		{"checking", &restMR{DetailedMergeStatus: "checking"}, "passing", "approved", false},
 		{"need_rebase", &restMR{DetailedMergeStatus: "need_rebase"}, "passing", "approved", false},

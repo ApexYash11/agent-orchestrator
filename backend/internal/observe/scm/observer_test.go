@@ -3485,7 +3485,11 @@ func TestMergeabilityFromProviderFacts_UnstableOutranksBlockers(t *testing.T) {
 // projection for #6104: the cleared-conflict fact must be recorded when the
 // provider's own rollup ruled conflicts out, even if a policy/CI/draft/review
 // blocker forces the derived state to blocked, and must stay false whenever the
-// provider has not computed mergeability.
+// provider has not computed mergeability. The GitLab-shaped rows matter because
+// the GitLab adapter persists its legacy merge_status vocabulary in
+// ProviderMergeable (can_be_merged) and surfaces mergeable via
+// ProviderMergeStateStatus: the replay path must agree with the live
+// mergeabilityFromMR path or the review-refresh lane swallows the re-arm.
 func TestMergeabilityFromProviderFacts_ClearsConflicts(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -3498,6 +3502,9 @@ func TestMergeabilityFromProviderFacts_ClearsConflicts(t *testing.T) {
 		{"mergeable and clean", "MERGEABLE", "CLEAN", string(domain.CIPassing), string(domain.ReviewApproved), false, true},
 		{"mergeable but blocked by required review", "MERGEABLE", "BLOCKED", string(domain.CIPassing), string(domain.ReviewRequired), false, true},
 		{"mergeable but draft", "MERGEABLE", "CLEAN", string(domain.CIPassing), string(domain.ReviewApproved), true, true},
+		{"gitlab legacy can_be_merged", "can_be_merged", "", string(domain.CIPassing), string(domain.ReviewApproved), false, true},
+		{"gitlab legacy can_be_merged blocked by review", "can_be_merged", "", string(domain.CIPassing), string(domain.ReviewRequired), false, true},
+		{"gitlab mergeable merge-state status", "", "mergeable", string(domain.CIPassing), string(domain.ReviewRequired), false, true},
 		{"conflicting", "CONFLICTING", "DIRTY", string(domain.CIPassing), string(domain.ReviewApproved), false, false},
 		{"unknown rollup", "UNKNOWN", "UNKNOWN", string(domain.CIPassing), string(domain.ReviewApproved), false, false},
 		{"blocked with unknown rollup", "UNKNOWN", "BLOCKED", string(domain.CIPassing), string(domain.ReviewRequired), false, false},

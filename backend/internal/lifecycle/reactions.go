@@ -443,7 +443,9 @@ func mergeConflictKey(prURL string) string { return "merge-conflict:" + prURL }
 // covered out of band by PRObservation.ConflictsCleared, which the caller ORs in
 // (#6104): that is the case of a provider that reported no conflicts while
 // branch protection still blocks the merge (GitHub mergeable=MERGEABLE +
-// mergeStateStatus=BLOCKED, awaiting a required review).
+// mergeStateStatus=BLOCKED, or GitLab detailed_merge_status=not_approved /
+// ci_still_running after a rebase reset approvals or restarted CI, awaiting a
+// required review or a fresh pipeline).
 func mergeabilityClearsConflict(state domain.Mergeability) bool {
 	return state == domain.MergeMergeable || state == domain.MergeUnstable
 }

@@ -1936,8 +1936,12 @@ func mergeabilityFromProviderFacts(providerMergeable, providerMergeState, ci, re
 	// even when a policy/CI/draft/review blocker forces the derived state to
 	// `blocked`, so lifecycle can re-arm the merge-conflict nudge dedup (#6104).
 	// The provider only reports MERGEABLE once it has computed mergeability, so
-	// an UNKNOWN rollup never sets this.
-	out.ConflictsCleared = mergeable == "MERGEABLE"
+	// an UNKNOWN rollup never sets this. The check is provider-neutral:
+	// GitLab persists its legacy merge_status vocabulary in ProviderMergeable
+	// (can_be_merged) and may surface mergeable via ProviderMergeStateStatus,
+	// while GitHub's mergeStateStatus is never MERGEABLE, so no false positive
+	// is introduced.
+	out.ConflictsCleared = mergeable == "MERGEABLE" || mergeable == "CAN_BE_MERGED" || state == "MERGEABLE"
 	if state == "BEHIND" || state == "BEHIND_BASE" {
 		out.BehindBase = true
 		addBlocker("behind_base")

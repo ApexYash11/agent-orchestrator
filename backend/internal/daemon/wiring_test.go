@@ -860,10 +860,18 @@ func TestWiring_MergeConflictNudgeReArmsAfterConflictClears(t *testing.T) {
 // TestWiring_MergeConflictNudgeReArmsAfterBlockedWithClearedConflicts is the
 // end-to-end counterpart for #6104 over the real sqlite store: a PR that was
 // conflicting, then rebased clean but left blocked pending a required review
-// (GitHub mergeable=MERGEABLE + mergeStateStatus=BLOCKED) must still re-arm the
-// persisted merge-conflict dedup, so the next conflict notifies again. Before the
-// fix the `blocked` observation never cleared the "conflicting" signature in
-// pr.last_nudge_signature and the recurrence was silently swallowed.
+// (GitHub mergeable=MERGEABLE + mergeStateStatus=BLOCKED, or the GitLab
+// equivalent: detailed_merge_status=not_approved after the rebase reset
+// approvals) must still re-arm the persisted merge-conflict dedup, so the next
+// conflict notifies again. Before the fix the `blocked` observation never
+// cleared the "conflicting" signature in pr.last_nudge_signature and the
+// recurrence was silently swallowed.
+//
+// The blocked observation below is GitLab-shaped
+// (State=blocked + review_required + ConflictsCleared) — exactly what
+// mergeabilityFromMR produces for a clean not_approved MR — rather than a
+// hand-built flag no provider can emit, so the live and replay paths cannot
+// drift apart again.
 func TestWiring_MergeConflictNudgeReArmsAfterBlockedWithClearedConflicts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	store, err := sqlitetest.Open(t.TempDir())

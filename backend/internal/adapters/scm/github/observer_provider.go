@@ -624,8 +624,11 @@ func mergeabilityObservation(providerMergeable, providerMergeState, ci, review s
 	// even when a policy/CI/draft/review blocker forces the derived state to
 	// `blocked`, so lifecycle can re-arm the merge-conflict nudge dedup (#6104).
 	// GitHub only reports MERGEABLE once it has computed mergeability, so an
-	// UNKNOWN rollup never sets this.
-	out.ConflictsCleared = mergeable == "MERGEABLE"
+	// UNKNOWN rollup never sets this. The extra CAN_BE_MERGED / state-MERGEABLE
+	// arms are provider-neutral no-ops for GitHub (its mergeStateStatus is never
+	// MERGEABLE) that keep the live path consistent with the observer's local
+	// recompute for GitLab rows.
+	out.ConflictsCleared = mergeable == "MERGEABLE" || mergeable == "CAN_BE_MERGED" || state == "MERGEABLE"
 	if state == "BEHIND" || state == "BEHIND_BASE" {
 		out.BehindBase = true
 		addBlocker("behind_base")
