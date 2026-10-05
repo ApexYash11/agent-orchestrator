@@ -23,7 +23,6 @@ package commandcodeacp
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 
@@ -64,11 +63,10 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 			ports.ChatCapabilityEmbeddedContext: true,
 			ports.ChatCapabilityRateLimits:      true,
 		},
-		Configure:            configure,
-		SessionMode:          sessionMode,
-		SessionOptions:       sessionOptions,
-		PermissionPolicy:     permissionPolicy,
-		ValidateTurnSettings: validateTurnSettings,
+		Configure:        configure,
+		SessionMode:      sessionMode,
+		SessionOptions:   sessionOptions,
+		PermissionPolicy: permissionPolicy,
 	}, log)
 }
 
@@ -96,7 +94,9 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 
 // sessionMode maps AO's approval vocabulary onto Command Code's advertised mode
 // ids. Every AO mode has an exact equivalent, so this never returns "" for a
-// mode Command Code actually understands.
+// mode Command Code actually understands and no approval change needs a turn
+// validator: the transport applies it through session/set_mode, and a provider
+// that ever answers -32601 surfaces as acpdriver.ErrACPSetterUnsupported.
 func sessionMode(mode ports.PermissionMode) string { return permissionMode(mode) }
 
 func permissionMode(mode ports.PermissionMode) string {
@@ -130,20 +130,4 @@ func sessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOption {
 // request, so auto-approving here would contradict the mode the user selected.
 func permissionPolicy(ports.PermissionMode, acpsdk.RequestPermissionRequest) (acpsdk.PermissionOptionId, bool) {
 	return "", false
-}
-
-// validateTurnSettings rejects an approval change the provider cannot apply.
-// Command Code does implement session/set_mode, so this should stay silent; it
-// exists so a future regression surfaces as "restart Chat" instead of a session
-// silently running at the wrong permission posture.
-func validateTurnSettings(initial ports.PermissionMode, settings ports.ChatTurnSettings) error {
-	if settings.Approval == "" {
-		return nil
-	}
-	if permissionMode(initial) == permissionMode(settings.Approval) {
-		return nil
-	}
-	return fmt.Errorf("%w: Command Code applies approval changes through session/set_mode; "+
-		"restart Chat if this change does not take effect",
-		acpdriver.ErrACPSetterUnsupported)
 }

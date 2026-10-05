@@ -2,7 +2,6 @@ package commandcodeacp
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"slices"
 	"testing"
@@ -97,29 +96,29 @@ func TestSessionOptionsOmitsEmptyValues(t *testing.T) {
 	}
 }
 
-func TestValidateTurnSettings(t *testing.T) {
-	tests := []struct {
-		name     string
-		initial  ports.PermissionMode
-		settings ports.ChatTurnSettings
-		wantErr  bool
-	}{
-		{"unset approval is fine", ports.PermissionModeDefault, ports.ChatTurnSettings{}, false},
-		{"unchanged approval is fine", ports.PermissionModeDefault, ports.ChatTurnSettings{Approval: ports.PermissionModeDefault}, false},
-		{"auto and accept-edits are the same mode", ports.PermissionModeAcceptEdits, ports.ChatTurnSettings{Approval: ports.PermissionModeAuto}, false},
-		{"a real change is refused rather than silently ignored", ports.PermissionModeDefault, ports.ChatTurnSettings{Approval: ports.PermissionModeBypassPermissions}, true},
-		{"a real change in the other direction is refused too", ports.PermissionModeBypassPermissions, ports.ChatTurnSettings{Approval: ports.PermissionModeDefault}, true},
+// Approval changes reach a live Command Code session through session/set_mode,
+// so the binding registers no turn-settings validator. That is only safe while
+// every AO permission mode has an exact Command Code mode id to be applied as;
+// a mode that mapped to "" would silently drop the user's approval choice.
+func TestSessionModeAlwaysYieldsAnAdvertisedModeId(t *testing.T) {
+	advertised := map[string]bool{
+		modeDefault:   true,
+		modeAutoAccpt: true,
+		modePlan:      true,
+		modeDontAsk:   true,
+		modeBypass:    true,
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateTurnSettings(tc.initial, tc.settings)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
-			}
-			if tc.wantErr && !errors.Is(err, acpdriver.ErrACPSetterUnsupported) {
-				t.Fatalf("err = %v, want it to wrap ErrACPSetterUnsupported", err)
-			}
-		})
+	for _, mode := range []ports.PermissionMode{
+		"",
+		ports.PermissionModeDefault,
+		ports.PermissionModeAcceptEdits,
+		ports.PermissionModeAuto,
+		ports.PermissionModeBypassPermissions,
+	} {
+		id := sessionMode(mode)
+		if !advertised[id] {
+			t.Errorf("sessionMode(%q) = %q, which session/new does not advertise", mode, id)
+		}
 	}
 }
 
