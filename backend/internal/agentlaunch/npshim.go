@@ -46,17 +46,22 @@ func ResolveWindowsShimArgv(argv []string, lookPath func(string) (string, error)
 
 	executable, args := "", []string(nil)
 	switch {
-	case program.NodeScript != "":
-		// Both halves must exist: a Node runtime that is missing would fall
-		// back to PATH, but a shim whose entry point was removed or moved must
-		// stay untouched so the original launch still reports its own failure.
-		if !isRegularFile(program.NodeScript) {
+	case program.UsesInterpreter:
+		// Only a recognized interpreter reaches here. A bun/deno/python shim is
+		// rejected during parsing and left on the cmd.exe path rather than
+		// launched under Node, which would silently run the wrong runtime.
+		//
+		// Both halves must exist: a shim whose entry point was removed or moved
+		// must stay untouched so the original launch still reports its own
+		// failure.
+		if !isRegularFile(program.Target) {
 			return argv
 		}
 		executable = resolveNodeRuntime(filepath.Dir(shim), lookPath)
-		args = []string{program.NodeScript}
-	case program.Executable != "":
-		executable, args = program.Executable, program.Args
+		args = append(args, program.Args...)
+		args = append(args, program.Target)
+	case program.Target != "":
+		executable, args = program.Target, program.Args
 	}
 	if executable == "" || !isRegularFile(executable) {
 		return argv
@@ -90,13 +95,18 @@ func launchBinaryIndex(argv []string) (int, bool) {
 
 // npmShimProgram is the real program an npm command shim ends up running.
 type npmShimProgram struct {
-	// NodeScript is the package entry point when the shim launches it through a
-	// Node runtime. It is empty when the shim invokes a native program.
-	NodeScript string
-	// Executable is the native program the shim invokes. It is empty when
-	// NodeScript is set.
-	Executable string
-	// Args are leading arguments the shim passes before the caller's own.
+	// UsesInterpreter reports that the shim launches its target through a
+	// runtime selected from the entry point's shebang. When false the shim
+	// invokes a native program directly.
+	UsesInterpreter bool
+	// Interpreter is that runtime, e.g. "node". It is set only when
+	// UsesInterpreter is true and AO recognized the name.
+	Interpreter string
+	// Target is the program the interpreter runs: the package entry point when
+	// UsesInterpreter is true, or a native binary otherwise.
+	Target string
+	// Args are the shebang arguments cmd-shim places between the interpreter
+	// and the target, e.g. `--require ./bootstrap.js`.
 	Args []string
 }
 
@@ -106,6 +116,7 @@ type npmShimProgram struct {
 func npmShimInvocation(dir, content string) (npmShimProgram, bool) {
 	var found npmShimProgram
 	ok := false
+	interpreter := npmShimInterpreter(content)
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
 		if !strings.Contains(line, "%*") {
@@ -115,7 +126,7 @@ func npmShimInvocation(dir, content string) (npmShimProgram, bool) {
 		if len(tokens) == 0 {
 			continue
 		}
-		program, parsed := npmShimProgramFromTokens(dir, tokens)
+		program, parsed := npmShimProgramFromTokens(dir, tokens, interpreter)
 		if !parsed {
 			continue
 		}
@@ -124,17 +135,73 @@ func npmShimInvocation(dir, content string) (npmShimProgram, bool) {
 	return found, ok
 }
 
-func npmShimProgramFromTokens(dir string, tokens []string) (npmShimProgram, bool) {
-	// `"%_prog%"` is cmd-shim's placeholder for the Node runtime it selected.
+// npmShimInterpreter recovers the interpreter name cmd-shim will run the entry
+// point with. cmd-shim writes two candidates — a `.exe` beside the shim and the
+// bare shebang interpreter — and picks the first that exists at run time; the
+// ELSE branch holds the interpreter name itself. `%_prog%` is not Node-specific:
+// a `#!/usr/bin/env bun` entry produces the same shape with "bun", so this is
+// read from the shim rather than assumed.
+func npmShimInterpreter(content string) string {
+	const elseMarker = ") ELSE ("
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if !strings.HasPrefix(strings.ToUpper(line), strings.ToUpper(elseMarker)) {
+			continue
+		}
+		for _, next := range lines[i+1:] {
+			next = strings.TrimSpace(strings.TrimSuffix(next, "\r"))
+			name, ok := strings.CutPrefix(next, `SET "_prog=`)
+			if !ok {
+				continue
+			}
+			name = strings.Trim(strings.TrimSuffix(name, `"`), `"`)
+			if isSupportedInterpreter(name) {
+				return name
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// isSupportedInterpreter reports whether AO can start name directly. AO knows
+// how to locate a Node runtime, so only Node-backed shims are rewritten; any
+// other interpreter is left to the original cmd.exe path rather than launched
+// under the wrong runtime.
+func isSupportedInterpreter(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "node", "nodejs":
+		return true
+	default:
+		return false
+	}
+}
+
+func npmShimProgramFromTokens(dir string, tokens []string, interpreter string) (npmShimProgram, bool) {
+	// `"%_prog%"` is cmd-shim's placeholder for the runtime it selected. cmd-shim
+	// emits `"%_prog%" <shebang args...> "<target>" %*`, so the target is the last
+	// quoted token and any unquoted shebang flags precede it.
 	if strings.Contains(tokens[0], "%_prog%") {
 		if len(tokens) < 2 {
 			return npmShimProgram{}, false
 		}
-		entry := expandShimPath(tokens[1], dir)
-		if entry == "" {
+		target := expandShimPath(tokens[len(tokens)-1], dir)
+		if target == "" {
 			return npmShimProgram{}, false
 		}
-		return npmShimProgram{NodeScript: entry}, true
+		// An unrecognized interpreter is reported as unsupported rather than as a
+		// native payload: the target is an extensionless script that only runs
+		// under its own runtime, so the caller must leave the shim alone.
+		if interpreter == "" {
+			return npmShimProgram{}, false
+		}
+		return npmShimProgram{
+			UsesInterpreter: true,
+			Interpreter:     interpreter,
+			Target:          target,
+			Args:            npmShimArgs(tokens[1 : len(tokens)-1]),
+		}, true
 	}
 
 	executable := expandShimPath(tokens[0], dir)
@@ -147,34 +214,62 @@ func npmShimProgramFromTokens(dir string, tokens []string) (npmShimProgram, bool
 			args = append(args, expanded)
 		}
 	}
-	return npmShimProgram{Executable: executable, Args: args}, true
+	return npmShimProgram{Target: executable, Args: args}, true
 }
 
-// quotedTokens splits a command line into its double-quoted tokens, ignoring
-// unquoted words such as `%*`. Shim invocation lines do not escape embedded
-// quotes, so a token ends at the next quote.
+// npmShimArgs returns the tokens between the interpreter and the target. They
+// are passed to the interpreter verbatim, so they must not be path-expanded: a
+// shebang flag such as `--require ./bootstrap.js` is not a shim-relative path.
+func npmShimArgs(tokens []string) []string {
+	if len(tokens) == 0 {
+		return nil
+	}
+	return append([]string(nil), tokens...)
+}
+
+// quotedTokens splits a shim invocation line into tokens. A quoted run is one
+// token and unquoted whitespace separates tokens, because cmd-shim emits the
+// shebang arguments unquoted (`"%_prog%" --require ./bootstrap.js "target" %*`).
+// Shim lines do not escape embedded quotes, so a quoted token ends at the next
+// quote. A quoted run that is immediately followed by more text starts a new
+// token, which is what makes `"%_prog%" --require` two tokens rather than one.
+// A trailing `%*` is the caller's argument placeholder and is dropped: AO
+// appends the caller's own arguments itself.
 func quotedTokens(line string) []string {
+	// The invocation is chained as `endLocal & goto ... || title %COMSPEC% &
+	// <program> <args> %*`; only the segment after the final `&` is the program.
+	if idx := strings.LastIndex(line, "&"); idx >= 0 {
+		line = line[idx+1:]
+	}
 	var tokens []string
 	var current strings.Builder
 	inQuotes := false
-	started := false
+	flush := func() {
+		if current.Len() > 0 {
+			tokens = append(tokens, current.String())
+		}
+		current.Reset()
+	}
 	for i := 0; i < len(line); i++ {
 		switch c := line[i]; {
 		case c == '"':
-			inQuotes = !inQuotes
-			started = true
-		case (c == ' ' || c == '\t') && !inQuotes:
-			if started {
-				tokens = append(tokens, current.String())
-				current.Reset()
-				started = false
+			if inQuotes {
+				// Closing quote: emit the quoted token and let any following
+				// unquoted text begin the next one.
+				flush()
+				inQuotes = false
+			} else {
+				inQuotes = true
 			}
+		case (c == ' ' || c == '\t') && !inQuotes:
+			flush()
 		default:
 			current.WriteByte(c)
 		}
 	}
-	if started {
-		tokens = append(tokens, current.String())
+	flush()
+	if n := len(tokens); n > 0 && strings.EqualFold(tokens[n-1], "%*") {
+		tokens = tokens[:n-1]
 	}
 	return tokens
 }

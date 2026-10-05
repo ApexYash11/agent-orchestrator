@@ -31,17 +31,17 @@ func TestResolveWindowsShimArgvAgainstInstalledShims(t *testing.T) {
 		argv := []string{shim, "-s", prompt}
 
 		got := ResolveWindowsShimArgv(argv, exec.LookPath)
-		if got[0] == shim {
-			t.Logf("%s: left unchanged (unparsable or target missing)", name)
+		// Every npm shim on this machine is either Node-backed or a native
+		// payload, so an unchanged argv means AO failed to bypass the shim and
+		// the oversized prompt would still hit cmd.exe's limit. Fail loudly
+		// rather than skipping: that regression is exactly what this test is for.
+		if equalArgs(got, argv) {
+			t.Errorf("%s: shim not bypassed; a 13 KB prompt would still fail", name)
 			continue
 		}
-		if got[0] == shim || len(got) < 2 {
-			t.Fatalf("%s: shim not bypassed: %q", name, got)
-		}
-		// The oversized prompt must survive verbatim; the whole point is that
-		// the agent still receives all 13 KB of it.
 		if !containsArg(got, prompt) {
-			t.Fatalf("%s: prompt not preserved (argv len %d)", name, len(got))
+			t.Errorf("%s: prompt not preserved (argv len %d)", name, len(got))
+			continue
 		}
 		t.Logf("%s -> %s %s", name, filepath.Base(got[0]), filepath.Base(got[1]))
 	}
