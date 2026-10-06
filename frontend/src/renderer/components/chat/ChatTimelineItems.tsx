@@ -8,13 +8,15 @@ import { AppLink } from "../AppLink";
  * re-sorting. Those belong to the daemon.
  */
 
-import { stagedAttachmentParts, attachmentName, attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
+import { stagedAttachmentParts, attachmentName, attachmentURL, IMAGE_ATTACHMENT_PATH, splitInlineImagePaths } from "./messageAttachments";
+import { ChatImage } from "./ChatImage";
 import {
 	ACCENT_ACTION_SEGMENT,
 	ACCENT_ACTION_SHELL,
 	QUIET_ACTION_PILL,
 } from "./action-pill";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
 	AlertTriangle,
@@ -407,6 +409,41 @@ function formatTokens(tokens: number): string {
 	return `${(tokens / 1000).toFixed(1)}k`;
 }
 
+/**
+ * Prose whose inline staged image paths (written by the composer's image chips)
+ * render as chips that open the image. "Image N" counts images in attachment
+ * order, the same label the attachment row and the composer use.
+ */
+function ProseWithInlineImages({
+	text,
+	attachments,
+	sessionId,
+	apiBaseUrl,
+	renderText,
+}: {
+	text: string;
+	attachments: string[];
+	sessionId: string;
+	apiBaseUrl: string | null;
+	renderText: (text: string) => ReactNode;
+}) {
+	const { t } = useTranslation();
+	const images = attachments.filter((path) => IMAGE_ATTACHMENT_PATH.test(path));
+	if (apiBaseUrl === null || images.length === 0) return renderText(text);
+	return splitInlineImagePaths(text, (path) => images.includes(path)).map((segment, index) =>
+		segment.path === undefined ? (
+			<Fragment key={index}>{renderText(segment.text)}</Fragment>
+		) : (
+			<ChatImage
+				key={index}
+				inline
+				src={attachmentURL(apiBaseUrl, sessionId, segment.path)}
+				alt={t("chat.image.numbered", { index: images.indexOf(segment.path) + 1 })}
+			/>
+		),
+	);
+}
+
 function StagedAttachmentItems({
 	paths,
 	sessionId,
@@ -420,21 +457,18 @@ function StagedAttachmentItems({
 	ariaLabel: string;
 	className?: string;
 }) {
+	const { t } = useTranslation();
 	if (paths.length === 0) return null;
+	const images = paths.filter((path) => IMAGE_ATTACHMENT_PATH.test(path));
 	return (
 		<ul aria-label={ariaLabel} className={cn("flex max-w-full flex-wrap gap-2", className)}>
 			{paths.map((path) => {
 				const name = attachmentName(path);
 				return IMAGE_ATTACHMENT_PATH.test(path) && apiBaseUrl !== null ? (
-					<li
-						key={path}
-						className="max-w-full overflow-hidden rounded-md border border-border bg-background"
-					>
-						<img
+					<li key={path} className="max-w-full">
+						<ChatImage
 							src={attachmentURL(apiBaseUrl, sessionId, path)}
-							alt={name}
-							loading="lazy"
-							className="block h-auto max-h-80 max-w-full object-contain"
+							alt={t("chat.image.numbered", { index: images.indexOf(path) + 1 })}
 						/>
 					</li>
 				) : (
@@ -606,7 +640,13 @@ export function HumanMessage({
 				>
 					{body ? (
 						<p className="break-words whitespace-pre-wrap text-pretty">
-							<SessionLinkedText text={body} />
+							<ProseWithInlineImages
+								text={body}
+								attachments={attachments}
+								sessionId={sessionId}
+								apiBaseUrl={apiBaseUrl}
+								renderText={(text) => <SessionLinkedText text={text} />}
+							/>
 						</p>
 					) : null}
 					<StagedAttachmentItems
@@ -2358,7 +2398,17 @@ export function SteerMessage({
 				</AutomationMessageFrame>
 			) : (
 				<div className="break-words whitespace-pre-wrap text-sm leading-[1.55] w-fit max-w-[min(78%,560px)] rounded-[10px] border border-accent-dim bg-raised px-3 py-2.5 text-foreground">
-					{body ? <p>{body}</p> : null}
+					{body ? (
+						<p>
+							<ProseWithInlineImages
+								text={body}
+								attachments={attachments}
+								sessionId={sessionId}
+								apiBaseUrl={apiBaseUrl}
+								renderText={(text) => text}
+							/>
+						</p>
+					) : null}
 					<StagedAttachmentItems
 						paths={attachments}
 						sessionId={sessionId}
