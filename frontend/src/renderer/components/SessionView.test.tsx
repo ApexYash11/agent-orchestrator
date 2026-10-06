@@ -56,6 +56,7 @@ const settingsState = vi.hoisted(() => ({
 const reviewGetMock = vi.hoisted(() => vi.fn());
 const inspectorVisibilityRenders = vi.hoisted(() => [] as boolean[]);
 const chatSurfaceRenders = vi.hoisted(() => [] as string[]);
+const artifactFeedbackConsumes = vi.hoisted(() => [] as number[]);
 const chatSurfaceTransitionRenders = vi.hoisted(() => [] as boolean[]);
 const chatSurfaceWorkState = vi.hoisted(() => ({
 	controllerBusy: false,
@@ -510,6 +511,7 @@ vi.mock("./SessionFileExplorer", () => ({
 	SessionFileExplorer: ({
 		isMaximized,
 		onOpenFile,
+		onRevealRequestConsumed,
 		onSplitChange,
 		onRevealHandled,
 		onToggleMaximized,
@@ -518,10 +520,11 @@ vi.mock("./SessionFileExplorer", () => ({
 	}: {
 		isMaximized?: boolean;
 		onOpenFile?: (path: string, options?: { editing?: boolean; mode?: "diff" | "file" | "rendered" }) => void;
+		onRevealRequestConsumed?: (key: number) => void;
 		onRevealHandled?: (key: number) => void;
 		onSplitChange?: (split: boolean) => void;
 		onToggleMaximized?: (next: boolean) => void;
-		revealRequest?: { path: string; key: number } | null;
+		revealRequest?: { feedback?: boolean; path: string; key: number; source?: "artifact" } | null;
 		split?: boolean;
 	}) => {
 		const topbarHost = useFilesTopbarHost();
@@ -530,11 +533,20 @@ vi.mock("./SessionFileExplorer", () => ({
 		const [selectedPath, setSelectedPath] = useState<string | null>(null);
 		useEffect(() => {
 			if (!revealRequest) return;
+			if (revealRequest.source === "artifact") {
+				setSelectedPath(revealRequest.path);
+				return;
+			}
 			setSelectedPath(revealRequest.path);
 			if (isMaximized) return;
 			onOpenFile?.(revealRequest.path, { mode: "file" });
 			onRevealHandled?.(revealRequest.key);
 		}, [isMaximized, onOpenFile, onRevealHandled, revealRequest]);
+		useEffect(() => {
+			if (!revealRequest?.feedback) return;
+			artifactFeedbackConsumes.push(revealRequest.key);
+			onRevealRequestConsumed?.(revealRequest.key);
+		}, [onRevealRequestConsumed, revealRequest]);
 		return <div>
 			{topbarHost ? createPortal(<input aria-label="files filter" />, topbarHost) : null}
 			<button type="button" onClick={() => onToggleMaximized?.(!isMaximized)}>
@@ -547,6 +559,7 @@ vi.mock("./SessionFileExplorer", () => ({
 				<>
 					<span>file tree</span>
 					{selectedPath ? <span>{`selected ${selectedPath}`}</span> : null}
+					{revealRequest?.feedback ? <span>{`feedback request ${revealRequest.key}`}</span> : null}
 					<button type="button" onClick={() => onOpenFile("src/App.tsx", { mode: "file" })}>
 						select src/App.tsx
 					</button>
@@ -634,6 +647,7 @@ vi.mock("./SessionInspector", () => ({
 	SessionInspector: ({
 		filesView,
 		isInspectorVisible = true,
+		onOpenArtifact,
 		onOpenFiles,
 		onOpenReviewFile,
 		onOpenReviewerChat,
@@ -644,6 +658,7 @@ vi.mock("./SessionInspector", () => ({
 	}: {
 		filesView?: ReactNode;
 		isInspectorVisible?: boolean;
+		onOpenArtifact?: (target: { feedback?: boolean; path: string }) => void;
 		onOpenFiles?: () => void;
 		onOpenReviewFile?: (target: { line?: number; path: string }) => void;
 		onOpenReviewerChat?: (reviewId: string) => void;
@@ -675,6 +690,9 @@ vi.mock("./SessionInspector", () => ({
 				</div>
 				<button type="button" onClick={onOpenFiles}>
 					open files
+				</button>
+				<button type="button" onClick={() => onOpenArtifact?.({ feedback: true, path: "report.html" })}>
+					open artifact feedback
 				</button>
 				<button type="button" onClick={() => onOpenReviewFile?.({ path: "src/panel.tsx", line: 42 })}>
 					view review file
@@ -847,6 +865,7 @@ describe("SessionView", () => {
 		routeBlockerState.options = undefined;
 		inspectorVisibilityRenders.length = 0;
 		chatSurfaceRenders.length = 0;
+		artifactFeedbackConsumes.length = 0;
 		chatSurfaceTransitionRenders.length = 0;
 		nativeFullScreenMock.mockReturnValue(false);
 		window.localStorage.clear();
@@ -947,6 +966,24 @@ describe("SessionView", () => {
 			}
 			return { data: { reviewerHandleId: "", reviews: [], runs: [] }, error: undefined };
 		});
+	});
+
+	it("does not replay consumed artifact feedback when Files remounts", async () => {
+		render(<SessionView sessionId="sess-1" />);
+
+		fireEvent.click(screen.getByRole("button", { name: "open artifact feedback" }));
+
+		await waitFor(() => expect(artifactFeedbackConsumes).toEqual([1]));
+		await waitFor(() => expect(screen.queryByText("feedback request 1")).not.toBeInTheDocument());
+		expect(screen.getByText("selected report.html")).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("tab", { name: "Summary" }));
+		expect(screen.queryByText("selected report.html")).not.toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "open files" }));
+		expect(screen.getByText("selected report.html")).toBeInTheDocument();
+		expect(screen.queryByText("feedback request 1")).not.toBeInTheDocument();
+		expect(artifactFeedbackConsumes).toEqual([1]);
 	});
 
 	it("resumes only the opened stopped session once, including in StrictMode", async () => {
@@ -3921,6 +3958,28 @@ describe("SessionView", () => {
 		const worker = workerSession("sess-1");
 		worker.status = "merged";
 		worker.isTerminated = true;
+
+		render(<SessionView sessionId="sess-1" />);
+
+		expect(browserViewOptions.current).toMatchObject({ sessionId: "sess-1", terminated: true });
+	});
+
+	it("keeps Browser live for a terminated session showing an opened artifact preview", () => {
+		const worker = workerSession("sess-1");
+		worker.status = "merged";
+		worker.isTerminated = true;
+		worker.previewUrl = "http://ao-preview-artifact.abc.localhost:3001/report.html";
+
+		render(<SessionView sessionId="sess-1" />);
+
+		expect(browserViewOptions.current).toMatchObject({ sessionId: "sess-1", terminated: false });
+	});
+
+	it("still tears Browser down for a terminated session with a workspace preview", () => {
+		const worker = workerSession("sess-1");
+		worker.status = "merged";
+		worker.isTerminated = true;
+		worker.previewUrl = "http://ao-preview.abc.localhost:3001/index.html";
 
 		render(<SessionView sessionId="sess-1" />);
 
