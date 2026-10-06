@@ -23,6 +23,7 @@ import {
 	useRef,
 	useState,
 	useSyncExternalStore,
+	type ComponentProps,
 	type CSSProperties,
 	type KeyboardEvent as ReactKeyboardEvent,
 	type MouseEvent as ReactMouseEvent,
@@ -119,6 +120,7 @@ import { ContextMeter } from "./ContextMeter";
 import { stagedAttachmentParts, attachmentName } from "./messageAttachments";
 import type { QueuedMessageEditOptions } from "../../types/conversation";
 import { QueuedMessageDock, type QueuedMessage } from "./QueuedMessageDock";
+import { SessionStartup } from "./SessionStartup";
 import { ActivityRun } from "./ActivityRun";
 import { TurnPlan } from "./TurnPlan";
 import { TurnSettingsBar } from "./TurnSettingsBar";
@@ -236,7 +238,7 @@ type MessageEditDraft = ChatDraftInlineEdit;
  * change while a running turn emits output, so retain the previous list when its
  * contents are equal and avoid redrawing the dock and composer subtree.
  */
-function useQueuedMessages(snapshot: ConversationSnapshot): QueuedMessage[] {
+function useQueuedMessages(snapshot: ConversationSnapshot, excludeTurnId?: string): QueuedMessage[] {
 	const previous = useRef<QueuedMessage[]>([]);
 	return useMemo(() => {
 		const messagesByTurn = new Map(
@@ -251,7 +253,7 @@ function useQueuedMessages(snapshot: ConversationSnapshot): QueuedMessage[] {
 				.map((message) => [message.turnId as string, message]),
 		);
 		const next = snapshot.turns.flatMap((queuedTurn) => {
-			if (queuedTurn.state !== "queued") return [];
+			if (queuedTurn.state !== "queued" || queuedTurn.id === excludeTurnId) return [];
 			const message = messagesByTurn.get(queuedTurn.id);
 			return message ? [{ turnId: queuedTurn.id, message }] : [];
 		});
@@ -267,7 +269,7 @@ function useQueuedMessages(snapshot: ConversationSnapshot): QueuedMessage[] {
 		}
 		previous.current = next;
 		return next;
-	}, [snapshot.items, snapshot.turns]);
+	}, [excludeTurnId, snapshot.items, snapshot.turns]);
 }
 
 export interface ChatWorkspaceProps {
@@ -652,6 +654,53 @@ function ChatWorkspaceContent({
 		[assetBaseUrl],
 	);
 	const turn = activeTurn(snapshot);
+	const startupState =
+		session?.provisionState === "provisioning" || session?.provisionState === "failed"
+			? session.provisionState
+			: undefined;
+	// While a session starts, its opening brief reads as sent: the setup checklist
+	// under it explains why nothing has answered yet. Later messages still queue.
+	const provisionSteps = session?.provisionSteps;
+	// Ready can arrive before the first turn does. Keep its setup slot through
+	// that gap; selecting the first turn also never promotes a queued follow-up.
+	const hasStartup = Boolean(
+		startupState || (provisionSteps?.length &&
+			(snapshot.turns[0]?.state === "queued" || snapshot.turns[0]?.state === "running")),
+	);
+	const openingTurnId = hasStartup
+		? snapshot.turns[0]?.id
+		: undefined;
+	const provisionError = session?.provisionError;
+	const sessionBranch = session?.branch;
+	const startup = useMemo(
+		() =>
+			hasStartup
+				? {
+						failed: startupState === "failed",
+						steps: provisionSteps ?? [],
+						error: provisionError,
+						agentName: agentLabel(snapshot.harness),
+						branch: sessionBranch,
+						openingTurnId,
+						onRetry: newWorkDisabled ? undefined : onResumeAgent,
+						retrying: resumingAgent,
+						retryError: resumeError,
+					}
+				: undefined,
+		[
+			hasStartup,
+			newWorkDisabled,
+			onResumeAgent,
+			openingTurnId,
+			provisionError,
+			provisionSteps,
+			resumeError,
+			resumingAgent,
+			sessionBranch,
+			snapshot.harness,
+			startupState,
+		],
+	);
 	const hasPendingInteraction = snapshot.items.some(
 		(item) =>
 			item.kind === "activity" &&
@@ -771,7 +820,7 @@ function ChatWorkspaceContent({
 			return { ...current, [uiSessionId]: next };
 		});
 	}, [auxiliaryTabOrder, availableTabKeys, onAuxiliaryTabOrderChange, uiSessionId]);
-	const queuedMessages = useQueuedMessages(snapshot);
+	const queuedMessages = useQueuedMessages(snapshot, openingTurnId);
 	const stablePromoteQueuedTurn = useStableCallback(onPromoteQueuedTurn);
 	const stableCancelQueuedTurn = useStableCallback(onCancelQueuedTurn);
 	const [queueEdit, setQueueEdit] = useState<ChatDraftQueuedEdit | undefined>(
@@ -1415,9 +1464,7 @@ function ChatWorkspaceContent({
 					) : null}
 					<ControllerBanner
 						controller={snapshot.controller}
-						agentName={agentLabel(snapshot.harness)}
 						provisionState={session?.provisionState}
-						provisionError={session?.provisionError}
 						transitioning={controllerTransitioning}
 						onResume={newWorkDisabled ? undefined : onResumeAgent}
 						resuming={resumingAgent}
@@ -1466,6 +1513,7 @@ function ChatWorkspaceContent({
 									newWorkDisabled={newWorkDisabled}
 									rollbackDisabled={Boolean(turn || rollbackPending || newWorkDisabled)}
 									localEchos={localEchos}
+									startup={startup}
 								/>
 							</ChatImageSourceProvider>
 						</ChatLinkProvider>
@@ -1506,6 +1554,11 @@ function ChatWorkspaceContent({
 									settings={<><ContextMeter usage={snapshot.usage} />{composerSettings}</>}
 									busy={busy}
 									willQueue={Boolean(turn) || session?.provisionState === "provisioning"}
+									queuePlaceholder={
+										session?.provisionState === "provisioning"
+											? t("chat.startup.queuePlaceholder", { agent: agentLabel(snapshot.harness) })
+											: undefined
+									}
 									disabled={(snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
 									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
 									disabledPlaceholder={
@@ -1894,9 +1947,7 @@ function ChatHeader({
  */
 function ControllerBanner({
 	controller,
-	agentName,
 	provisionState,
-	provisionError,
 	transitioning,
 	onResume,
 	resuming,
@@ -1906,9 +1957,7 @@ function ControllerBanner({
 	shellError,
 }: {
 	controller: { state: ControllerState; error?: string };
-	agentName: string;
 	provisionState?: WorkspaceSession["provisionState"];
-	provisionError?: string;
 	transitioning?: boolean;
 	onResume?: () => void;
 	resuming?: boolean;
@@ -1917,15 +1966,14 @@ function ControllerBanner({
 	openingShell?: boolean;
 	shellError?: string;
 }) {
-	const provisioning = provisionState === "provisioning";
-	const failed = provisionState === "failed";
-	const starting = provisioning || failed;
-
+	// A session that is starting, or failed to start, has no controller yet. The
+	// setup checklist in the timeline explains that state and offers Retry.
+	if (provisionState === "provisioning" || provisionState === "failed") return null;
 	// The transition coordinator intentionally stops one controller before it
 	// starts the other. The top-bar handoff state already explains that interval;
 	// presenting its intermediate snapshot as a crash produces a red false alarm.
-	if (!starting && transitioning && controller.state === "stopped") return null;
-	if (!starting && (controller.state === "ready" || controller.state === "busy")) return null;
+	if (transitioning && controller.state === "stopped") return null;
+	if (controller.state === "ready" || controller.state === "busy") return null;
 
 	const copy: Partial<Record<ControllerState, { title: string; tone: string }>> = {
 		connecting: {
@@ -1941,21 +1989,16 @@ function ControllerBanner({
 			tone: "text-destructive",
 		},
 	};
-	const shown = provisioning
-		? { title: `Starting ${agentName}…`, tone: "text-muted-foreground" }
-		: failed
-			? { title: "This session could not be started", tone: "text-destructive" }
-			: copy[controller.state];
+	const shown = copy[controller.state];
 	if (!shown) return null;
-	const loading = provisioning || (!failed && controller.state === "connecting");
 
 	return (
 		<div
-			role={failed || controller.state === "stopped" ? "alert" : "status"}
+			role={controller.state === "stopped" ? "alert" : "status"}
 			aria-atomic="true"
 			className="flex shrink-0 items-start gap-2.5 border-b border-border bg-surface px-4 py-2.5"
 		>
-			{loading ? (
+			{controller.state === "connecting" ? (
 				<Loader2
 					aria-hidden="true"
 					className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground"
@@ -1965,34 +2008,10 @@ function ControllerBanner({
 			)}
 			<div className="flex min-w-0 flex-1 flex-col gap-0.5">
 				<strong className={cn("text-xs font-medium", shown.tone)}>{shown.title}</strong>
-				{provisioning ? (
-					<span className="text-[11px] leading-snug text-muted-foreground">
-						Setting up the worktree and the agent. Keep typing — your messages are
-						queued and sent in order as soon as it is ready.
-					</span>
-				) : failed ? (
-					<>
-						{provisionError ? (
-							<span className="text-[11px] leading-snug text-muted-foreground">
-								{provisionError}
-							</span>
-						) : null}
-						<span className="text-[11px] leading-snug text-muted-foreground">
-							Your messages are saved here and will be sent if you retry.
-						</span>
-						{resumeError ? (
-							<span className="text-[11px] leading-snug text-destructive">{resumeError}</span>
-						) : null}
-						{onResume ? (
-							<Button type="button" size="sm" variant="outline" onClick={onResume} disabled={resuming}>
-								{resuming ? "Retrying…" : "Retry start"}
-							</Button>
-						) : null}
-					</>
-				) : controller.error ? (
+				{controller.error ? (
 					<span className="text-[11px] leading-snug text-muted-foreground">{controller.error}</span>
 				) : null}
-				{!starting && controller.state === "stopped" ? (
+				{controller.state === "stopped" ? (
 					<>
 						<span className="text-[11px] leading-snug text-muted-foreground">
 							History is kept. Resume the agent or open a shell in the same worktree.
@@ -2084,6 +2103,7 @@ function Timeline({
 	newWorkDisabled,
 	rollbackDisabled = false,
 	localEchos = [],
+	startup,
 }: {
 	snapshot: ConversationSnapshot;
 	assetBaseUrl?: string;
@@ -2108,6 +2128,8 @@ function Timeline({
 	newWorkDisabled?: boolean;
 	rollbackDisabled?: boolean;
 	localEchos?: ConversationLocalEcho[];
+	/** A session that is starting, or failed to start, and its setup checklist. */
+	startup?: ComponentProps<typeof SessionStartup> & { openingTurnId?: string };
 }) {
 	const translateDraft = useChatDraftTranslation();
 	const uiSessionId = draftScope.sessionId;
@@ -2247,7 +2269,21 @@ function Timeline({
 	// widens chat; shorter histories (common on non-Codex harnesses) often
 	// stop overflowing and used to lose the minimap exactly then.
 	const minimapEnabled = scrollbar.markers.length > 0;
-	const queued = useMemo(() => queuedTurnIds(snapshot), [snapshot]);
+	const { t } = useTranslation();
+	const openingTurnId = startup?.openingTurnId;
+	// The checklist holds the working slot until the agent is up and its first
+	// turn is live; a clean start then leaves no trace.
+	const showStartup = Boolean(
+		startup &&
+			(startup.failed ||
+				!(turn?.state === "running" && turn.id === openingTurnId &&
+					startup.steps.length > 0 && startup.steps.every((step) => step.status === "done"))),
+	);
+	const queued = useMemo(() => {
+		const ids = queuedTurnIds(snapshot);
+		if (openingTurnId) ids.delete(openingTurnId);
+		return ids;
+	}, [openingTurnId, snapshot]);
 	const decide = useStableCallback(onDecide);
 	const rollback = useStableCallback(onRollback);
 	const openFiles = useStableCallback(onOpenFiles);
@@ -2727,10 +2763,11 @@ function Timeline({
 	}, [localEchos, requestGlideToEnd]);
 	const grouped = useMemo(() => {
 		const hiddenTurns = hiddenTimelineTurnIds(snapshot);
+		if (openingTurnId) hiddenTurns.delete(openingTurnId);
 		return groupByTurn({ ...snapshot, items: timelineItems }).filter(
 			(group) => !group.turnId || !hiddenTurns.has(group.turnId),
 		);
-	}, [snapshot, timelineItems]);
+	}, [openingTurnId, snapshot, timelineItems]);
 	const groups = useStableList(grouped, groupKey, sameGroup);
 	// Read by syncScrollLayout (a stable callback) so the initial snap only latches
 	// once real conversation content exists (history can load after the chat opens).
@@ -3249,6 +3286,7 @@ function Timeline({
 							>
 								<TurnGroup
 									group={group}
+									startup={showStartup && group.turnId === openingTurnId ? startup : undefined}
 									activityDisclosureOverrides={activityDisclosureOverrides}
 									onActivityDisclosureChange={onActivityDisclosureChange}
 									sessionId={snapshot.sessionId}
@@ -3293,7 +3331,13 @@ function Timeline({
 						);
 					})}
 					</div>
-					{turn?.state === "running" && !groups.some((group) => group.turnId === turn.id) ? (
+					{/* Normally drawn inside the opening turn's group; this covers a start
+					    whose brief is not in the timeline. */}
+					{startup && showStartup && !groups.some((group) => group.turnId === openingTurnId) ? (
+						<LiveResponseStatus startupLabel={t(startup.failed ? "chat.startup.failed" : "chat.startup.running")} failed={startup.failed}>
+							<SessionStartup {...startup} />
+						</LiveResponseStatus>
+					) : turn?.state === "running" && !groups.some((group) => group.turnId === turn.id) ? (
 						<LiveResponseStatus startedAt={turn.startedAt ?? turn.requestedAt} />
 					) : null}
 					{messageEdit && !editedMessageVisible ? (
@@ -3479,6 +3523,7 @@ const TurnGroup = memo(function TurnGroup({
 	busy,
 	queued,
 	newHumanMessageIds,
+	startup,
 }: {
 	group: TimelineGroup;
 	activityDisclosureOverrides: Readonly<Record<string, boolean>>;
@@ -3516,7 +3561,10 @@ const TurnGroup = memo(function TurnGroup({
 	/** This turn was recorded but not sent, so its message can say so. */
 	queued: boolean;
 	newHumanMessageIds: ReadonlySet<string>;
+	/** The opening turn of a starting session: its setup checklist. */
+	startup?: ComponentProps<typeof SessionStartup>;
 }) {
+	const { t } = useTranslation();
 	const hasTerminalFailure =
 		group.outcome?.state === "failed" && Boolean(group.outcome.error);
 	const runs = useMemo(
@@ -3628,8 +3676,20 @@ const TurnGroup = memo(function TurnGroup({
 	const body: ReactNode[] = humanRuns.map(renderRun);
 	// A live provider failure replaces the Working row with its reconnect card, and a
 	// turn that stops without an outcome (cancelled) has no settled row to hand over to.
-	if (!group.liveProviderFailure && (group.live || (group.outcome && !showSettledStatus))) {
-		body.push(<LiveResponseStatus key="turn-working" startedAt={group.liveStartedAt} settling={!group.live} />);
+	// The setup checklist sits exactly where the Working row will, so the handoff
+	// does not move anything.
+	if (startup || (!group.liveProviderFailure && (group.live || (group.outcome && !showSettledStatus)))) {
+		body.push(
+			<LiveResponseStatus
+				key="turn-working"
+				startedAt={group.liveStartedAt}
+				settling={!startup && !group.live}
+				startupLabel={startup ? t(startup.failed ? "chat.startup.failed" : "chat.startup.running") : undefined}
+				failed={startup?.failed}
+			>
+				{startup ? <SessionStartup {...startup} /> : null}
+			</LiveResponseStatus>,
+		);
 	}
 	const outcome = showSettledStatus ? group.outcome : undefined;
 	if (!outcome) {
