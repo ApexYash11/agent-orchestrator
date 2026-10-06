@@ -2187,7 +2187,7 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 		repairs = append(repairs, replacement{"'fake'))", "'deepseek-harness', 'fake'))"})
 	}
 	if needsCommandCode {
-		// Migration 0178 rewrites the current constraint variants by exact string,
+		// Migration 0179 rewrites the current constraint variants by exact string,
 		// so a database that skipped an earlier harness migration reaches this
 		// repair without Command Code. Anchor on the retained 'fake' fixture
 		// harness for the same reason as DeepSeek above.

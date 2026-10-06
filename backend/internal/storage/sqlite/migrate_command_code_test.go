@@ -5,27 +5,27 @@ import (
 	"testing"
 )
 
-// TestMigration0178AllowsCommandCodeAndReversesBothHistoricalSchemas mirrors the
+// TestMigration0179AllowsCommandCodeAndReversesBothHistoricalSchemas mirrors the
 // fx and DeepSeek coverage: the new harness must be insertable on a current and a
 // legacy-qm schema, an unknown harness must still be rejected, and the down
 // migration must restore the exact prior constraint.
-func TestMigration0178AllowsCommandCodeAndReversesBothHistoricalSchemas(t *testing.T) {
+func TestMigration0179AllowsCommandCodeAndReversesBothHistoricalSchemas(t *testing.T) {
 	for _, legacyQM := range []bool{false, true} {
 		name := "current"
 		if legacyQM {
 			name = "legacy_qm"
 		}
 		t.Run(name, func(t *testing.T) {
-			db := openMigratedDatabaseCopy(t, 177)
+			db := openMigratedDatabaseCopy(t, 178)
 			if legacyQM {
 				// The retained legacy 'qm' fixture harness sits before
-				// 'deepseek-harness' in every variant 0178 rewrites, so anchor
+				// 'deepseek-harness' in every variant 0179 rewrites, so anchor
 				// there to produce a schema the migration still recognizes.
 				mustExec(t, db, `PRAGMA writable_schema = ON`)
 				mustExec(t, db, `UPDATE sqlite_master SET sql = replace(sql, '''mimo-code'', ''deepseek-harness''', '''mimo-code'', ''qm'', ''deepseek-harness''') WHERE type = 'table' AND name = 'sessions'`)
 				mustExec(t, db, `PRAGMA writable_schema = RESET`)
 			}
-			upTo(t, db, 177)
+			upTo(t, db, 178)
 			var before string
 			if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'sessions'`).Scan(&before); err != nil {
 				t.Fatal(err)
@@ -36,20 +36,20 @@ func TestMigration0178AllowsCommandCodeAndReversesBothHistoricalSchemas(t *testi
 			if legacyQM {
 				mustExec(t, db, insert, "existing-qm", 2, "qm")
 			}
-			upTo(t, db, 178)
+			upTo(t, db, 179)
 			if _, err := db.Exec(insert, "cc-session", 3, "command-code"); err != nil {
 				t.Fatalf("insert command-code session after migration: %v", err)
 			}
 			var version int
-			if err := db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil || version != 178 {
-				t.Fatalf("migration version = %d, err = %v; want 178", version, err)
+			if err := db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil || version != 179 {
+				t.Fatalf("migration version = %d, err = %v; want 179", version, err)
 			}
 			if _, err := db.Exec(insert, "unknown", 4, "unknown-agent"); err == nil {
 				t.Fatal("unknown harness bypassed the CHECK constraint")
 			}
 			// Clear the new harness value before downgrading to the older contract.
 			mustExec(t, db, `UPDATE sessions SET harness = '' WHERE harness = 'command-code'`)
-			downTo(t, db, 177)
+			downTo(t, db, 178)
 			var after string
 			if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'sessions'`).Scan(&after); err != nil || after != before {
 				t.Fatalf("down migration did not restore original schema: %v", err)
@@ -71,7 +71,7 @@ func TestMigration0178AllowsCommandCodeAndReversesBothHistoricalSchemas(t *testi
 // harness, otherwise the repair would silently skip it and a database that
 // missed an earlier harness migration could never accept this harness.
 func TestCommandCodeRepairAnchorMatchesEveryHistoricalHarnessList(t *testing.T) {
-	for _, version := range []int64{26, 53, 54, 82, 95, 155, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176} {
+	for _, version := range []int64{26, 53, 54, 82, 95, 155, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178} {
 		db := openMigratedDatabaseCopy(t, version)
 		var sql string
 		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'sessions'`).Scan(&sql); err != nil {
@@ -97,12 +97,12 @@ func TestCommandCodeRepairAnchorMatchesEveryHistoricalHarnessList(t *testing.T) 
 
 // TestReconcileCommandCodeAfterBurnedMigration covers a database that never ran
 // an earlier harness migration: goose skips the burned number, the current-schema
-// rewrite in 0178 matches nothing, and the repair is the only thing that adds
+// rewrite in 0179 matches nothing, and the repair is the only thing that adds
 // Command Code. It must also leave every earlier harness intact, which is the
 // failure mode when a migration widens a schema variant the repair also relies on.
 func TestReconcileCommandCodeAfterBurnedMigration(t *testing.T) {
-	db := openMigratedDatabaseCopy(t, 177)
-	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (178, 1)`); err != nil {
+	db := openMigratedDatabaseCopy(t, 178)
+	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (179, 1)`); err != nil {
 		t.Fatalf("seed burned Command Code migration: %v", err)
 	}
 	if err := migrate(db); err != nil {
