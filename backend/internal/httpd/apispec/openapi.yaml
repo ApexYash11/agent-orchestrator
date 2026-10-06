@@ -11633,10 +11633,6 @@ components:
             when saving agent cues.
           maxLength: 4096
           type: string
-        description:
-          description: Optional human note about the cue, at most 240 bytes.
-          maxLength: 240
-          type: string
         name:
           description: Short cue name, unique within the project. Trimmed; must be
             non-empty and at most 64 bytes.
@@ -11669,8 +11665,6 @@ components:
         createdAt:
           format: date-time
           type: string
-        description:
-          type: string
         id:
           type: string
         name:
@@ -11688,7 +11682,6 @@ components:
       - id
       - projectId
       - name
-      - description
       - type
       - createdAt
       - updatedAt
