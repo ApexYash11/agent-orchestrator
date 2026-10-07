@@ -332,9 +332,14 @@ type ChatResumeConfig struct {
 	ProviderIDsScoped      bool
 	SessionID              domain.SessionID
 	ProviderConversationID string
-	DataDir                string
-	WorkspacePath          string
-	Env                    map[string]string
+	// FreshIfMissing lets a driver that had to reload ProviderConversationID
+	// start a fresh provider conversation when the provider reports it does not
+	// exist. Callers set it only with durable proof that the conversation never
+	// started. The returned conversation then reports the new id.
+	FreshIfMissing bool
+	DataDir        string
+	WorkspacePath  string
+	Env            map[string]string
 	// See ChatStartConfig.PrepareEnv.
 	PrepareEnv func(context.Context) (map[string]string, error)
 	// Model is optional; empty keeps the provider conversation's current model.

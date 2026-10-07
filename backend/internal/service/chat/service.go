@@ -635,6 +635,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		conv, err = resume(ctx, ports.ChatResumeConfig{
 			SessionID:              hostID,
 			ProviderConversationID: cfg.ProviderConversationID,
+			FreshIfMissing:         cfg.FreshIfProviderConversationMissing,
 			DataDir:                cfg.DataDir,
 			WorkspacePath:          cfg.WorkspacePath,
 			Env:                    cfg.Env,
@@ -670,18 +671,24 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if err != nil {
 		return nil, err
 	}
-	if cfg.ProviderConversationID != "" &&
-		conv.ProviderConversationID() != cfg.ProviderConversationID {
-		returned := conv.ProviderConversationID()
-		_ = cleanupUnpublishedConversation(conv, false)
-		return nil, fmt.Errorf(
-			"resumed provider conversation handle %q does not match requested handle %q",
-			returned, cfg.ProviderConversationID,
-		)
-	}
 	liveReconnect := false
 	if reconnected, ok := conv.(ports.ChatLiveReconnector); ok {
 		liveReconnect = reconnected.ReconnectedLive()
+	}
+	freshReplacement := false
+	if cfg.ProviderConversationID != "" &&
+		conv.ProviderConversationID() != cfg.ProviderConversationID {
+		returned := conv.ProviderConversationID()
+		if !cfg.FreshIfProviderConversationMissing || liveReconnect || returned == "" {
+			_ = cleanupUnpublishedConversation(conv, false)
+			return nil, fmt.Errorf(
+				"resumed provider conversation handle %q does not match requested handle %q",
+				returned, cfg.ProviderConversationID,
+			)
+		}
+		// The provider never persisted the requested conversation and started a
+		// fresh one in its place. ControllerReady rebinds the session to it.
+		freshReplacement = true
 	}
 	if (cfg.HistoryMode == ports.ChatHistoryRequired) && liveReconnect {
 		// A TUI handoff needs a fresh, verified native-history admission. A host
@@ -709,6 +716,10 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			_ = cleanupUnpublishedConversation(conv, false)
 			return nil, err
 		}
+	}
+	if freshReplacement {
+		// No native history exists to import; continue as a fresh start.
+		cfg.ProviderConversationID = ""
 	}
 	if !liveReconnect && isOpenCodeHarness(cfg.Harness) && conversation.Settings.OpenCodeMode != "" {
 		if err := restoreOpenCodeMode(ctx, conv, conversation.Settings.OpenCodeMode); err != nil {

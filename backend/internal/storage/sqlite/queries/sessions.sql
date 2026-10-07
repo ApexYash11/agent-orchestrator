@@ -96,6 +96,15 @@ WHERE id = sqlc.arg(id)
   AND provider_conversation_id = sqlc.arg(expected_provider_conversation_id)
   AND controller_generation = sqlc.arg(expected_controller_generation);
 
+-- name: ReplaceUnpersistedChatProvider :execrows
+-- Move a Chat from a provider id the provider never persisted to the fresh id
+-- it started instead. Guarded on the old id so a newer owner is never replaced.
+UPDATE sessions SET
+    provider_conversation_id = sqlc.arg(provider_conversation_id)
+WHERE id = sqlc.arg(id)
+  AND session_mode = 'chat'
+  AND provider_conversation_id = sqlc.arg(expected_provider_conversation_id);
+
 -- name: RecordSessionLatestUserPrompt :execrows
 UPDATE sessions SET
     latest_user_prompt = sqlc.arg(latest_user_prompt),

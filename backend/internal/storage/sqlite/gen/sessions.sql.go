@@ -1245,6 +1245,30 @@ func (q *Queries) RenameSessionIfDisplayName(ctx context.Context, arg RenameSess
 	return result.RowsAffected()
 }
 
+const replaceUnpersistedChatProvider = `-- name: ReplaceUnpersistedChatProvider :execrows
+UPDATE sessions SET
+    provider_conversation_id = ?1
+WHERE id = ?2
+  AND session_mode = 'chat'
+  AND provider_conversation_id = ?3
+`
+
+type ReplaceUnpersistedChatProviderParams struct {
+	ProviderConversationID         string
+	ID                             domain.SessionID
+	ExpectedProviderConversationID string
+}
+
+// Move a Chat from a provider id the provider never persisted to the fresh id
+// it started instead. Guarded on the old id so a newer owner is never replaced.
+func (q *Queries) ReplaceUnpersistedChatProvider(ctx context.Context, arg ReplaceUnpersistedChatProviderParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, replaceUnpersistedChatProvider, arg.ProviderConversationID, arg.ID, arg.ExpectedProviderConversationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const restoreSessionControllerEpoch = `-- name: RestoreSessionControllerEpoch :execrows
 UPDATE sessions
 SET session_mode = ?1,
