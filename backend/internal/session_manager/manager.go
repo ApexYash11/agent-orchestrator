@@ -4127,7 +4127,8 @@ func (m *Manager) SendWithOptions(ctx context.Context, id domain.SessionID, mess
 		}
 		message = appendAttachmentReferences(message, refs)
 	}
-	return m.send(ctx, id, message, "", options.AuthoredByUser)
+	options.InteractionAt = m.clock()
+	return m.send(ctx, id, message, "", options)
 }
 
 // SendSemantic delivers an internal message and returns only after the target
@@ -4143,7 +4144,7 @@ func (m *Manager) SendSemantic(ctx context.Context, id domain.SessionID, message
 		return ErrNotFound
 	}
 	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
-		handled, sendErr := m.sendChat(ctx, id, message, clientMessageID, false)
+		handled, sendErr := m.sendChat(ctx, id, message, clientMessageID, ports.MessageDeliveryOptions{})
 		if !handled {
 			return ErrSemanticAcceptanceUnsupported
 		}
@@ -4156,7 +4157,7 @@ func (m *Manager) SendSemantic(ctx context.Context, id domain.SessionID, message
 		return nil
 	}
 	wrapped := domain.WrapReportDelivery(clientMessageID, message)
-	if err := m.send(ctx, id, wrapped, clientMessageID, false); err != nil {
+	if err := m.send(ctx, id, wrapped, clientMessageID, ports.MessageDeliveryOptions{}); err != nil {
 		return err
 	}
 	deadline := time.NewTimer(10 * time.Second)
@@ -4225,12 +4226,12 @@ func (m *Manager) InterruptTUI(ctx context.Context, id domain.SessionID) error {
 // send carries an optional idempotency key used by durable transition-message
 // retries. Ordinary callers leave it empty; the outbox preserves the key across
 // restart, rollback, and even a second overlapping handoff.
-func (m *Manager) send(ctx context.Context, id domain.SessionID, message, clientMessageID string, authoredByUser bool) error {
+func (m *Manager) send(ctx context.Context, id domain.SessionID, message, clientMessageID string, options ports.MessageDeliveryOptions) error {
 	// A controller transition deliberately has a short interval with no writer.
 	// Queue internal/lifecycle sends durably instead of racing either controller
 	// or dropping coordination work; the transition worker drains this outbox
 	// only after the target controller is active.
-	if queued, err := m.queueDuringInterfaceTransition(ctx, id, message, clientMessageID); err != nil {
+	if queued, err := m.queueDuringInterfaceTransition(ctx, id, message, clientMessageID, options); err != nil {
 		return fmt.Errorf("send %s: interface transition: %w", id, err)
 	} else if queued {
 		return nil
@@ -4240,20 +4241,30 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 	// refused as "missing runtime handles" — true of the handles, wrong about the
 	// session, and it left `ao send` and orchestrator-to-worker relay unable to
 	// reach a chat worker.
-	if handled, err := m.sendChat(ctx, id, message, clientMessageID, authoredByUser); handled {
+	if handled, err := m.sendChat(ctx, id, message, clientMessageID, options); handled {
 		return err
 	}
 
+	if _, coordination := domain.CoordinationDeliveryID(message); !coordination && !options.AuthoredByUser && strings.TrimSpace(message) != "" {
+		deliveryID := clientMessageID
+		if deliveryID == "" {
+			deliveryID = "session-send:" + m.newLaunchID()
+		}
+		message = domain.WrapSessionDelivery(deliveryID, message)
+	}
 	message, err := m.prepareOutboundMessage(ctx, id, message)
 	if err != nil {
 		return err
 	}
+	if options.InteractionAt.IsZero() {
+		options.InteractionAt = m.clock()
+	}
 	var afterWrite func(context.Context) error
-	_, internalReportDelivery := domain.ReportDeliveryID(message)
-	if strings.TrimSpace(message) != "" && !internalReportDelivery {
+	_, internalReportDelivery := domain.CoordinationDeliveryID(message)
+	if strings.TrimSpace(message) != "" && !internalReportDelivery && options.AuthoredByUser {
 		if recorder, ok := m.store.(latestUserPromptRecorder); ok {
 			afterWrite = func(writeCtx context.Context) error {
-				if _, recordErr := recorder.RecordSessionLatestUserPrompt(writeCtx, id, boundedConversationFact(message), m.clock()); recordErr != nil {
+				if _, recordErr := recorder.RecordSessionLatestUserPrompt(writeCtx, id, boundedConversationFact(message), options.InteractionAt); recordErr != nil {
 					m.logger.Warn("send: delivered message but failed to persist latest user prompt", "sessionID", id, "error", recordErr)
 				}
 				return nil
@@ -4277,6 +4288,15 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 		return fmt.Errorf("send %s: %w", id, ErrStartupPending)
 	case sessionguard.SuppressedInputGated:
 		return fmt.Errorf("send %s: %w", id, ErrSwitchInProgress)
+	}
+	// Chat and transition queues persist interaction in their acceptance transaction.
+	// Only direct terminal sends need this separate fact; outbox replay already has it.
+	if options.SenderSessionID != "" && clientMessageID == "" {
+		if recorder, ok := m.store.(ports.SessionInteractionRecorder); ok {
+			if err := recorder.RecordSessionInteraction(context.WithoutCancel(ctx), id, options.SenderSessionID, options.InteractionAt); err != nil {
+				return fmt.Errorf("record interaction: %w", err)
+			}
+		}
 	}
 	// confirmActive only helps — and is only SAFE — when the harness reports
 	// both a prompt-submit signal (so the loop can observe active) and a
