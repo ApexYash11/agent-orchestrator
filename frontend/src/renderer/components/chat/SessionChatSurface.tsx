@@ -228,8 +228,12 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 					: [],
 			),
 		);
+		const queuedTurnIds = new Set(snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id));
 		for (const echo of localEchos) {
-			if (echo.turnId && durableHumanTurnIds.has(echo.turnId)) acknowledgeLocalEcho?.(echo.turnId);
+			if (
+				echo.turnId && durableHumanTurnIds.has(echo.turnId) &&
+				!(echo.backgroundWake && queuedTurnIds.has(echo.turnId))
+			) acknowledgeLocalEcho?.(echo.turnId);
 		}
 	}, [acknowledgeLocalEcho, localEchos, snapshot]);
 	useEffect(() => {
@@ -551,7 +555,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				onResumeAgent={() => {
 					void commands.resumeAgent().catch(() => {});
 				}}
-				resumingAgent={commands.resumingAgent}
+				resumingAgent={commands.resumingAgent || (renderSnapshot.controller.state === "hibernated" && controllerBusy)}
 				resumeError={commands.resumeError ?? controllerResumeError}
 				onOpenShell={onOpenShell}
 				openingShell={openingShell}
@@ -566,7 +570,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				configOptions={configOptions.options}
 				onChooseConfigOption={configOptions.setOption}
 				configOptionPending={configOptions.pending || commands.choosingSettings}
-				configOptionError={configOptions.error}
+				configOptionError={controllerCatalogsEnabled ? configOptions.error : undefined}
 				onCompact={commands.compact}
 				compacting={commands.compacting}
 				compactUnavailable={commands.compactUnavailable}
