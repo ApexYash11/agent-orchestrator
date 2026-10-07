@@ -3473,6 +3473,123 @@ describe("agent browser runtime", () => {
 	});
 });
 
+describe("agent browser screenshot", () => {
+	it("captures through the native runtime", async () => {
+		const runtime = {
+			runAction: vi.fn(async () => ({})),
+			screenshot: vi.fn(async () => ({
+				data: Buffer.from("png-snapshot").toString("base64"),
+				width: 640,
+				height: 480,
+				untrustedExternalContent: true as const,
+			})),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		const { host, webContents } = setupHost(runtime);
+
+		const result = await host.execute("sess-1", "screenshot");
+
+		expect(runtime.screenshot).toHaveBeenCalledWith(
+			"sess-1",
+			expect.objectContaining({ listTargets: expect.any(Function) }),
+			undefined,
+			{ annotate: false },
+		);
+		expect(result).toMatchObject({
+			data: Buffer.from("png-snapshot").toString("base64"),
+			width: 640,
+			height: 480,
+			untrustedExternalContent: true,
+		});
+		expect(webContents.capturePage).not.toHaveBeenCalled();
+	});
+
+	it("falls back to capturePage when native capture times out", async () => {
+		const runtime = {
+			runAction: vi.fn(async () => ({})),
+			screenshot: vi.fn(async () => {
+				throw Object.assign(new Error("agent-browser command timed out"), { code: "AGENT_BROWSER_TIMEOUT" });
+			}),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		const { host, webContents } = setupHost(runtime);
+
+		const result = await host.execute("sess-1", "screenshot");
+
+		expect(webContents.capturePage).toHaveBeenCalledOnce();
+		expect(result).toMatchObject({
+			data: Buffer.from("png-snapshot").toString("base64"),
+			width: 640,
+			height: 480,
+			untrustedExternalContent: true,
+		});
+	});
+
+	it("reports SCREENSHOT_UNAVAILABLE when the fallback captures an empty image", async () => {
+		const runtime = {
+			runAction: vi.fn(async () => ({})),
+			screenshot: vi.fn(async () => {
+				throw Object.assign(new Error("agent-browser command timed out"), { code: "AGENT_BROWSER_TIMEOUT" });
+			}),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		const { host, webContents } = setupHost(runtime);
+		webContents.capturePage.mockResolvedValueOnce({
+			isEmpty: () => true,
+			toJPEG: () => Buffer.alloc(0),
+			toPNG: () => Buffer.alloc(0),
+			getSize: () => ({ width: 0, height: 0 }),
+			resize: vi.fn(),
+		} as never);
+
+		await expect(host.execute("sess-1", "screenshot")).rejects.toMatchObject({
+			code: "SCREENSHOT_UNAVAILABLE",
+		});
+	});
+
+	it("cancels a hung screenshot fallback without blocking the next command", async () => {
+		const runtime = {
+			runAction: vi.fn(async () => ({ snapshot: "ok", refs: {} })),
+			screenshot: vi.fn(async () => {
+				throw Object.assign(new Error("agent-browser command timed out"), { code: "AGENT_BROWSER_TIMEOUT" });
+			}),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		const { host, webContents } = setupHost(runtime);
+		webContents.capturePage.mockReturnValueOnce(new Promise(() => undefined));
+		const controller = new AbortController();
+		const screenshot = host.execute("sess-1", "screenshot", undefined, controller.signal);
+
+		await vi.waitFor(() => expect(webContents.capturePage).toHaveBeenCalledOnce());
+		controller.abort();
+		await expect(screenshot).rejects.toMatchObject({ code: "BROWSER_COMMAND_CANCELED" });
+		await expect(host.execute("sess-1", "snapshot")).resolves.toMatchObject({ text: "ok", refs: {} });
+	});
+
+	it("propagates non-timeout native screenshot errors without falling back", async () => {
+		const runtime = {
+			runAction: vi.fn(async () => ({})),
+			screenshot: vi.fn(async () => {
+				throw Object.assign(new Error("agent-browser exited with code 1"), {
+					code: "AGENT_BROWSER_COMMAND_FAILED",
+				});
+			}),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		const { host, webContents } = setupHost(runtime);
+
+		await expect(host.execute("sess-1", "screenshot")).rejects.toMatchObject({
+			code: "AGENT_BROWSER_COMMAND_FAILED",
+		});
+		expect(webContents.capturePage).not.toHaveBeenCalled();
+	});
+});
+
 describe("browser tab lifecycle stress (tabs stop closing regression guard)", () => {
 	const stressTabCount = 16;
 	// Re-verifies the historically reported "tabs stop closing" bug against the

@@ -633,6 +633,10 @@ const POPUP_TARGET_SYNC_TIMEOUT_MS = 5_000;
 // Annotation submit must never feel laggy: capture is best-effort and bounded
 // so a slow/hung capturePage() can't delay the send past this ceiling.
 const ANNOTATION_SNAPSHOT_TIMEOUT_MS = 200;
+const MAX_SCREENSHOT_BYTES = 5 << 20;
+// A native screenshot may time out while the hidden WebContentsView remains
+// capturable through Electron. Keep this fallback bounded and cancelable.
+const SCREENSHOT_FALLBACK_TIMEOUT_MS = 5_000;
 // Caps the longest edge so the encoded image stays small and matches Claude
 // vision's effective resolution — larger just costs more tokens for no gain.
 const ANNOTATION_SNAPSHOT_MAX_DIMENSION = 1568;
@@ -2118,6 +2122,38 @@ export function createBrowserViewHost(
           )
         : image;
     return { mimeType: "image/png", data: resized.toPNG().toString("base64") };
+  };
+
+  const captureScreenshotFallback = async (
+    entry: BrowserEntry,
+    signal?: AbortSignal,
+  ): Promise<NativeImage> => {
+    throwIfAborted(signal);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      return await new Promise<NativeImage>((resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              browserError(
+                "SCREENSHOT_UNAVAILABLE",
+                "The browser page could not be captured in time",
+              ),
+            ),
+          SCREENSHOT_FALLBACK_TIMEOUT_MS,
+        );
+        onAbort = () =>
+          reject(
+            browserError("BROWSER_COMMAND_CANCELED", "Browser command was canceled"),
+          );
+        signal?.addEventListener("abort", onAbort, { once: true });
+        void entry.view.webContents.capturePage().then(resolve, reject);
+      });
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
   };
 
   const clearTemporaryPartition = (partition: string): Promise<void> => {
@@ -3614,13 +3650,33 @@ export function createBrowserViewHost(
                 await ensureNativeActiveTab(session, signal);
                 const targetEntry = activeEntry(session);
                 await targetEntry.ready;
-                const result = await options.agentBrowserRuntime!.screenshot(
-                  sessionId,
-                  agentBrowserTargets(session),
-                  signal,
-                  { annotate: args.annotate === true },
-                );
-                return { ...result, target: agentActionTarget(targetEntry) };
+                try {
+                  const result = await options.agentBrowserRuntime!.screenshot(
+                    sessionId,
+                    agentBrowserTargets(session),
+                    signal,
+                    { annotate: args.annotate === true },
+                  );
+                  return { ...result, target: agentActionTarget(targetEntry) };
+                } catch (error) {
+                  if (!isAgentBrowserTimeout(error)) throw error;
+                  const image = await captureScreenshotFallback(targetEntry, signal);
+                  if (image.isEmpty()) {
+                    throw browserError("SCREENSHOT_UNAVAILABLE", "The browser page could not be captured");
+                  }
+                  const png = image.toPNG();
+                  if (png.length > MAX_SCREENSHOT_BYTES) {
+                    throw browserError("SCREENSHOT_UNAVAILABLE", "Browser screenshot exceeded AO's size limit");
+                  }
+                  const { width, height } = image.getSize();
+                  return {
+                    data: png.toString("base64"),
+                    width,
+                    height,
+                    target: agentActionTarget(targetEntry),
+                    untrustedExternalContent: true as const,
+                  };
+                }
               },
               signal,
             );
@@ -3845,6 +3901,15 @@ function isAgentBrowserCommandFailure(error: unknown): boolean {
     typeof error === "object" &&
     "code" in error &&
     error.code === "AGENT_BROWSER_COMMAND_FAILED",
+  );
+}
+
+function isAgentBrowserTimeout(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "AGENT_BROWSER_TIMEOUT",
   );
 }
 
