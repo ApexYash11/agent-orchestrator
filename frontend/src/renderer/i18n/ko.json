@@ -1814,6 +1814,7 @@
 	"files.newSide": "새",
 	"files.fileFeedbackTarget": "{{file}} · 전체 파일",
 	"files.lineFeedbackTarget": "{{file}} · {{side}} 쪽 {{line}}행",
+	"files.askInChat": "채팅에서 질문",
 	"files.feedbackLabel": "{{target}}에 대한 피드백",
 	"files.feedbackPlaceholder": "에이전트가 변경해야 할 내용을 설명하세요...",
 	"files.feedbackShortcut": "⌘/Ctrl + Enter로 전송",

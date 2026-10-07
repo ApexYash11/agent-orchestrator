@@ -1841,6 +1841,7 @@
 	"files.newSide": "nouvelle",
 	"files.fileFeedbackTarget": "{{file}} · fichier entier",
 	"files.lineFeedbackTarget": "{{file}} · ligne {{side}} {{line}}",
+	"files.askInChat": "Demander dans le chat",
 	"files.feedbackLabel": "Commentaire pour {{target}}",
 	"files.feedbackPlaceholder": "Décrivez ce que l'agent doit modifier...",
 	"files.feedbackShortcut": "⌘/Ctrl + Entrée pour envoyer",

@@ -99,6 +99,7 @@ import {
 } from "../../lib/chat-drafts";
 import { attachmentURL, IMAGE_ATTACHMENT_PATH, isInlineImagePath, proseBesideImages } from "./messageAttachments";
 import { setChatDraftBoundary } from "../../lib/chat-draft-boundary";
+import { subscribeChatComposerReferences } from "../../lib/chat-context-bus";
 
 // These responses precede AppendUserMessage. Provider/transport errors can
 // follow durable acceptance and must keep the original delivery ID for recovery.
@@ -369,6 +370,17 @@ export const ChatComposer = memo(function ChatComposer({
 	const previousTrigger = useRef<ComposerTrigger | undefined>(undefined);
 	const triggerRef = useRef<ComposerTrigger | undefined>(undefined);
 	const automaticDeliveryRecoveryAttempted = useRef<string | undefined>(undefined);
+	// Code selected in a file or diff view ("Ask in chat") arrives here as a
+	// reference chip. Only the session's ordinary prompt accepts it; a queued-turn
+	// edit has no draftSessionId and stays out of the way.
+	useEffect(() => {
+		if (!draftSessionId) return;
+		return subscribeChatComposerReferences(draftSessionId, (reference) => {
+			editor.current?.insertReference(reference.path, reference.display, reference.wire);
+			// The Chat surface may only now be coming forward from behind a file tab.
+			window.requestAnimationFrame(() => window.requestAnimationFrame(() => editor.current?.focus()));
+		});
+	}, [draftSessionId]);
 	const restoredSeedKey = useRef<string | undefined>(undefined);
 	const restoredSessionId = useRef<string | undefined>(undefined);
 	const persistedDraft = useMemo(

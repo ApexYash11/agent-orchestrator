@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { Activity, Profiler } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "./ChatComposer";
+import { sendReferenceToChat } from "../../lib/chat-context-bus";
 import { attachmentURL } from "./messageAttachments";
 import { getApiBaseUrl } from "../../lib/api-client";
 import { TooltipProvider } from "../ui/tooltip";
@@ -342,6 +343,32 @@ describe("send keys", () => {
 		expect(onSend).toHaveBeenCalledWith("show this immediately");
 		expect(field).toHaveTextContent("");
 		pending.resolve();
+	});
+
+	it("takes an Ask-in-chat code reference as a chip and sends its code with the question", async () => {
+		const sessionId = "composer-ask-in-chat-reference";
+		const onSend = vi.fn().mockResolvedValue(undefined);
+		render(<ChatComposer draftSessionId={sessionId} onSend={onSend} />);
+		const field = screen.getByLabelText("Message the agent");
+
+		act(() => {
+			expect(sendReferenceToChat(sessionId, {
+				path: "src/retry.ts",
+				display: "retry.ts#L3-L4",
+				wire: "\n[src/retry.ts#L3-L4]\n```diff\n+await retry();\n```\n",
+			})).toBe(true);
+		});
+		await waitFor(() => expect(within(field).getByText("retry.ts#L3-L4")).toBeInTheDocument());
+		await typeInComposer(field, "why twice?");
+		fireEvent.keyDown(field, { key: "Enter" });
+
+		await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+		const sent = onSend.mock.calls[0][0] as string;
+		expect(sent).toContain("[src/retry.ts#L3-L4]");
+		expect(sent).toContain("+await retry();");
+		expect(sent).toContain("why twice?");
+		// Another session's composer never receives it.
+		expect(sendReferenceToChat("some-other-session", { path: "x", display: "x", wire: "x" })).toBe(false);
 	});
 
 	it.each([false, true])("keeps the composer editable after a successful live send (queued: %s)", async (willQueue) => {
