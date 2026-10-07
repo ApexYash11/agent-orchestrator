@@ -481,6 +481,13 @@ type BrowserEntry = {
   view: BrowserViewLike;
   ready: Promise<void>;
   state: BrowserNavState;
+  // The newest renderer navigation that is still loading. A profile switch stops
+  // in-flight loads and reloads each tab in the new profile. Until the server's
+  // first response arrives, getURL() still returns the previous page, so the
+  // switch reloads this URL instead of dropping the page the user asked for.
+  // Compared by identity: an older, aborted load of the same URL must not clear
+  // a newer one.
+  pendingNavigation?: { url: string };
   findState: BrowserFindState & { requestId?: number };
   annotationEnabled: boolean;
   annotationSessions: Map<
@@ -520,7 +527,13 @@ type BrowserSessionEntry = {
   networkTabId?: string;
   agentBrowserCommands: number;
   browserOperations: number;
+  // Woken when no agent command or renderer operation is in flight.
+  idleWaiters: Array<() => void>;
   profileSwitching: boolean;
+  // Set once a switch has drained in-flight work and is replacing the tabs.
+  // Until then, work admitted before the switch (an agent tab-new or tab-close)
+  // may still open and close tabs; profileSwitching refuses only new work.
+  profileReplacing: boolean;
   profileSwitchTargetId: BrowserProfileId | null;
   nativeActiveTabId?: string;
   snapshotDeltaBaseline?: {
@@ -648,6 +661,11 @@ const UNTRUSTED_END = "<<<END UNTRUSTED EXTERNAL CONTENT>>>";
 // preview origin instead.
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const TEMPORARY_BROWSER_PARTITION_PREFIX = "persist:ao-browser-temporary-";
+// A confirmed profile switch refuses new agent commands and waits for the
+// in-flight ones (and stopped page loads) to finish. Agent commands can run for
+// up to 60s, so without a cap the switch would hang and block every other agent
+// command that long. After this, it fails with "still busy" and the user retries.
+const PROFILE_SWITCH_SETTLE_MS = 10_000;
 
 function temporaryBrowserPartition(): string {
   return `${TEMPORARY_BROWSER_PARTITION_PREFIX}${randomUUID()}`;
@@ -738,6 +756,21 @@ export function createBrowserViewHost(
   const rendererOwnersByViewId = new Map<string, Set<number>>();
   const tabsByWebContentsId = new Map<number, BrowserEntry>();
   const pendingTemporaryPartitionClears = new Set<Promise<void>>();
+  // Workers whose human explicitly picked the temporary profile this run.
+  const explicitTemporarySessionIds = new Set<string>();
+
+  // A worker without a durable binding starts in the first configured profile;
+  // temporary is used only when no profile exists or the human picked it.
+  const initialProfileIdForSession = (
+    sessionId: string,
+  ): BrowserProfileId | null => {
+    const store = options.browserProfileStore;
+    if (!store || explicitTemporarySessionIds.has(sessionId)) return null;
+    const boundProfileId = store.getSessionProfileId(sessionId);
+    if (boundProfileId && store.getProfile(boundProfileId))
+      return boundProfileId;
+    return store.profiles[0]?.id ?? null;
+  };
   const ipcDisposers: Array<() => void> = [];
   let disposePromise: Promise<void> | null = null;
   // viewId of the panel that most recently held native focus; cleared when the
@@ -755,6 +788,37 @@ export function createBrowserViewHost(
   const forgetBrowserShortcutTarget = (viewId: string): void => {
     if (lastUsedViewId === viewId) lastUsedViewId = null;
   };
+  const isBrowserIdle = (session: BrowserSessionEntry): boolean =>
+    session.agentBrowserCommands === 0 && session.browserOperations === 0;
+  const wakeIfIdle = (session: BrowserSessionEntry): void => {
+    if (isBrowserIdle(session))
+      session.idleWaiters.splice(0).forEach((wake) => wake());
+  };
+  const waitForBrowserIdle = (
+    session: BrowserSessionEntry,
+    timeoutMs: number,
+  ): Promise<void> =>
+    isBrowserIdle(session)
+      ? Promise.resolve()
+      : new Promise((resolve) => {
+          const timer = setTimeout(resolve, timeoutMs);
+          session.idleWaiters.push(() => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+  const settlesWithin = (
+    promise: Promise<unknown>,
+    timeoutMs: number,
+  ): Promise<boolean> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+      const settle = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      void promise.then(settle, settle);
+    });
   const setAgentBrowserActivity = (
     session: BrowserSessionEntry,
     action: string,
@@ -766,6 +830,7 @@ export function createBrowserViewHost(
       0,
       session.agentBrowserCommands + (active ? 1 : -1),
     );
+    if (!active) wakeIfIdle(session);
     shellWebContents.send("browser:agentActivity", {
       viewId: session.viewId,
       active: session.agentBrowserCommands > 0,
@@ -1097,12 +1162,7 @@ export function createBrowserViewHost(
     const viewId = existingViewId ?? `${rendererId ?? 0}:${sessionId}`;
     let session = entries.get(viewId);
     if (!session) {
-      const boundProfileId =
-        options.browserProfileStore?.getSessionProfileId(sessionId);
-      const boundProfile = boundProfileId
-        ? options.browserProfileStore?.getProfile(boundProfileId)
-        : undefined;
-      const profileId = boundProfile ? boundProfile.id : null;
+      const profileId = initialProfileIdForSession(sessionId);
       session = {
         sessionId,
         viewId,
@@ -1123,7 +1183,9 @@ export function createBrowserViewHost(
         layoutRevision: 0,
         agentBrowserCommands: 0,
         browserOperations: 0,
+        idleWaiters: [],
         profileSwitching: false,
+        profileReplacing: false,
         profileSwitchTargetId: null,
         nativeOperationQueue: Promise.resolve(),
         devtoolsPlacement: DEFAULT_NATIVE_DEVTOOLS_PLACEMENT,
@@ -1167,13 +1229,10 @@ export function createBrowserViewHost(
     const store = options.browserProfileStore;
     if (store) {
       for (;;) {
-        const boundProfileId = store.getSessionProfileId(sessionId);
-        if (
-          !boundProfileId ||
-          !store.isProfileOperationInProgress(boundProfileId)
-        )
+        const profileId = initialProfileIdForSession(sessionId);
+        if (!profileId || !store.isProfileOperationInProgress(profileId))
           break;
-        await store.waitForProfileOperation(boundProfileId);
+        await store.waitForProfileOperation(profileId);
       }
     }
     if (isUnavailable?.()) {
@@ -1215,6 +1274,7 @@ export function createBrowserViewHost(
       return await operation();
     } finally {
       session.browserOperations = Math.max(0, session.browserOperations - 1);
+      wakeIfIdle(session);
     }
   };
 
@@ -1400,7 +1460,7 @@ export function createBrowserViewHost(
     // agent was on before the link, not the one it's actually looking at now.
     syncNativeOnActivate = false,
   ): Promise<BrowserEntry> => {
-    assertProfileStable(session);
+    assertTabsNotReplacing(session);
     return withBrowserOperation(session, async () => {
       let normalizedURL: string | undefined;
       if (url) {
@@ -1479,7 +1539,7 @@ export function createBrowserViewHost(
     session: BrowserSessionEntry,
     tabId = session.activeTabId,
   ): BrowserTabsState {
-    assertProfileStable(session);
+    assertTabsNotReplacing(session);
     if (session.tabs.size === 1) {
       throw browserError(
         "CANNOT_CLOSE_LAST_TAB",
@@ -1958,6 +2018,18 @@ export function createBrowserViewHost(
     }
   }
 
+  // openTab/closeTab also run inside work admitted before a switch started
+  // (agent tab-new/tab-close, popups), so they refuse only while tabs are
+  // actually being replaced. Entry points check assertProfileStable.
+  function assertTabsNotReplacing(session: BrowserSessionEntry): void {
+    if (session.profileReplacing) {
+      throw browserError(
+        "BROWSER_PROFILE_SWITCHING",
+        "Browser profile switching is in progress",
+      );
+    }
+  }
+
   const setBounds = (
     { viewId, revision, rect, visible }: BrowserBoundsInput,
     zoomFactor = 1,
@@ -2034,6 +2106,8 @@ export function createBrowserViewHost(
     ) {
       cancelAnnotation(options, entry, "navigation");
     }
+    const pendingNavigation = { url: normalized.href };
+    entry.pendingNavigation = pendingNavigation;
     try {
       await entry.view.webContents.loadURL(normalized.href);
     } catch (err) {
@@ -2046,6 +2120,9 @@ export function createBrowserViewHost(
       };
       shellWebContents.send("browser:navState", entry.state);
       return entry.state;
+    } finally {
+      if (entry.pendingNavigation === pendingNavigation)
+        entry.pendingNavigation = undefined;
     }
     const session = entries.get(entry.state.viewId);
     if (session?.activeTabId === entry.tabId)
@@ -2263,6 +2340,13 @@ export function createBrowserViewHost(
       createTab(session, false, false, saved.tabId);
     }
     session.nextTabNumber = Math.max(nextTabNumber, highestTabNumber + 1);
+    // Activate before reloading: pages can take seconds to load in the new
+    // profile, and IPC, overlay refreshes, and agent commands that run in the
+    // meantime all need an active tab (an empty one crashed the main process).
+    const nextActiveTabId = session.tabs.has(activeTabId)
+      ? activeTabId
+      : tabs[0]!.tabId;
+    activateTab(session, nextActiveTabId, false);
     for (const saved of tabs) {
       if (!saved.url) continue;
       const entry = session.tabs.get(saved.tabId);
@@ -2283,10 +2367,6 @@ export function createBrowserViewHost(
       assertCurrentSession();
     }
     assertCurrentSession();
-    const nextActiveTabId = session.tabs.has(activeTabId)
-      ? activeTabId
-      : tabs[0]!.tabId;
-    activateTab(session, nextActiveTabId, false);
     // A newly-created agent-browser runtime starts on the provider's first
     // target, regardless of which human tab AO restored as active. Preserve
     // that distinction so the next agent command selects the right target.
@@ -2333,11 +2413,7 @@ export function createBrowserViewHost(
     }
     if (normalizedRequestedProfileId === session.profileId)
       return pushProfileState(session);
-    if (
-      session.agentBrowserCommands > 0 ||
-      session.browserOperations > 0 ||
-      session.profileSwitching
-    ) {
+    if (session.profileSwitching) {
       throw browserError(
         "BROWSER_PROFILE_ACTIVE",
         "Wait for browser activity to finish before switching profiles",
@@ -2371,19 +2447,45 @@ export function createBrowserViewHost(
       }
     };
     try {
-      // A renderer tab-selection operation does not increment the agent activity
-      // counter. Let already-queued native work finish before tearing down CDP.
-      await session.nativeOperationQueue;
-      assertCurrentSession();
-      if (session.agentBrowserCommands > 0 || session.browserOperations > 0) {
-        throw browserError(
-          "BROWSER_PROFILE_ACTIVE",
-          "Wait for browser activity to finish before switching profiles",
-        );
+      // A confirmed human switch outranks in-flight browser work. Setting
+      // profileSwitching above already refuses new agent commands; let the ones
+      // in flight finish. Page loads can stay pending for as long as a slow page
+      // keeps loading, so remember their targets, stop them so navigate()
+      // settles, and reload them in the new profile.
+      const pendingURLs = new Map<string, string>();
+      for (const entry of session.tabs.values()) {
+        if (entry.pendingNavigation)
+          pendingURLs.set(entry.tabId, entry.pendingNavigation.url);
       }
+      if (session.browserOperations > 0) {
+        for (const entry of session.tabs.values())
+          entry.view.webContents.stop();
+      }
+      const deadline = Date.now() + PROFILE_SWITCH_SETTLE_MS;
+      const assertSettled = (settled: boolean): void => {
+        assertCurrentSession();
+        if (!settled || !isBrowserIdle(session)) {
+          throw browserError(
+            "BROWSER_PROFILE_ACTIVE",
+            "Wait for browser activity to finish before switching profiles",
+          );
+        }
+      };
+      await waitForBrowserIdle(session, PROFILE_SWITCH_SETTLE_MS);
+      assertSettled(true);
+      // A renderer tab-selection operation does not increment the agent activity
+      // counter. Let already-queued native work finish before tearing down CDP,
+      // within the same deadline; the queue itself is left intact.
+      assertSettled(
+        await settlesWithin(session.nativeOperationQueue, deadline - Date.now()),
+      );
+      session.profileReplacing = true;
       previousActiveTabId = session.activeTabId;
       previousNextTabNumber = session.nextTabNumber;
-      savedTabs = savedTabsForSession(session);
+      savedTabs = savedTabsForSession(session).map((tab) => {
+        const url = pendingURLs.get(tab.tabId);
+        return url ? { ...tab, url } : tab;
+      });
       destroyDevTools(session);
       for (const entry of session.tabs.values())
         cancelAnnotation(options, entry, "navigation");
@@ -2412,6 +2514,9 @@ export function createBrowserViewHost(
       pushProfileState(session);
       pushDevToolsState(session);
       pushNavState(options, activeEntry(session));
+      if (normalizedRequestedProfileId === null)
+        explicitTemporarySessionIds.add(session.sessionId);
+      else explicitTemporarySessionIds.delete(session.sessionId);
       if (previousProfileId === null)
         await clearTemporaryPartition(previousPartition);
       return profileStateForSession(session);
@@ -2454,6 +2559,7 @@ export function createBrowserViewHost(
       throw error;
     } finally {
       session.profileSwitching = false;
+      session.profileReplacing = false;
       session.profileSwitchTargetId = null;
     }
   };
@@ -2478,10 +2584,8 @@ export function createBrowserViewHost(
       hasNavigated: [...session.tabs.values()].some(
         (entry) => !isBlankBrowserEntry(entry),
       ),
-      agentActive:
-        session.agentBrowserCommands > 0 ||
-        session.browserOperations > 0 ||
-        session.profileSwitching,
+      // Renderer page loads do not block: switchProfile stops them itself.
+      agentActive: session.agentBrowserCommands > 0 || session.profileSwitching,
     };
   };
 
