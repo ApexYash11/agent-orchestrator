@@ -3789,6 +3789,10 @@ export interface components {
         ConversationContentSummaryResponse: {
             mimeType?: string;
             name?: string;
+            sourceMessageId?: string;
+            /** Format: int64 */
+            sourceRevision?: number;
+            text?: string;
             type: string;
             uri?: string;
         };
@@ -3800,6 +3804,13 @@ export interface components {
             rolledBack?: boolean;
             /** @enum {string} */
             status: "added" | "modified" | "deleted" | "renamed";
+        };
+        ConversationExcerptReferenceRequest: {
+            conversationId: string;
+            messageId: string;
+            /** Format: int64 */
+            revision: number;
+            text: string;
         };
         ConversationImageContentRequest: {
             data: string;
@@ -4814,6 +4825,7 @@ export interface components {
         SendConversationMessageRequest: {
             attachments?: components["schemas"]["ConversationImageContentRequest"][];
             clientMessageId?: string;
+            excerpts?: components["schemas"]["ConversationExcerptReferenceRequest"][];
             resources?: components["schemas"]["ConversationResourceContentRequest"][];
             text: string;
         };

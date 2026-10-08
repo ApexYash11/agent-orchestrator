@@ -6119,3 +6119,14 @@ html[data-native-browser-composition="true"] .browser-popout-frame {
 	}
 }
 
+::highlight(chat-annotation) {
+	background-color: #6b728040;
+	color: inherit;
+}
+
+.chat-annotation-target {
+	background-color: #6b72801f;
+	outline: 2px solid #6b7280;
+	outline-offset: 4px;
+	border-radius: 10px;
+}
