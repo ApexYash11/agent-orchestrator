@@ -41,6 +41,8 @@ import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import { cloudAgentInfos } from "../lib/cloud-agents";
 import { aoBridge } from "../lib/bridge";
 import { CloudCpError } from "../lib/cloud-cp";
+import { DEFAULT_CODER_WORKSPACE_NAME_PREFIX, isValidCoderWorkspaceNamePrefix } from "../lib/coder-workspace-name";
+import { useOrgCoderConfig } from "../hooks/useOrgCoderConfig";
 import type { CloudCpGitHubAppRepository } from "../lib/cloud-cp/types";
 import { useCloudSession } from "../lib/cloud-session";
 import { useUiStore } from "../stores/ui-store";
@@ -48,6 +50,7 @@ import { useShellMaybe } from "../lib/shell-context";
 import { resolveSandboxProviderPreference, useSandboxProviderStore } from "../stores/sandbox-provider-store";
 import {
 	onboardingAlertErrorClass,
+	onboardingFieldErrorClass,
 	onboardingFieldHintClass,
 	onboardingFooterActionsClass,
 	onboardingFormLabelClass,
@@ -1266,12 +1269,15 @@ function CloudAgentSetupStep({
 	isCreating,
 	createError,
 	templateMissing,
+	createBlocked = false,
 }: {
 	onBack: () => void;
 	onCreate: (selection: { workerAgent: string; orchestratorAgent: string }) => void;
 	isCreating: boolean;
 	createError: string | null;
 	templateMissing: boolean;
+	/** Another field (e.g. an invalid Coder workspace prefix) blocks create; it shows its own error. */
+	createBlocked?: boolean;
 }) {
 	const { t } = useTranslation();
 	const connections = useProviderConnections();
@@ -1291,7 +1297,7 @@ function CloudAgentSetupStep({
 	}, [readyAgentId]);
 
 	const anyAgentReady = cloudAgents.some((agent) => agent.authentication.state === "authorized");
-	const canCreate = !isCreating && workerAgent !== "" && orchestratorAgent !== "" && !templateMissing;
+	const canCreate = !isCreating && workerAgent !== "" && orchestratorAgent !== "" && !templateMissing && !createBlocked;
 
 	return (
 		<div className="flex flex-col gap-5">
@@ -1402,6 +1408,14 @@ function CloudProjectCard({
 		usesCoder &&
 		coderTemplates.templates.length > 0 &&
 		coderTemplateId.trim() === "";
+	const coderWorkspaceNamePrefix = useCoderSessionOptionsStore((s) => s.workspaceNamePrefix);
+	const setCoderWorkspaceNamePrefix = useCoderSessionOptionsStore((s) => s.setWorkspaceNamePrefix);
+	// Workspace naming is a bring-your-own-Coder control: only an org that
+	// connected its own Coder deployment sees and sends the prefix.
+	const orgOwnsCoder = useOrgCoderConfig().data != null;
+	const showCoderWorkspaceNamePrefix = usesCoder && orgOwnsCoder;
+	const coderWorkspaceNamePrefixInvalid =
+		showCoderWorkspaceNamePrefix && !isValidCoderWorkspaceNamePrefix(coderWorkspaceNamePrefix.trim());
 	const resetCoderOptions = useCoderSessionOptionsStore((s) => s.reset);
 	useEffect(() => {
 		resetCoderOptions();
@@ -1601,9 +1615,17 @@ function CloudProjectCard({
 		setSubmitError(null);
 		setIsCreating(true);
 		try {
-			const coder = usesCoder ? buildCoderRequestOptions(useCoderSessionOptionsStore.getState()) : undefined;
+			const coderOptions = useCoderSessionOptionsStore.getState();
+			const coder = usesCoder
+				? buildCoderRequestOptions({ ...coderOptions, workspaceNamePrefix: showCoderWorkspaceNamePrefix ? coderOptions.workspaceNamePrefix : "" })
+				: undefined;
 			if (coderTemplateMissing) {
 				setSubmitError(t("createProject.coderTemplateRequired", { defaultValue: "Select a Coder template before creating this project." }));
+				setIsCreating(false);
+				return;
+			}
+			// The field shows its own error; create stays blocked until it is valid.
+			if (coderWorkspaceNamePrefixInvalid) {
 				setIsCreating(false);
 				return;
 			}
@@ -1813,8 +1835,33 @@ function CloudProjectCard({
 
 				{/* Coder template and size are inherited by every session. */}
 				{usesCoder && selectedRepo !== undefined ? (
-					<div className="space-y-2">
+					<div className="space-y-4">
 						<CoderTemplatePicker orgId={org?.id} />
+						{showCoderWorkspaceNamePrefix ? <div className="flex flex-col gap-2 text-sm">
+							<Label htmlFor="coderWorkspaceNamePrefix" className="font-medium text-foreground">
+								{t("coder.workspacePrefix.label")}
+							</Label>
+							<Input
+								id="coderWorkspaceNamePrefix"
+								value={coderWorkspaceNamePrefix}
+								onChange={(event) => setCoderWorkspaceNamePrefix(event.target.value)}
+								placeholder={DEFAULT_CODER_WORKSPACE_NAME_PREFIX}
+								maxLength={20}
+								spellCheck={false}
+								autoCapitalize="off"
+								autoComplete="off"
+								className="font-mono"
+								aria-invalid={coderWorkspaceNamePrefixInvalid || undefined}
+								aria-describedby="coderWorkspaceNamePrefixHint"
+							/>
+							<p
+								id="coderWorkspaceNamePrefixHint"
+								className={coderWorkspaceNamePrefixInvalid ? onboardingFieldErrorClass : onboardingFieldHintClass}
+								role={coderWorkspaceNamePrefixInvalid ? "alert" : undefined}
+							>
+								{coderWorkspaceNamePrefixInvalid ? t("coder.workspacePrefix.invalid") : t("coder.workspacePrefix.hint")}
+							</p>
+						</div> : null}
 					</div>
 				) : null}
 
@@ -1826,6 +1873,7 @@ function CloudProjectCard({
 						isCreating={isCreating}
 						createError={submitError}
 						templateMissing={coderTemplateMissing}
+						createBlocked={coderWorkspaceNamePrefixInvalid}
 					/>
 				) : null}
 
