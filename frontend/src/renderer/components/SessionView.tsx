@@ -1211,6 +1211,16 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 		sourcePreviewUrl: session?.previewUrl,
 		navUrl: browserView.navState.url,
 	});
+	const browserViewId = browserView.viewId;
+	useEffect(
+		() =>
+			window.ao?.browser.onClosePanel((targetViewId) => {
+				if (!browserViewId || targetViewId !== browserViewId) return;
+				setBrowserPopOutState({ sessionId, phase: "docked" });
+				setInspectorOpenForSession(uiSessionId, false);
+			}),
+		[browserViewId, sessionId, uiSessionId, setInspectorOpenForSession],
+	);
 	const browserUrl = browserView.navState.url.trim();
 	// A terminated session's `previewUrl` is a stale DB fact; useBrowserView
 	// suppresses and destroys the live preview for it, so it must not count as
