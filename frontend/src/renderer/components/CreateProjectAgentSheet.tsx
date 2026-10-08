@@ -221,6 +221,8 @@ export function CreateProjectAgentSheet({
 		}
 	}, [authorizedAgents, open, orchestratorAgentTouched, sessionHistory, workerAgentTouched]);
 
+	if (isBusy) return null;
+
 	return (
 		<Dialog.Root
 			open={open && !settingsOpen}
