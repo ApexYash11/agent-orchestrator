@@ -10,7 +10,6 @@ import { writeCodexAccounts } from "../hooks/codex-accounts-state";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
 import { ProjectSettingsForm, type ProjectSettingsSaveState, type ProjectSettingsSection as ProjectFormSection } from "./ProjectSettingsForm";
 import { ProjectEnvironmentSettings } from "./ProjectEnvironmentSettings";
-import { CloudProjectSettingsForm } from "./CloudProjectSettingsForm";
 import { useCloudProjectsQuery, workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
 import { CuesSettings } from "./CuesDialog";
 import { DialogHeader, settingsDialogBodyClass, settingsDialogHeaderClass, settingsDialogSurfaceClass } from "./ui/dialog";
@@ -81,7 +80,8 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	const remoteHostId = displaySettings?.scope === "project" ? displaySettings.hostId : undefined;
 	// A cloud project lives only in the control plane; the local daemon has no
 	// record of it. Resolve it here so its settings load from the control plane.
-	const localProjectScope = displaySettings?.scope === "project" && !remoteHostId;
+	const explicitCloudOrgId = displaySettings?.scope === "project" ? displaySettings.cloudOrgId : undefined;
+	const localProjectScope = displaySettings?.scope === "project" && !remoteHostId && explicitCloudOrgId === undefined;
 	const cloudProjects = useCloudProjectsQuery({ enabled: localProjectScope });
 	const cloudProject = localProjectScope
 		? cloudProjects.data?.find((project) => project.id === displaySettings.projectId)
@@ -98,6 +98,8 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	const cloudProjectsPending = localProjectScope && !knownLocal && cloudProjects.isLoading;
 	const cloudLookupFailed = localProjectScope && !cloudProject && !knownLocal && cloudProjects.isError;
 
+	const cloudOrgId = explicitCloudOrgId ?? cloudProject?.orgId;
+	const isCloudProjectSettings = displaySettings?.scope === "project" && cloudOrgId !== undefined;
 	const projectSections: Array<{
 		id: ProjectSettingsSection;
 		label: string;
@@ -106,9 +108,8 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 		{ id: "general", label: t("settings.project.general"), icon: MonitorCog },
 		{ id: "agents", label: t("settings.project.agents"), icon: Bot },
 	];
-	if (cloudProject) {
-		projectSections.splice(1);
-	} else if (!remoteHostId) {
+	// Environment and cues are local-daemon features; remote hosts and Cloud projects do not expose them.
+	if (!remoteHostId && !isCloudProjectSettings) {
 		projectSections.push({ id: "environment", label: t("settings.project.environment"), icon: KeyRound });
 		projectSections.push({ id: "cues", label: t("cues.title"), icon: Play });
 	}
@@ -191,7 +192,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 			setActiveSection(globalSettingsItem(settingsModal.section ?? "general", { cloudEnabled, developerMode, diagnostics, is11x }).id);
 		}
 		if (settingsModal?.scope === "project") {
-			setActiveProjectSection(settingsModal.section ?? "general");
+			setActiveProjectSection(settingsModal.cloudOrgId !== undefined && settingsModal.section === "cues" ? "general" : settingsModal.section ?? "general");
 			setProjectSaveState(initialProjectSaveState());
 			setCueBusy(false);
 		}
@@ -302,7 +303,10 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 									{projectSaveState.phase === "failed" || (remoteHostId && projectSaveState.replacementError) ? (
 										<div className="space-y-2 text-error">
 											<p className="flex items-start gap-2" role="alert"><TriangleAlert className="size-4 shrink-0" aria-hidden="true" />{projectSaveState.error ?? projectSaveState.replacementError ?? t("settings.project.saveFailed")}</p>
-											<button className="text-settings-label underline underline-offset-2" onClick={() => (document.getElementById("project-settings-form") as HTMLFormElement | null)?.requestSubmit()} type="button">{t("settings.models.retry")}</button>
+											<button className="text-settings-label underline underline-offset-2" onClick={() => {
+												if (projectSaveState.retry) projectSaveState.retry();
+												else (document.getElementById("project-settings-form") as HTMLFormElement | null)?.requestSubmit();
+											}} type="button">{t("createProject.retry")}</button>
 										</div>
 									) : (
 										<p className="flex items-center gap-2 text-settings-muted">
@@ -337,21 +341,19 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 							</DialogHeader>
 							<div aria-busy={!isBodyReady} className={cn(settingsDialogBodyClass, "settings-dialog-body flex-1 px-(--size-modal-padding) pt-0")}>
 								{isBodyReady ? (
-									cloudProject ? (
-										<CloudProjectSettingsForm key={cloudProject.id} project={cloudProject} onSaveState={setProjectSaveState} />
-									) : cloudProjectsPending ? (
+									cloudProjectsPending ? (
 										<p className="text-sm text-settings-muted">{t("settings.project.loading")}</p>
 									) : cloudLookupFailed ? (
 										<div className="space-y-2 text-sm text-error" role="alert">
 											<p>{t("settings.project.cloudLoadFailed")} {cloudProjects.error instanceof Error ? cloudProjects.error.message : ""}</p>
 											<button className="text-settings-label underline underline-offset-2" onClick={() => void cloudProjects.refetch()} type="button">{t("settings.project.retry")}</button>
 										</div>
-									) : displaySettings?.scope === "project" && !remoteHostId && activeProjectSection === "cues" ? (
+									) : displaySettings?.scope === "project" && !remoteHostId && !isCloudProjectSettings && activeProjectSection === "cues" ? (
 										<CuesSettings projectId={displaySettings.projectId} onBusyChange={setCueBusy} />
-									) : displaySettings?.scope === "project" && !remoteHostId && activeProjectSection === "environment" ? (
+									) : displaySettings?.scope === "project" && !remoteHostId && !isCloudProjectSettings && activeProjectSection === "environment" ? (
 										<ProjectEnvironmentSettings projectId={displaySettings.projectId} onSaveState={setProjectSaveState} />
 									) : displaySettings?.scope === "project" ? (
-										<ProjectSettingsForm projectId={displaySettings.projectId} hostId={remoteHostId} section={activeProjectSection as ProjectFormSection} onSaveState={setProjectSaveState} />
+										<ProjectSettingsForm projectId={displaySettings.projectId} hostId={remoteHostId} cloudOrgId={cloudOrgId} section={activeProjectSection as ProjectFormSection} onSaveState={setProjectSaveState} />
 									) : (
 										<GlobalSettingsForm cloudEnabled={cloudEnabled} is11x={is11x} focusAgentId={focusAgentId} hostId={displaySettings?.scope === "global" ? displaySettings.hostId : undefined} harnessView={harnessView} section={activeSection} />
 									)

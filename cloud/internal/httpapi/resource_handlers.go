@@ -105,6 +105,8 @@ type sessionResponse struct {
 	ProjectID          string                   `json:"projectId"`
 	Kind               string                   `json:"kind"`
 	Harness            string                   `json:"harness"`
+	ReviewerHarness    string                   `json:"reviewerHarness,omitempty"`
+	AutoReviewEnabled  bool                     `json:"autoReviewEnabled"`
 	DisplayName        string                   `json:"displayName"`
 	Branch             string                   `json:"branch"`
 	Mode               string                   `json:"mode"`
@@ -1176,6 +1178,8 @@ func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionRe
 		ProjectID:          session.ProjectID,
 		Kind:               session.Kind,
 		Harness:            session.Harness,
+		ReviewerHarness:    session.ReviewerHarness,
+		AutoReviewEnabled:  session.AutoReviewEnabled,
 		DisplayName:        session.DisplayName,
 		Branch:             session.Branch,
 		Mode:               session.Mode,

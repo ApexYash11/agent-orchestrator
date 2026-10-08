@@ -20,10 +20,12 @@ const navigateMock = vi.hoisted(() => vi.fn());
 const openShellTerminalMock = vi.hoisted(() => vi.fn());
 const adoptedShellHandles = vi.hoisted(() => new Map<string, string>());
 const closeShellTerminalMock = vi.hoisted(() => vi.fn());
+const cloudReviewGetMock = vi.hoisted(() => vi.fn());
 const cloudCpClientMock = vi.hoisted(() => ({
 	resumeSession: vi.fn(async () => ({ session: {} })),
 	listChatEvents: vi.fn(),
 	getSession: vi.fn(),
+	getSessionReviewState: cloudReviewGetMock,
 }));
 const cloudResumeMock = cloudCpClientMock.resumeSession;
 const cloudGetSessionMock = cloudCpClientMock.getSession;
@@ -121,6 +123,32 @@ vi.mock("../lib/cloud-cp/stream-bridge", () => ({
 }));
 vi.mock("../hooks/useSessionInterfaceTransition", async (importOriginal) => ({
 	...await importOriginal<typeof import("../hooks/useSessionInterfaceTransition")>(),
+	interfaceTransitionIsActive: (transition?: { phase?: string }) =>
+		Boolean(
+			transition &&
+				[
+					"requested",
+					"preflighting",
+					"draining",
+					"source_stopping",
+					"source_stopped",
+					"target_starting",
+					"activating",
+				].includes(transition.phase ?? ""),
+		),
+	interfaceTransitionIsCancellable: (transition?: { phase?: string }) =>
+		Boolean(
+			transition && ["requested", "preflighting", "draining"].includes(transition.phase ?? ""),
+		),
+	interfaceTransitionHasUnacknowledgedNotice: (transition?: {
+		phase?: string;
+		noticeAcknowledgedAt?: string;
+	}) =>
+		Boolean(
+			transition &&
+				!transition.noticeAcknowledgedAt &&
+				(transition.phase === "failed" || transition.phase === "recovery_required"),
+		),
 	useSessionInterfaceTransitionStatus: () => ({
 		transition: interfaceTransitionState.status?.transition,
 		isLoading: false,
@@ -392,10 +420,13 @@ vi.mock("./chat/SessionChatSurface", async () => {
 
 vi.mock("./chat/CloudSessionChatSurface", async (importOriginal) => ({
 	...await importOriginal<typeof import("./chat/CloudSessionChatSurface")>(),
-	CloudSessionChatSurface: ({ sessionTabAction, controllerTransitioning, newWorkDisabled, onConversationWorkChange }: { sessionTabAction?: ReactNode; controllerTransitioning?: boolean; newWorkDisabled?: boolean; onConversationWorkChange?: (state: typeof chatSurfaceWorkState) => void }) => (
+	CloudSessionChatSurface: ({ sessionTabAction, controllerTransitioning, newWorkDisabled, onConversationWorkChange, reviewerTerminal, reviewerTarget, onOpenReviewerTerminal, onSelectChat }: { sessionTabAction?: ReactNode; controllerTransitioning?: boolean; newWorkDisabled?: boolean; onConversationWorkChange?: (state: typeof chatSurfaceWorkState) => void; reviewerTerminal?: { handleId: string; harness: string }; reviewerTarget?: { handleId: string; harness: string }; onOpenReviewerTerminal?: (target: { handleId: string; harness: string }) => void; onSelectChat?: () => void }) => (
 		<div data-testid="cloud-chat-surface" data-transitioning={controllerTransitioning ? "true" : "false"} data-new-work-disabled={newWorkDisabled ? "true" : "false"}>
 			{sessionTabAction}
 			<button type="button" onClick={() => onConversationWorkChange?.({ ...chatSurfaceWorkState })}>report cloud chat work</button>
+			<button type="button" onClick={() => onSelectChat?.()}>cloud chat tab</button>
+			{reviewerTerminal ? <button type="button" onClick={() => onOpenReviewerTerminal?.(reviewerTerminal)}>cloud reviewer tab</button> : null}
+			<span data-testid="cloud-chat-target">{reviewerTarget ? `reviewer:${reviewerTarget.handleId}:${reviewerTarget.harness}` : "chat"}</span>
 		</div>
 	),
 }));
@@ -930,6 +961,8 @@ describe("SessionView", () => {
 		closeShellTerminalMock.mockReset();
 		cloudResumeMock.mockReset();
 		cloudResumeMock.mockResolvedValue({ session: {} });
+		cloudReviewGetMock.mockReset();
+		cloudReviewGetMock.mockResolvedValue({ sessionId: "sess-2", reviews: [], runs: [] });
 		cloudGetSessionMock.mockReset();
 		subscribeSessionEventsMock.mockClear();
 		listSessionEventsMock.mockReset();
@@ -1358,6 +1391,78 @@ describe("SessionView", () => {
 		expect(openShellTerminalMock).toHaveBeenCalledWith(
 			{ projectId: "proj-1", sessionId: "sess-2", cloud: { orgId: "cloud-org" } },
 		);
+	});
+
+	it("opens a newly running Cloud reviewer terminal in the session view", async () => {
+		const session = workerSession("sess-2");
+		session.mode = "chat";
+		session.cloud = { orgId: "cloud-org" };
+		cloudReviewGetMock.mockResolvedValue({
+			sessionId: "sess-2",
+			reviewerHandleId: "cloud-reviewer-7",
+			reviewerHarness: "codex",
+			reviews: [{ status: "running" }],
+			runs: [],
+		});
+
+		render(<SessionView sessionId="sess-2" />);
+
+		// The reviewer opens as a tab inside the Cloud chat, not the local chat surface.
+		await waitFor(() => expect(screen.getByTestId("cloud-chat-target")).toHaveTextContent("reviewer:cloud-reviewer-7:codex"));
+		expect(screen.queryByTestId("chat-surface")).not.toBeInTheDocument();
+		// Chat stays reachable while the review runs, and the Reviewer tab reopens it.
+		fireEvent.click(screen.getByRole("button", { name: "cloud chat tab" }));
+		await waitFor(() => expect(screen.getByTestId("cloud-chat-target")).toHaveTextContent("chat"));
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+		expect(screen.getByTestId("cloud-chat-target")).toHaveTextContent("chat");
+		fireEvent.click(screen.getByRole("button", { name: "cloud reviewer tab" }));
+		await waitFor(() => expect(screen.getByTestId("cloud-chat-target")).toHaveTextContent("reviewer:cloud-reviewer-7:codex"));
+	});
+
+	it("adds an automatic Cloud review as a tab without taking over the chat", async () => {
+		const session = workerSession("sess-2");
+		session.mode = "chat";
+		session.cloud = { orgId: "cloud-org" };
+		cloudReviewGetMock.mockResolvedValue({
+			sessionId: "sess-2",
+			reviewerHandleId: "cloud-reviewer-8",
+			reviewerHarness: "codex",
+			reviews: [{ status: "running" }],
+			runs: [{ id: "run-8", reviewerTerminalId: "cloud-reviewer-8", status: "running", triggerSource: "auto" }],
+		});
+
+		render(<SessionView sessionId="sess-2" />);
+
+		expect(await screen.findByRole("button", { name: "cloud reviewer tab" })).toBeInTheDocument();
+		expect(screen.getByTestId("cloud-chat-target")).toHaveTextContent("chat");
+	});
+
+	it("keeps a delivered Cloud reviewer terminal selected long enough to show its completion", async () => {
+		const session = workerSession("sess-2");
+		session.cloud = { orgId: "cloud-org" };
+		cloudReviewGetMock.mockResolvedValue({
+			sessionId: "sess-2",
+			reviewerHandleId: "cloud-reviewer-7",
+			reviewerHarness: "codex",
+			reviews: [{ status: "running" }],
+			runs: [{ id: "run-7", reviewerTerminalId: "cloud-reviewer-7", status: "running" }],
+		});
+
+		const view = render(<SessionView sessionId="sess-2" />);
+		await waitFor(() => expect(screen.getByTestId("terminal-target")).toHaveTextContent("reviewer"));
+
+		act(() => {
+			view.client.setQueryData(["cloud-session-reviews", "https://cloud.example.test", "cloud-org", "sess-2"], {
+				sessionId: "sess-2",
+				reviewerHandleId: "",
+				reviewerHarness: "codex",
+				reviews: [{ status: "up_to_date" }],
+				runs: [{ id: "run-7", reviewerTerminalId: "cloud-reviewer-7", status: "delivered" }],
+			});
+		});
+
+		await waitFor(() => expect(screen.getByTestId("terminal-target")).toHaveTextContent("reviewer"));
+		expect(screen.getByTestId("reviewer-harness")).toHaveTextContent("codex");
 	});
 
 	it("resumes a cloud session only after its detail view is opened", async () => {
@@ -3633,10 +3738,10 @@ describe("SessionView", () => {
 
 			render(<SessionView sessionId="sess-1" />);
 
-			expect(screen.getAllByRole("alert")).toHaveLength(1);
-			const alert = screen.getByRole("alert");
-			expect(alert).toHaveTextContent("Interface switch needs attention");
-			expect(alert).toHaveTextContent(errorDetail);
+			const alert = screen.getByRole("status", { name: /^Interface switch needs attention/ });
+			expect(alert).toHaveAttribute("aria-label", expect.stringContaining("Interface switch needs attention"));
+			expect(alert).toHaveAttribute("aria-label", expect.stringContaining(errorDetail));
+			expect(alert).toHaveAttribute("aria-live", "polite");
 			expect(within(alert).queryByRole("button")).not.toBeInTheDocument();
 			expect(screen.getByTestId("terminal-center")).toHaveAttribute("data-agent-input-disabled", "true");
 			expect(screen.getByRole("status", { name: /^Interface switch needs attention/ }).querySelector(".animate-spin")).toBeNull();

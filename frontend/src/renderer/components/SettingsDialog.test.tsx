@@ -10,7 +10,7 @@ import { globalSettingsItemsFor, visibleGlobalSettings } from "./settings/settin
 const { postMock, cloudProjectsState, localWorkspacesState } = vi.hoisted(() => ({
 	postMock: vi.fn(),
 	cloudProjectsState: {
-		data: [] as Array<{ id: string; displayName: string }> | undefined,
+		data: [] as Array<{ id: string; orgId?: string; displayName: string }> | undefined,
 		isLoading: false,
 		isError: false,
 		error: null as Error | null,
@@ -35,11 +35,14 @@ vi.mock("../lib/api-client", () => ({
 
 vi.mock("./ProjectSettingsForm", () => ({
 	ProjectSettingsForm: ({
+		cloudOrgId,
 		onSaveState,
 	}: {
+		cloudOrgId?: string;
 		onSaveState?: (state: ProjectSettingsSaveState) => void;
 	}) => (
 		<>
+			{cloudOrgId ? <div data-testid="cloud-project-settings">{cloudOrgId}</div> : null}
 			<button
 				type="button"
 				onClick={() =>
@@ -82,12 +85,6 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 		queryKey: ["workspaces"],
 		queryFn: () => Promise.resolve(localWorkspacesState.ids.map((id: string) => ({ id }))),
 	},
-}));
-
-vi.mock("./CloudProjectSettingsForm", () => ({
-	CloudProjectSettingsForm: ({ project }: { project: { displayName: string } }) => (
-		<div data-testid="cloud-project-settings">{project.displayName}</div>
-	),
 }));
 
 vi.mock("./CuesDialog", () => ({
@@ -170,14 +167,15 @@ describe("SettingsDialog", () => {
 	});
 
 	it("loads a cloud project's settings from the control plane, not the local daemon", async () => {
-		cloudProjectsState.data = [{ id: "cloud-1", displayName: "ao-landing" }];
+		cloudProjectsState.data = [{ id: "cloud-1", orgId: "org-1", displayName: "ao-landing" }];
 		useUiStore.getState().openProjectSettings("cloud-1");
 		renderSettingsDialog();
 
-		expect(await screen.findByTestId("cloud-project-settings")).toHaveTextContent("ao-landing");
-		expect(screen.queryByRole("button", { name: "Start pending save" })).not.toBeInTheDocument();
+		// Opened without a Cloud org, the project is still routed to its control-plane settings.
+		expect(await screen.findByTestId("cloud-project-settings")).toHaveTextContent("org-1");
 		expect(screen.getByRole("button", { name: "General" })).toBeInTheDocument();
-		for (const section of ["Agents", "Environment", "Cues"]) {
+		expect(screen.getByRole("button", { name: "Agents" })).toBeInTheDocument();
+		for (const section of ["Environment", "Cues"]) {
 			expect(screen.queryByRole("button", { name: section })).not.toBeInTheDocument();
 		}
 	});
