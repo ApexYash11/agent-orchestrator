@@ -90,8 +90,8 @@ var agentTargets = []Target{
 	TargetDroid, TargetCrush, TargetCline, TargetGoose, TargetQwen, TargetGemini,
 	TargetContinue, TargetDevin, TargetKiro, TargetKilocode, TargetVibe,
 	TargetMuse, TargetAgy, TargetAutohand, TargetKimchi, TargetPrimeAgent,
-	TargetOMP, TargetFX, TargetUnreal, TargetCodewhale, TargetMiMoCode, TargetDeepSeek,
-	TargetOpenHands, TargetCommandCode,
+	TargetOMP, TargetFX, TargetUnreal, TargetCodewhale, TargetMiMoCode, TargetDeepSeek, TargetOpenHands,
+	TargetCommandCode,
 }
 
 var agentTargetSet = func() map[Target]bool {

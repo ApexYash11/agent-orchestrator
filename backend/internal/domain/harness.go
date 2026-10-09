@@ -36,9 +36,9 @@ const (
 	HarnessOMP         AgentHarness = "omp"
 	HarnessFX          AgentHarness = "fx"
 	HarnessUnreal      AgentHarness = "unreal-agent"
+	HarnessCodewhale   AgentHarness = "codewhale"
 	HarnessMiMoCode    AgentHarness = "mimo-code"
 	HarnessDeepSeek    AgentHarness = "deepseek-harness"
-	HarnessCodewhale   AgentHarness = "codewhale"
 	HarnessOpenHands   AgentHarness = "openhands"
 	HarnessCommandCode AgentHarness = "command-code"
 	// HarnessFake is retained for existing test fixtures and historical session
@@ -54,8 +54,8 @@ var AllHarnesses = []AgentHarness{
 	HarnessCopilot, HarnessGoose, HarnessAuggie, HarnessContinue, HarnessDevin,
 	HarnessCline, HarnessKimi, HarnessMuse, HarnessKiro, HarnessKilocode, HarnessVibe, HarnessPi,
 	HarnessKimchi, HarnessPrimeAgent, HarnessAutohand,
-	HarnessOMP, HarnessFX, HarnessUnreal, HarnessCodewhale, HarnessMiMoCode, HarnessDeepSeek,
-	HarnessOpenHands, HarnessCommandCode,
+	HarnessOMP, HarnessFX, HarnessUnreal, HarnessCodewhale, HarnessMiMoCode, HarnessDeepSeek, HarnessOpenHands,
+	HarnessCommandCode,
 }
 
 // IsKnown reports whether h is one of the supported harnesses.

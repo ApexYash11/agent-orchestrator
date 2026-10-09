@@ -35,7 +35,7 @@ export const AGENT_OPTIONS = [
 	"unreal-agent",
 	"mimo-code",
 	"deepseek-harness",
-"openhands",
+	"openhands",
 	"command-code",
 ] as const;
 
@@ -60,7 +60,7 @@ export const AGENT_LABELS: Record<AgentId, string> = {
 	crush: "Crush",
 	cursor: "Cursor",
 	qwen: "Qwen",
- gemini: "Gemini CLI",
+	gemini: "Gemini CLI",
 	copilot: "GitHub Copilot",
 	goose: "Goose",
 	auggie: "Auggie",
@@ -82,7 +82,7 @@ export const AGENT_LABELS: Record<AgentId, string> = {
 	"unreal-agent": "Unreal Agent",
 	"mimo-code": "MiMo Code",
 	"deepseek-harness": "DeepSeek",
-openhands: "OpenHands",
+	openhands: "OpenHands",
 	"command-code": "Command Code",
 };
 

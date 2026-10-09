@@ -1,7 +1,14 @@
--- Widen the sessions.harness CHECK to allow the Command Code adapter after the
--- shipped OpenHands and Codewhale harness migrations. SQLite cannot ALTER a CHECK
--- constraint, so this applies the same surgical sqlite_master rewrite those
--- migrations use, anchored on the retained 'fake' fixture harness.
+-- Widen the sessions.harness CHECK to allow the Command Code adapter.
+-- SQLite cannot ALTER a CHECK constraint, so rewrite the sessions schema.
+--
+-- Every historical harness variant ends with the retained 'fake' fixture
+-- harness, so anchoring on that tail widens whichever shape a database arrives
+-- with instead of enumerating each one. writable_schema changes run outside a
+-- transaction; RESET forces SQLite to reparse the schema.
+--
+-- usage_bindings carries its own narrower harness CHECK (harnesses whose usage AO
+-- can bind to a provider account). Prior harness migrations left it alone and
+-- this one does too.
 
 -- +goose NO TRANSACTION
 -- +goose Up
@@ -13,13 +20,10 @@ UPDATE sqlite_master
 SET sql = replace(sql, '''fake''))', '''command-code'', ''fake''))')
 WHERE type = 'table' AND name = 'sessions'
   AND sql LIKE '%CHECK (harness IN (%'
-  AND sql LIKE '%''muse''%'
+  AND sql LIKE '%''prime-agent''%'
   AND sql LIKE '%''omp''%'
-  AND sql LIKE '%''gemini''%'
   AND sql LIKE '%''unreal-agent''%'
   AND sql LIKE '%''mimo-code''%'
-  AND sql LIKE '%''deepseek-harness''%'
-  AND sql LIKE '%''openhands''%'
   AND sql LIKE '%''codewhale''%'
   AND sql NOT LIKE '%''command-code''%';
 -- +goose StatementEnd

@@ -86,6 +86,7 @@ func Constructors() []adapters.Adapter {
 		autohand.New(),
 		commandcode.New(),
 		fx.New(),
+		commandcode.New(),
 		unrealagent.New(),
 		mimocode.New(),
 		deepseekharness.New(),
