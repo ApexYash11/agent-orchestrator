@@ -62,6 +62,7 @@ var Derivers = map[string]DeriveFunc{
 	"pi":           pi.DeriveActivityState,
 	"auggie":       auggie.DeriveActivityState,
 	"goose":        activitystate.StandardDeriveActivityState,
+	"openhands":    activitystate.StandardDeriveActivityState,
 	"devin":        activitystate.StandardDeriveActivityState,
 	"cursor":       cursor.DeriveActivityState,
 	"qwen":         activitystate.StandardDeriveActivityState,
