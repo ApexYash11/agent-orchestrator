@@ -45,6 +45,8 @@ func TestSeedRecordPreservesAutomationRunIdentity(t *testing.T) {
 }
 
 type fakeStore struct {
+	cleanupMu                          sync.Mutex
+	cleanupFacts                       map[domain.SessionID]domain.SessionCleanupRecord
 	sessions                           map[domain.SessionID]domain.SessionRecord
 	pr                                 map[domain.SessionID]domain.PRFacts
 	projects                           map[string]domain.ProjectRecord
@@ -3533,6 +3535,68 @@ func TestKill_TearsDownRuntimeAndWorkspace(t *testing.T) {
 	requireNoPromptDir(t, dataDir, "mer-1")
 }
 
+func TestKillCleanupScriptHasNoTimeLimit(t *testing.T) {
+	m, st, _, ws := newManager()
+	m.killTeardown = 2 * time.Second
+	m.dataDir = t.TempDir()
+	workspace := filepath.Join(m.dataDir, "worktrees", "mer", "mer-1")
+	if err := os.MkdirAll(workspace, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	rec := mkLive("mer-1")
+	rec.Metadata.WorkspacePath = workspace
+	st.sessions[rec.ID] = rec
+	project := st.projects["mer"]
+	command := "sleep 3 && echo finished > cleanup-marker"
+	if runtime.GOOS == "windows" {
+		command = "powershell -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 3\" && echo finished > cleanup-marker"
+	}
+	project.Config.PreRemove = []string{command}
+	st.projects["mer"] = project
+
+	freed, err := m.Kill(ctx, rec.ID)
+	if err != nil || !freed || ws.destroyCtxErr != nil || !st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("long cleanup must finish before workspace removal: freed=%v err=%v workspaceCtx=%v terminated=%v", freed, err, ws.destroyCtxErr, st.sessions[rec.ID].IsTerminated)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "cleanup-marker")); err != nil {
+		t.Fatalf("cleanup command did not finish: %v", err)
+	}
+}
+
+func TestKillCleanupScriptFailurePreservesWorkspaceForRetry(t *testing.T) {
+	m, st, rt, ws := newManager()
+	m.dataDir = t.TempDir()
+	workspace := filepath.Join(m.dataDir, "worktrees", "mer", "mer-1")
+	if err := os.MkdirAll(workspace, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	rec := mkLive("mer-1")
+	rec.Metadata.WorkspacePath = workspace
+	st.sessions[rec.ID] = rec
+	project := st.projects["mer"]
+	project.Path = t.TempDir()
+	project.Config.PreRemove = []string{"echo project-secret && exit 7"}
+	project.Config.Env = map[string]string{"PROJECT_TOKEN": "project-secret"}
+	st.projects["mer"] = project
+
+	freed, err := m.Kill(ctx, rec.ID)
+	if freed || !errors.Is(err, ErrCleanupScript) || strings.Contains(err.Error(), "project-secret") {
+		t.Fatalf("kill freed=%v err=%v", freed, err)
+	}
+	if rt.destroyed != 1 || ws.destroyed != 0 || !st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("failed cleanup must stop runtime, preserve workspace, and terminate session: runtime=%d workspace=%d rec=%+v", rt.destroyed, ws.destroyed, st.sessions[rec.ID])
+	}
+	project.Config.PreRemove = []string{"echo cleaned > cleanup-marker"}
+	st.projects["mer"] = project
+	result, err := m.Cleanup(ctx, "mer")
+	if err != nil || len(result.Cleaned) != 1 || ws.destroyed != 1 {
+		t.Fatalf("retry cleanup result=%+v err=%v destroyed=%d", result, err, ws.destroyed)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "cleanup-marker")); err != nil {
+		t.Fatalf("cleanup script did not run in workspace: %v", err)
+	}
+}
+
 // A caller that gives up must not take the teardown down with it. The REST
 // layer caps a request at cfg.RequestTimeout, and a session whose worktree
 // carries a large ignored tree used to run past that: the request context was
@@ -4273,6 +4337,28 @@ func TestRestore_ScratchAllowsEmptyBranch(t *testing.T) {
 	}
 	if rt.created != 1 {
 		t.Fatalf("runtime created = %d, want 1", rt.created)
+	}
+}
+
+func TestRestoreRecreatedWorkspaceRunsSetupOnce(t *testing.T) {
+	m, _, _, _ := newManager()
+	managed := filepath.Join(t.TempDir(), "workspaces")
+	adapter, err := scratch.New(scratch.Options{ManagedRoot: managed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.workspace = adapter
+	workspace := filepath.Join(managed, "scratch", "workers", "scratch-1")
+	project := domain.ProjectRecord{ID: "scratch", Kind: domain.ProjectKindScratch, Path: t.TempDir(), Config: domain.ProjectConfig{PostCreate: []string{"echo setup >> setup-runs"}}}
+	rec := domain.SessionRecord{ID: "scratch-1", ProjectID: "scratch", Kind: domain.KindWorker, Metadata: domain.SessionMetadata{WorkspacePath: workspace}}
+	for i := 0; i < 2; i++ {
+		if _, err := m.restoreSessionWorkspace(context.Background(), project, rec); err != nil {
+			t.Fatalf("restore %d: %v", i+1, err)
+		}
+	}
+	output, err := os.ReadFile(filepath.Join(workspace, "setup-runs"))
+	if err != nil || strings.Count(string(output), "setup") != 1 {
+		t.Fatalf("setup runs = %q, err = %v", output, err)
 	}
 }
 
@@ -7972,8 +8058,8 @@ func TestRetireForReplacementCapturesAndReleasesWorkspace(t *testing.T) {
 	if stashIdx == -1 || deleteIdx == -1 || forceIdx == -1 {
 		t.Fatalf("missing expected calls in shared log: %v", sharedLog)
 	}
-	if stashIdx >= forceIdx || forceIdx >= deleteIdx {
-		t.Fatalf("replacement retire must capture, force release, then clear restore marker; log=%v", sharedLog)
+	if stashIdx >= deleteIdx || deleteIdx >= forceIdx {
+		t.Fatalf("replacement retire must capture and clear restore intent before workspace release; log=%v", sharedLog)
 	}
 	if len(browser.destroyed) != 1 || browser.destroyed[0] != "mer-orch" {
 		t.Fatalf("browser targets destroyed = %v, want mer-orch", browser.destroyed)
@@ -8243,8 +8329,8 @@ func TestRetireForReplacementStaleWorkspaceSkipsPreserveAndTerminates(t *testing
 	}
 	wantOrder := []string{
 		"StashUncommitted:mer-orch",
-		"ForceDestroy:mer-orch",
 		"DeleteSessionWorktrees:mer-orch",
+		"ForceDestroy:mer-orch",
 	}
 	next := 0
 	for _, call := range sharedLog {
@@ -8257,7 +8343,7 @@ func TestRetireForReplacementStaleWorkspaceSkipsPreserveAndTerminates(t *testing
 	}
 }
 
-func TestRetireForReplacementStaleWorkspaceCleanupFailureLeavesSessionActive(t *testing.T) {
+func TestRetireForReplacementStaleWorkspaceCleanupFailureTerminatesSession(t *testing.T) {
 	m, st, rt, ws := newLifecycleManager()
 	ws.stashErr = ports.ErrWorkspaceStale
 	ws.forceDestroyErr = errors.New("stale cleanup failed")
@@ -8280,11 +8366,11 @@ func TestRetireForReplacementStaleWorkspaceCleanupFailureLeavesSessionActive(t *
 	if err == nil || !strings.Contains(err.Error(), "force destroy") {
 		t.Fatalf("RetireForReplacement err = %v, want force destroy failure", err)
 	}
-	if st.sessions["mer-orch"].IsTerminated {
-		t.Fatal("session must remain active when stale cleanup fails")
+	if !st.sessions["mer-orch"].IsTerminated {
+		t.Fatal("stopped orchestrator must be terminated for cleanup retry")
 	}
-	if rows := st.worktrees["mer-orch"]; len(rows) != 1 {
-		t.Fatalf("restore markers after stale cleanup failure = %v, want retained", rows)
+	if rows := st.worktrees["mer-orch"]; len(rows) != 0 {
+		t.Fatalf("restore markers must be cleared before cleanup: %v", rows)
 	}
 	if rt.destroyed != 1 || rt.destroyedIDs[0] != "orch-handle" {
 		t.Fatalf("runtime destroyed = %d ids=%v, want orch-handle", rt.destroyed, rt.destroyedIDs)
@@ -8464,8 +8550,8 @@ func TestRetireForReplacementWorkspaceProjectForceDestroyFailureKeepsRepoInvento
 	if err == nil || !strings.Contains(err.Error(), "force destroy") {
 		t.Fatalf("RetireForReplacement err = %v, want force destroy failure", err)
 	}
-	if st.sessions["mer-orch"].IsTerminated {
-		t.Fatal("session must remain active when force destroy fails")
+	if !st.sessions["mer-orch"].IsTerminated {
+		t.Fatal("stopped orchestrator must be terminated for cleanup retry")
 	}
 	if rows := st.worktrees["mer-orch"]; len(rows) != 2 {
 		t.Fatalf("workspace repo inventory after force destroy failure = %v, want root and child retained", rows)
@@ -8498,15 +8584,15 @@ func TestRetireForReplacementWorkspaceProjectStaleCleanupFailureKeepsRepoInvento
 	if err == nil || !strings.Contains(err.Error(), "force destroy") {
 		t.Fatalf("RetireForReplacement err = %v, want force destroy failure", err)
 	}
-	if st.sessions["mer-orch"].IsTerminated {
-		t.Fatal("session must remain active when stale repo cleanup fails")
+	if !st.sessions["mer-orch"].IsTerminated {
+		t.Fatal("stopped orchestrator must be terminated for cleanup retry")
 	}
 	if rows := st.worktrees["mer-orch"]; len(rows) != 2 {
 		t.Fatalf("workspace repo inventory after stale cleanup failure = %v, want root and child retained", rows)
 	}
 }
 
-func TestRetireForReplacementForceDestroyFailureLeavesSessionActive(t *testing.T) {
+func TestRetireForReplacementForceDestroyFailureTerminatesSession(t *testing.T) {
 	m, st, rt, ws := newLifecycleManager()
 	ws.forceDestroyErr = errors.New("worktree still registered")
 	ws.stashRef = "refs/ao/preserved/mer-orch"
@@ -8529,8 +8615,8 @@ func TestRetireForReplacementForceDestroyFailureLeavesSessionActive(t *testing.T
 	if err == nil || !strings.Contains(err.Error(), "force destroy") {
 		t.Fatalf("RetireForReplacement err = %v, want force destroy failure", err)
 	}
-	if st.sessions["mer-orch"].IsTerminated {
-		t.Fatal("session must remain active so retry can retire it again")
+	if !st.sessions["mer-orch"].IsTerminated {
+		t.Fatal("stopped orchestrator must be terminated for cleanup retry")
 	}
 	if rt.destroyed != 1 {
 		t.Fatalf("runtime destroyed = %d, want 1 before workspace release", rt.destroyed)
@@ -11054,6 +11140,22 @@ func TestSendRecordsInteractionOnlyForDirectTerminalSender(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (f *fakeStore) UpsertSessionCleanupFacts(_ context.Context, rec domain.SessionCleanupRecord) error {
+	f.cleanupMu.Lock()
+	defer f.cleanupMu.Unlock()
+	if f.cleanupFacts == nil {
+		f.cleanupFacts = make(map[domain.SessionID]domain.SessionCleanupRecord)
+	}
+	f.cleanupFacts[rec.SessionID] = rec
+	return nil
+}
+func (f *fakeStore) GetSessionCleanupFacts(_ context.Context, id domain.SessionID) (domain.SessionCleanupRecord, bool, error) {
+	f.cleanupMu.Lock()
+	defer f.cleanupMu.Unlock()
+	rec, ok := f.cleanupFacts[id]
+	return rec, ok, nil
 }
 
 func TestOrchestratorWorkspaceBranchCollision(t *testing.T) {
