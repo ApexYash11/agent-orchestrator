@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencodev2"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
@@ -260,7 +261,19 @@ func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscov
 		return Discover(ctx, request.AgentID, request.Binary, request.WorkingDir,
 			withOpenCodeCredentialPresence(request.Env, request.CredentialType))
 	}
-	return Discover(ctx, request.AgentID, request.Binary, request.WorkingDir, request.Env)
+	env := request.Env
+	if request.AgentID == "opencode-v2" {
+		dataHome, err := opencodev2.DataHome(ctx)
+		if err != nil {
+			return ports.AgentModelCatalog{}, fmt.Errorf("opencode-v2 model catalog: prepare data home: %w", err)
+		}
+		env = make(map[string]string, len(request.Env)+1)
+		for key, value := range request.Env {
+			env[key] = value
+		}
+		env["XDG_DATA_HOME"] = dataHome
+	}
+	return Discover(ctx, request.AgentID, request.Binary, request.WorkingDir, env)
 }
 
 // opencodeCredentialEnv maps an opencode cloud credential type to the env var

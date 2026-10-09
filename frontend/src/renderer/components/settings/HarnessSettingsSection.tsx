@@ -693,15 +693,15 @@ function LocalHarnessContent({ focusAgentId, hostId, search, startLogin = false 
 					const failed = job?.status === "failed" || job?.status === "unsupported" || job?.status === "interrupted" || Boolean(actionError);
 					const active = isActive(job);
 						const readinessAgent = readinessAgents.get(agentId);
-						const incompatibleVersionReason = readinessAgent?.installation.reasonCode === "install_incompatible_version"
-							? readinessAgent.installation.reason
-							: undefined;
 						// Hold back install actions only while readiness is still loading or
 						// the daemon reports the installation as not yet observed. A failed
 						// readiness fetch or an agent missing from the snapshot falls back to
 						// the installer plan so install controls stay usable.
 						const installationPending = !agents.error
 							&& (agents.isPending || readinessAgent?.installation.state === "unknown");
+						const incompatibleVersionReason = readinessAgent?.installation.reasonCode === "install_incompatible_version"
+							? readinessAgent.installation.reason
+							: undefined;
 						const authPlan = agentAuthPlans.get(agentId);
 						const isSetupAction = authPlan?.action === "setup";
 						const authState = authStates[agentId];
@@ -712,7 +712,7 @@ function LocalHarnessContent({ focusAgentId, hostId, search, startLogin = false 
 							|| authStatus === "not_applicable"
 							|| mimoConfigured
 							|| (!authPlans.isPending && (!authPlan || authPlan.action === "instructions"));
-						const rowHasError = failed || Boolean(authState?.error);
+						const rowHasError = failed || Boolean(authState?.error) || Boolean(incompatibleVersionReason);
 						const rowAuthWorkflow = authWorkflow?.agentId === agentId ? authWorkflow : null;
 						const hasDiagnostics = Boolean(
 							job &&
