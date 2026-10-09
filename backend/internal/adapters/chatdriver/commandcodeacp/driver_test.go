@@ -146,6 +146,22 @@ func TestNewDriverTargetsCommandCodeHarness(t *testing.T) {
 	}
 }
 
+func TestProbeDoesNotAdvertiseUnsupportedOperations(t *testing.T) {
+	driver := New(stubPlugin{}, slog.New(slog.DiscardHandler))
+	capabilities, err := driver.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	for _, capability := range []ports.ChatCapability{
+		ports.ChatCapabilityRename,
+		ports.ChatCapabilityRateLimits,
+	} {
+		if capabilities.Has(capability) {
+			t.Errorf("Probe advertises unsupported capability %q", capability)
+		}
+	}
+}
+
 type stubPlugin struct{}
 
 func (stubPlugin) ResolveBinary(context.Context) (string, error) { return "command-code", nil }
