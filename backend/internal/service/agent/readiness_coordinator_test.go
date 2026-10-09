@@ -496,7 +496,10 @@ func TestReadinessCoordinatorAllowsOpenCodeVersionProbeBudget(t *testing.T) {
 		t.Run(id, func(t *testing.T) {
 			agent := &readinessTestAgent{resolve: func(ctx context.Context) (string, error) {
 				deadline, ok := ctx.Deadline()
-				if !ok || time.Until(deadline) < 9*time.Second {
+				// Slowest measured `opencode --version` cold start was 9.12s
+				// through an npm .cmd shim on Windows 11 (#6444); the
+				// OpenCode-scoped installation budget must clear it with margin.
+				if !ok || time.Until(deadline) < 10*time.Second {
 					return "", context.DeadlineExceeded
 				}
 				return "opencode", nil

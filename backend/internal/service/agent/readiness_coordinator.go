@@ -19,7 +19,7 @@ const (
 	defaultDisplayReadinessTTL  = 5 * time.Minute
 	defaultLaunchReadinessTTL   = 30 * time.Second
 	defaultInstallCheckTimeout  = 2 * time.Second
-	opencodeInstallCheckTimeout = 12 * time.Second
+	opencodeInstallCheckTimeout = 20 * time.Second
 	opencodeV2MigrationTimeout  = 30 * time.Minute
 	defaultAuthCheckTimeout     = 10 * time.Second
 	defaultReadinessWorkers     = 4

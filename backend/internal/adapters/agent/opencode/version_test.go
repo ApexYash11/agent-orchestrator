@@ -96,7 +96,7 @@ func TestResolveBinaryForMajorBoundedAndCanceled(t *testing.T) {
 			if !errors.Is(err, want) {
 				t.Fatalf("error = %v, want %v", err, want)
 			}
-			if time.Since(started) > 12*time.Second {
+			if time.Since(started) > versionProbeTimeout+2*time.Second {
 				t.Fatal("version probe was not bounded")
 			}
 		})
@@ -135,6 +135,19 @@ func TestResolveBinaryForMajorMissing(t *testing.T) {
 	_, err := ResolveBinaryForMajor(context.Background(), 2)
 	if !errors.Is(err, ports.ErrAgentBinaryNotFound) {
 		t.Fatalf("error = %v, want missing binary", err)
+	}
+}
+
+// TestVersionProbeTimeoutCoversMeasuredColdStart pins the shared probe budget
+// above the cold-start latency measured on a real machine, so a later edit
+// cannot silently reintroduce a budget that times out a working install.
+// Slowest of three consecutive `opencode --version` runs on Windows 11 was
+// 9.12s through an npm .cmd shim (#6444); the assertion rounds up so it
+// carries margin.
+func TestVersionProbeTimeoutCoversMeasuredColdStart(t *testing.T) {
+	const measuredWorstCase = 10 * time.Second
+	if versionProbeTimeout < measuredWorstCase {
+		t.Fatalf("versionProbeTimeout = %v, want >= %v: measured cold start reached 9.12s", versionProbeTimeout, measuredWorstCase)
 	}
 }
 

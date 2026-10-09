@@ -16,7 +16,12 @@ import (
 
 var versionPattern = regexp.MustCompile(`^(?:opencode\s+)?v?([0-9]+)\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?$`)
 
-var versionProbeTimeout = 10 * time.Second
+// versionProbeTimeout bounds candidate discovery and probing for one
+// ResolveBinaryForMajor call. OpenCode ships as a Node/Bun process reached
+// through an npm `.cmd` shim on Windows, where cold start measured 7.5-9.12s
+// on Windows 11 (#6444); the shared 15s budget carries margin above that
+// measurement while a missing binary still fails fast via candidate lookup.
+var versionProbeTimeout = 15 * time.Second
 
 // IncompatibleVersionError reports that the selected OpenCode executable is
 // installed, but its major version does not match the selected harness.
