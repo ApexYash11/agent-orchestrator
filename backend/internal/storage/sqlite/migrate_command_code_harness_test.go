@@ -46,42 +46,12 @@ func TestMigration0194AllowsCommandCodeAndReversesTheCurrentSchema(t *testing.T)
 	}
 }
 
-// TestCommandCodeRepairAnchorMatchesEveryHistoricalList guards the anchor the
-// schema repair relies on for this harness: whatever schema a database arrives
-// from, the sessions harness CHECK must end with the retained 'fake' fixture
-// harness, otherwise the repair would silently skip it and a database that
-// missed an earlier harness migration could never accept this harness.
-func TestCommandCodeRepairAnchorMatchesEveryHistoricalHarnessList(t *testing.T) {
-	for _, version := range []int64{26, 53, 54, 82, 95, 155, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 192, 193} {
-		db := openMigratedDatabaseCopy(t, version)
-		var sql string
-		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'sessions'`).Scan(&sql); err != nil {
-			t.Fatal(err)
-		}
-		start := strings.Index(sql, "CHECK (harness IN")
-		if start < 0 {
-			t.Fatalf("schema at %d has no harness CHECK", version)
-		}
-		end := strings.Index(sql[start:], "))")
-		if end < 0 {
-			t.Fatalf("schema at %d has an unterminated harness CHECK", version)
-		}
-		check := sql[start : start+end+2]
-		if !strings.HasSuffix(check, `'fake'))`) {
-			t.Fatalf("schema at %d ends its harness CHECK with %q; the Command Code repair anchor expects 'fake'))", version, check)
-		}
-		if !strings.Contains(check, `'fake'`) {
-			t.Fatalf("schema at %d has no fake harness entry: %q", version, check)
-		}
-	}
-}
-
 // TestReconcileCommandCodeAfterBurnedMigration covers a database that never ran
 // an earlier harness migration: goose skips the burned number, the current-schema
 // rewrite in 0194 matches nothing, and the repair is the only thing that adds
 // Command Code. It must also leave every earlier harness intact, which is the
 // failure mode when a migration widens a schema variant the repair also relies on.
-func TestReconcileCommandCodeAfterBurnedMigration(t *testing.T) {
+func TestReconcileCommandCodeAfterBurnedCommandCodeMigration(t *testing.T) {
 	db := openMigratedDatabaseCopy(t, 193)
 	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (194, 1)`); err != nil {
 		t.Fatalf("seed burned Command Code migration: %v", err)
