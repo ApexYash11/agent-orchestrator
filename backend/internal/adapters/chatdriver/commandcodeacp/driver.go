@@ -87,6 +87,9 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 	if mode := permissionMode(cfg.Permissions); mode != "" {
 		args = append(args, "--permission-mode", mode)
 	}
+	if prompt := strings.TrimSpace(cfg.SystemPrompt); prompt != "" {
+		args = append(args, "--append-system-prompt", prompt)
+	}
 	return args, nil, nil
 }
 

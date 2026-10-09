@@ -71,6 +71,49 @@ func TestConfigureForwardsModel(t *testing.T) {
 	}
 }
 
+func TestConfigureForwardsStandingInstructionsForStartAndResume(t *testing.T) {
+	cfg := acpdriver.LaunchConfig{SystemPrompt: "  AO standing instructions for start  "}
+	args, _, err := configure(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("configure start: %v", err)
+	}
+	assertFlagValue(t, args, "--append-system-prompt", "AO standing instructions for start")
+
+	// Resume launches a replacement ACP process through the same Configure
+	// callback. It must receive the newly generated standing context instead of
+	// retaining the role from the process that originally opened the session.
+	cfg.SystemPrompt = "AO standing instructions recomputed for resume"
+	resumeArgs, _, err := configure(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("configure resume: %v", err)
+	}
+	assertFlagValue(t, resumeArgs, "--append-system-prompt", cfg.SystemPrompt)
+	if slices.Contains(resumeArgs, "AO standing instructions for start") {
+		t.Fatalf("resume args %v retain startup standing instructions", resumeArgs)
+	}
+}
+
+func TestConfigureOmitsBlankStandingInstructions(t *testing.T) {
+	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{SystemPrompt: " \n\t "})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if slices.Contains(args, "--append-system-prompt") {
+		t.Fatalf("args %v include an empty system-prompt flag", args)
+	}
+}
+
+func assertFlagValue(t *testing.T, args []string, flag, want string) {
+	t.Helper()
+	idx := slices.Index(args, flag)
+	if idx < 0 || idx+1 >= len(args) {
+		t.Fatalf("args %v missing %s <value>", args, flag)
+	}
+	if got := args[idx+1]; got != want {
+		t.Fatalf("%s value = %q, want %q", flag, got, want)
+	}
+}
+
 func TestSessionOptionsMapsModelAndEffort(t *testing.T) {
 	got := sessionOptions(ports.ChatTurnSettings{
 		Model:  "claude-opus-5-5",
