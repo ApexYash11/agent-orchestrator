@@ -23,6 +23,8 @@ WHERE type = 'table' AND name = 'sessions'
   AND sql LIKE '%''prime-agent''%'
   AND sql LIKE '%''omp''%'
   AND sql LIKE '%''unreal-agent''%'
+  AND sql LIKE '%''mimo-code''%'
+  AND sql LIKE '%''codewhale''%'
   AND sql NOT LIKE '%''command-code''%';
 -- +goose StatementEnd
 -- +goose StatementBegin

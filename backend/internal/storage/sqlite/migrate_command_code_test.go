@@ -22,7 +22,7 @@ func TestMigration0194AllowsCommandCodeAndReversesBothHistoricalSchemas(t *testi
 				// 'codewhale' in every variant 0194 rewrites, so anchor
 				// there to produce a schema the migration still recognizes.
 				mustExec(t, db, `PRAGMA writable_schema = ON`)
-				mustExec(t, db, `UPDATE sqlite_master SET sql = replace(sql, '''openhands'', ''codewhale''', '''openhands'', 'qm', ''codewhale''') WHERE type = 'table' AND name = 'sessions'`)
+				mustExec(t, db, `UPDATE sqlite_master SET sql = replace(sql, '''openhands'', ''codewhale''', '''openhands'', ''qm'', ''codewhale''') WHERE type = 'table' AND name = 'sessions'`)
 				mustExec(t, db, `PRAGMA writable_schema = RESET`)
 			}
 			upTo(t, db, 193)
