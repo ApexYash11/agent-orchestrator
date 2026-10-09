@@ -84,7 +84,6 @@ func Constructors() []adapters.Adapter {
 		kimchi.New(),
 		primeagent.New(),
 		autohand.New(),
-		commandcode.New(),
 		fx.New(),
 		commandcode.New(),
 		unrealagent.New(),
