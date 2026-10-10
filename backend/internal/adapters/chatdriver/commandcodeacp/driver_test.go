@@ -71,35 +71,28 @@ func TestConfigureForwardsModel(t *testing.T) {
 	}
 }
 
-func TestConfigureForwardsStandingInstructionsForStartAndResume(t *testing.T) {
-	cfg := acpdriver.LaunchConfig{SystemPrompt: "  AO standing instructions for start  "}
-	args, _, err := configure(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("configure start: %v", err)
-	}
-	assertFlagValue(t, args, "--append-system-prompt", "AO standing instructions for start")
-
-	// Resume launches a replacement ACP process through the same Configure
-	// callback. It must receive the newly generated standing context instead of
-	// retaining the role from the process that originally opened the session.
-	cfg.SystemPrompt = "AO standing instructions recomputed for resume"
-	resumeArgs, _, err := configure(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("configure resume: %v", err)
-	}
-	assertFlagValue(t, resumeArgs, "--append-system-prompt", cfg.SystemPrompt)
-	if slices.Contains(resumeArgs, "AO standing instructions for start") {
-		t.Fatalf("resume args %v retain startup standing instructions", resumeArgs)
-	}
-}
-
-func TestConfigureOmitsBlankStandingInstructions(t *testing.T) {
-	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{SystemPrompt: " \n\t "})
-	if err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	if slices.Contains(args, "--append-system-prompt") {
-		t.Fatalf("args %v include an empty system-prompt flag", args)
+// TestConfigureNeverPassesSystemPromptFlag guards against re-adding a
+// system-prompt launch flag: `cmd acp` accepts no such flag (v1.79.x rejects
+// `--append-system-prompt` with "unknown option" and exits before the host
+// publishes host.json, which surfaces as a missing-descriptor startup
+// failure). Standing instructions ride the workspace SessionStart hook's
+// additionalContext instead; see the commandcode agent plugin.
+func TestConfigureNeverPassesSystemPromptFlag(t *testing.T) {
+	for _, prompt := range []string{
+		"AO standing instructions for start",
+		"  AO standing instructions recomputed for resume  ",
+		" \n\t ",
+		"",
+	} {
+		args, _, err := configure(context.Background(), acpdriver.LaunchConfig{SystemPrompt: prompt})
+		if err != nil {
+			t.Fatalf("configure: %v", err)
+		}
+		for _, banned := range []string{"--append-system-prompt", "--system-prompt"} {
+			if slices.Contains(args, banned) {
+				t.Fatalf("args %v include %s, which `cmd acp` rejects", args, banned)
+			}
+		}
 	}
 }
 

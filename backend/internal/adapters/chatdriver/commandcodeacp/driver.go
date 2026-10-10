@@ -74,6 +74,12 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 // posture survives an agent that rejects the runtime setters with -32601; see
 // the same reasoning in kimchiacp. `cmd acp` accepts the same global flags as
 // the TUI, so this is one vocabulary, not two.
+//
+// Standing instructions are NOT passed here: `cmd acp` accepts no system-prompt
+// flag (v1.79.x rejects `--append-system-prompt` with "unknown option", which
+// kills the provider before the host publishes host.json and surfaces as a
+// missing-descriptor startup failure). They ride the workspace SessionStart
+// hook's additionalContext instead; see the commandcode agent plugin.
 func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
 	args := []string{
 		"acp",
@@ -86,9 +92,6 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 	}
 	if mode := permissionMode(cfg.Permissions); mode != "" {
 		args = append(args, "--permission-mode", mode)
-	}
-	if prompt := strings.TrimSpace(cfg.SystemPrompt); prompt != "" {
-		args = append(args, "--append-system-prompt", prompt)
 	}
 	return args, nil, nil
 }
