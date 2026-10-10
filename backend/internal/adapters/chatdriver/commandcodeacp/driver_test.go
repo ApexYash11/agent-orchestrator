@@ -96,17 +96,6 @@ func TestConfigureNeverPassesSystemPromptFlag(t *testing.T) {
 	}
 }
 
-func assertFlagValue(t *testing.T, args []string, flag, want string) {
-	t.Helper()
-	idx := slices.Index(args, flag)
-	if idx < 0 || idx+1 >= len(args) {
-		t.Fatalf("args %v missing %s <value>", args, flag)
-	}
-	if got := args[idx+1]; got != want {
-		t.Fatalf("%s value = %q, want %q", flag, got, want)
-	}
-}
-
 func TestSessionOptionsMapsModelAndEffort(t *testing.T) {
 	got := sessionOptions(ports.ChatTurnSettings{
 		Model:  "claude-opus-5-5",
