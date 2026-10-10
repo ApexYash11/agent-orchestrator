@@ -343,6 +343,8 @@ export interface ChatWorkspaceProps {
 	onAuxiliaryTabOrderChange?: (keys: string[]) => void;
 	/** Suppress a transient stopped snapshot while a mode handoff installs Chat. */
 	controllerTransitioning?: boolean;
+	/** The conversation is still being read on a plain open or navigation; hold the composer without the startup shimmer. */
+	loadingQuietly?: boolean;
 	/**
 	 * A stopped agent is being resumed after the chat opened. Unlike a mode
 	 * handoff, the history is final, so it stays readable; only sending waits.
@@ -604,6 +606,7 @@ function ChatWorkspaceContent({
 	auxiliaryTabOrder,
 	onAuxiliaryTabOrderChange,
 	controllerTransitioning,
+	loadingQuietly,
 	agentResuming = false,
 	startingSteps,
 	settingsReady = true,
@@ -1417,7 +1420,7 @@ function ChatWorkspaceContent({
 	// at the bottom and stays there for the rest of the session.
 	const orchestratorStarting = sessionRole === "orchestrator" && startupState !== "failed" && (
 		startupState === "provisioning" || agentResuming ||
-		snapshot.controller.state === "connecting" || snapshot.controller.state === "recovering"
+		(!loadingQuietly && (snapshot.controller.state === "connecting" || snapshot.controller.state === "recovering"))
 	);
 	const currentSetupStep = provisionSteps?.find((step) => step.status === "running")?.id;
 	const setupPlaceholder = currentSetupStep === "fetch" ? "Getting the latest code"
@@ -1427,8 +1430,18 @@ function ChatWorkspaceContent({
 		: provisionSteps?.length && provisionSteps.every((step) => step.status === "done")
 			? "Connecting to your orchestrator"
 			: "Getting your project ready";
+	// Arriving from the terminal reuses the startup composer: the shimmer plus a
+	// placeholder that follows the controller. Leaving for the terminal
+	// (newWorkDisabled) stays quiet, since that screen is about to go away.
+	const arrivingInChat = Boolean(controllerTransitioning) && !newWorkDisabled && startupState !== "provisioning";
+	const arrivingPlaceholder = snapshot.controller.state === "connecting" || snapshot.controller.state === "recovering"
+		? "Restoring your conversation"
+		: "Starting the chat agent";
 	const compactStartup = sessionRole === "orchestrator" && startupState === "failed" ? startup : undefined;
-	const conversationEmpty = snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0 && (!hasStartup || sessionRole === "orchestrator");
+	// Arriving in a chat that already has messages docks the composer at the
+	// bottom while they load; a chat with none opens centered like any new chat.
+	const arrivingWithHistory = arrivingInChat && Boolean(session?.lastUserMessageAt);
+	const conversationEmpty = !arrivingWithHistory && snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0 && (!hasStartup || sessionRole === "orchestrator");
 	const { t } = useTranslation();
 	const [emptyChatPlaceholder] = useState(
 		() => sessionRole === "orchestrator"
@@ -1642,7 +1655,7 @@ function ChatWorkspaceContent({
 					/>
 					{snapshot.threadState ? <ThreadStateBanner threadState={snapshot.threadState} /> : null}
 					<div
-						className={cn("flex min-h-0 flex-1 flex-col", conversationEmpty && "justify-center")}
+						className={cn("flex min-h-0 flex-1 flex-col", conversationEmpty && "justify-center", arrivingWithHistory && snapshot.items.length === 0 && "justify-end")}
 						data-composer-placement={conversationEmpty ? "center" : "dock"}
 					>
 						<ChatLinkProvider
@@ -1685,6 +1698,7 @@ function ChatWorkspaceContent({
 									rollbackDisabled={Boolean(turn || rollbackPending || newWorkDisabled)}
 									localEchos={localEchos}
 									startup={sessionRole === "orchestrator" ? undefined : startup}
+									arriving={arrivingInChat}
 								/>
 							</ChatImageSourceProvider>
 						</ChatLinkProvider>
@@ -1748,11 +1762,12 @@ function ChatWorkspaceContent({
 												? t("chat.startup.queuePlaceholder", { agent: agentLabel(snapshot.harness) })
 												: undefined
 										}
-										starting={orchestratorStarting}
-										disabled={(orchestratorStarting || (snapshot.controller.state === "stopped" && !suppressStopped && (!resumingAgent || session?.provisionState === "failed")) || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
-										// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
+										starting={orchestratorStarting || arrivingInChat}
+										disabled={(orchestratorStarting || loadingQuietly || (snapshot.controller.state === "stopped" && !suppressStopped && (!resumingAgent || session?.provisionState === "failed")) || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
 										disabledPlaceholder={
-											orchestratorStarting
+											arrivingInChat
+												? arrivingPlaceholder
+												: orchestratorStarting
 												? setupPlaceholder
 												: controllerTransitioning || newWorkDisabled
 												? ""
@@ -2337,6 +2352,7 @@ function Timeline({
 	rollbackDisabled = false,
 	localEchos = [],
 	startup,
+	arriving = false,
 }: {
 	annotationNavigationRef: MutableRefObject<((annotation: { text: string; messageId?: string; revision?: number }) => void) | null>;
 	snapshot: ConversationSnapshot;
@@ -2367,7 +2383,13 @@ function Timeline({
 	localEchos?: ConversationLocalEcho[];
 	/** A session that is starting, or failed to start, and its setup checklist. */
 	startup?: ComponentProps<typeof SessionStartup> & { openingTurnId?: string };
+	/** An interface switch is bringing this conversation in; only then does the transcript fade in. */
+	arriving?: boolean;
 }) {
+	const hasTranscript = snapshot.items.length > 0;
+	const arrivedEmpty = useRef(false);
+	if (arriving && !hasTranscript) arrivedEmpty.current = true;
+	const revealTranscript = arrivedEmpty.current && hasTranscript;
 	const translateDraft = useChatDraftTranslation();
 	const uiSessionId = draftScope.sessionId;
 	const scroller = useRef<HTMLDivElement>(null);
@@ -3699,7 +3721,7 @@ function Timeline({
 				aria-label="Conversation"
 				style={virtualized ? { overflowAnchor: "none" } : undefined}
 			>
-				<div ref={scrollContent} className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-4.5">
+				<div ref={scrollContent} className={cn("mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-4.5", revealTranscript && "chat-transcript-reveal")}>
 					{annotationNavigationError ? <p role="status" className="text-xs text-muted-foreground">{annotationNavigationError}</p> : null}
 					{hasOlder ? (
 						<div className="flex justify-center pb-1">
