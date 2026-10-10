@@ -133,6 +133,49 @@ func TestResolveWindowsShimArgvLeavesUnknownInterpreterAlone(t *testing.T) {
 	}
 }
 
+// A quoted npm entry path may itself contain `&` (e.g. `R&D.js`). The chain
+// separator is the last `&` outside quotes, so the resolver must still bypass
+// the shim instead of leaving the launch on the cmd.exe path.
+func TestResolveWindowsShimArgvPreservesAmpersandTarget(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "node_modules", "pkg", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(binDir, "R&D.js")
+	if err := os.WriteFile(entry, []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	node := filepath.Join(dir, "node.exe")
+	if err := os.WriteFile(node, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "@ECHO off\n" +
+		"GOTO start\n" +
+		":find_dp0\n" +
+		"SET dp0=%~dp0\n" +
+		"EXIT /b\n" +
+		":start\n" +
+		"SETLOCAL\n" +
+		"CALL :find_dp0\n" +
+		"\n" +
+		"IF EXIST \"%dp0%\\node.exe\" (\n" +
+		"  SET \"_prog=%dp0%\\node.exe\"\n" +
+		") ELSE (\n" +
+		"  SET \"_prog=node\"\n" +
+		"  SET PATHEXT=%PATHEXT:;.JS;=;%\n" +
+		")\n" +
+		"\n" +
+		"endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\node_modules\\pkg\\bin\\R&D.js\" %*\n"
+	shim := writeShim(t, dir, "pkg.cmd", body)
+
+	got := ResolveWindowsShimArgv([]string{shim, "-s", "prompt"}, nil)
+	want := []string{node, entry, "-s", "prompt"}
+	if !equalArgs(got, want) {
+		t.Fatalf("ResolveWindowsShimArgv() = %q, want %q", got, want)
+	}
+}
+
 // A shebang arg that happens to contain `%dp0%` must not be path-expanded: it is
 // an interpreter flag, not a shim-relative path.
 func TestResolveWindowsShimArgvKeepsShebangArgsVerbatim(t *testing.T) {

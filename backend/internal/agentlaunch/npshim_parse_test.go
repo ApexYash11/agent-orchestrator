@@ -94,3 +94,21 @@ func TestQuotedTokensIgnoresCmdShimCommandChain(t *testing.T) {
 		t.Fatalf("quotedTokens() = %q, want %q", got, want)
 	}
 }
+
+// A quoted npm entry path may itself contain `&` (e.g. `R&D.js`). The chain
+// separator is the last `&` outside quotes, so slicing at the `&` inside the
+// path would truncate the target and leave the shim on the cmd.exe path.
+func TestQuotedTokensKeepsAmpersandInQuotedTarget(t *testing.T) {
+	lines := []string{
+		`"%_prog%" "%dp0%\node_modules\pkg\bin\R&D.js" %*`,
+		`endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & ` +
+			`"%_prog%" "%dp0%\node_modules\pkg\bin\R&D.js" %*`,
+	}
+	want := []string{"%_prog%", `%dp0%\node_modules\pkg\bin\R&D.js`}
+	for _, line := range lines {
+		got := quotedTokens(line)
+		if !equalArgs(got, want) {
+			t.Fatalf("quotedTokens(%q) = %q, want %q", line, got, want)
+		}
+	}
+}

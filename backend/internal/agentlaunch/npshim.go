@@ -238,9 +238,10 @@ func npmShimArgs(tokens []string) []string {
 func quotedTokens(line string) []string {
 	// The invocation is chained as `endLocal & goto ... || title %COMSPEC% &
 	// <program> <args> %*`; only the segment after the final `&` is the program.
-	if idx := strings.LastIndex(line, "&"); idx >= 0 {
-		line = line[idx+1:]
-	}
+	// The separator is the last `&` outside quoted tokens: a quoted npm entry
+	// path may itself contain `&` (e.g. `R&D.js`), and slicing at it would
+	// leave a half-understood shim on the cmd.exe path.
+	line = invocationSegment(line)
 	var tokens []string
 	var current strings.Builder
 	inQuotes := false
@@ -272,6 +273,29 @@ func quotedTokens(line string) []string {
 		tokens = tokens[:n-1]
 	}
 	return tokens
+}
+
+// invocationSegment returns the shim invocation after the final `&` command
+// separator that sits outside quoted tokens. Separators inside a quoted npm
+// entry path (e.g. `"%dp0%\node_modules\pkg\bin\R&D.js"`) are part of the path,
+// not the `endLocal & goto ... & <program>` chain, so they must not split.
+func invocationSegment(line string) string {
+	inQuotes := false
+	lastSep := -1
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '"':
+			inQuotes = !inQuotes
+		case '&':
+			if !inQuotes {
+				lastSep = i
+			}
+		}
+	}
+	if lastSep >= 0 {
+		return line[lastSep+1:]
+	}
+	return line
 }
 
 // expandShimPath substitutes the shim's own directory for `%dp0%` and returns a
