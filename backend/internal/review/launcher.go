@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
@@ -441,11 +442,20 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 	if workingDirectory == "" {
 		workingDirectory = spec.WorkspacePath
 	}
+	env := l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env)
+	// Reviewer harnesses place their system prompt in argv too (Cline reads
+	// it into `-s`), so a Windows npm shim must be rewritten here just like
+	// worker launches: otherwise the reviewer runs through cmd.exe and dies
+	// on the same command-line limit (issue #6207). Both the initial and the
+	// restore command funnel through this function. runtimeEnv already
+	// augmented PATH for the original argv, so the resolver searches the
+	// child PATH the shim itself would have seen.
+	cmd.Argv = agentlaunch.ResolveWindowsShimArgvWithEnv(cmd.Argv, env, exec.LookPath)
 	handle, err := l.runtime.Create(ctx, ports.RuntimeConfig{
 		SessionID:     domain.SessionID(handleID),
 		WorkspacePath: workingDirectory,
 		Argv:          cmd.Argv,
-		Env:           l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env),
+		Env:           env,
 	})
 	if err != nil {
 		return LaunchResult{}, fmt.Errorf("reviewer runtime: %w", err)

@@ -274,6 +274,82 @@ func TestResolveWindowsShimArgvResolvesNodeFromPath(t *testing.T) {
 	}
 }
 
+// The `.cmd` shim runs in the session environment, so the Node fallback must
+// come from the child PATH: the daemon PATH may select another version, or
+// have no Node at all while the session does.
+func TestResolveWindowsShimArgvWithEnvPrefersChildPathNode(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "node_modules", "pkg", "bin")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(pkgDir, "entry")
+	if err := os.WriteFile(entry, []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shim := writeShim(t, dir, "pkg.cmd", nodeShimBody)
+
+	nodeDir := t.TempDir()
+	node := filepath.Join(nodeDir, "node.exe")
+	if err := os.WriteFile(node, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failLookPath := func(string) (string, error) {
+		t.Error("daemon lookPath must not be consulted when the child PATH has Node")
+		return "", os.ErrNotExist
+	}
+
+	got := ResolveWindowsShimArgvWithEnv([]string{shim, "-p"}, map[string]string{"PATH": nodeDir}, failLookPath)
+	if !equalArgs(got, []string{node, entry, "-p"}) {
+		t.Fatalf("ResolveWindowsShimArgvWithEnv() = %q, want child-PATH node argv", got)
+	}
+}
+
+// The sibling node.exe stays first: an nvm-style install pins its runtime
+// beside the shim, and the child PATH must not override that pin.
+func TestResolveWindowsShimArgvWithEnvPrefersSiblingOverChildPath(t *testing.T) {
+	dir := t.TempDir()
+	shim, node, entry := newNodePackage(t, dir, "pkg.cmd", nodeShimBody)
+
+	otherDir := t.TempDir()
+	other := filepath.Join(otherDir, "node.exe")
+	if err := os.WriteFile(other, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := ResolveWindowsShimArgvWithEnv([]string{shim}, map[string]string{"PATH": otherDir}, nil)
+	if !equalArgs(got, []string{node, entry}) {
+		t.Fatalf("ResolveWindowsShimArgvWithEnv() = %q, want sibling node argv", got)
+	}
+}
+
+// The daemon PATH is the last resort: a child PATH without Node falls back
+// to the previous lookPath behavior rather than leaving the shim in place.
+func TestResolveWindowsShimArgvWithEnvFallsBackToDaemonLookPath(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "node_modules", "pkg", "bin")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(pkgDir, "entry")
+	if err := os.WriteFile(entry, []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shim := writeShim(t, dir, "pkg.cmd", nodeShimBody)
+
+	nodeDir := t.TempDir()
+	node := filepath.Join(nodeDir, "node.exe")
+	if err := os.WriteFile(node, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lookPath := func(string) (string, error) { return node, nil }
+
+	got := ResolveWindowsShimArgvWithEnv([]string{shim, "-p"}, map[string]string{"PATH": t.TempDir()}, lookPath)
+	if !equalArgs(got, []string{node, entry, "-p"}) {
+		t.Fatalf("ResolveWindowsShimArgvWithEnv() = %q, want daemon lookPath argv", got)
+	}
+}
+
 func TestResolveWindowsShimArgvLeavesUnrelatedArgvAlone(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "claude.exe")

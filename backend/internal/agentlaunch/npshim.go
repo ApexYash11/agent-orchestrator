@@ -27,6 +27,22 @@ import (
 // be parsed, or when its target or a Node runtime is missing. Native `.exe`
 // harnesses therefore keep their existing launch path untouched.
 func ResolveWindowsShimArgv(argv []string, lookPath func(string) (string, error)) []string {
+	return ResolveWindowsShimArgvWithEnv(argv, nil, lookPath)
+}
+
+// ResolveWindowsShimArgvWithEnv rewrites a Windows npm shim argv like
+// ResolveWindowsShimArgv, but resolves the fallback Node runtime against the
+// child PATH carried in env instead of the daemon environment.
+//
+// The original `.cmd` shim runs in the session environment built from the
+// project config, so its `%_prog%` fallback (plain `node` on PATH) sees that
+// PATH — which may select a different Node version than the daemon's, or be
+// the only place Node exists at all. Resolving against the daemon PATH would
+// start the wrong runtime or leave the `.cmd` argv unchanged, keeping the
+// long-prompt failure this rewrite exists to fix. Callers pass env after PATH
+// augmentation; a nil or PATH-less env keeps the previous daemon-PATH
+// behavior.
+func ResolveWindowsShimArgvWithEnv(argv []string, env map[string]string, lookPath func(string) (string, error)) []string {
 	if runtime.GOOS != "windows" || len(argv) == 0 {
 		return argv
 	}
@@ -57,7 +73,7 @@ func ResolveWindowsShimArgv(argv []string, lookPath func(string) (string, error)
 		if !isRegularFile(program.Target) {
 			return argv
 		}
-		executable = resolveNodeRuntime(filepath.Dir(shim), lookPath)
+		executable = resolveNodeRuntime(filepath.Dir(shim), env, lookPath)
 		args = append(args, program.Args...)
 		args = append(args, program.Target)
 	case program.Target != "":
@@ -316,9 +332,17 @@ func expandShimPath(token, dir string) string {
 
 // resolveNodeRuntime prefers the Node runtime installed beside the shim, which
 // is how nvm-style installs pin the interpreter, before falling back to PATH.
-func resolveNodeRuntime(shimDir string, lookPath func(string) (string, error)) string {
+// The fallback searches the child PATH from env first: that is the PATH the
+// original shim would have searched, after the caller's augmentation. Only
+// when env carries no PATH does it use lookPath against the daemon
+// environment, preserving the previous behavior for callers without a session
+// environment.
+func resolveNodeRuntime(shimDir string, env map[string]string, lookPath func(string) (string, error)) string {
 	if local := filepath.Join(shimDir, "node.exe"); isRegularFile(local) {
 		return local
+	}
+	if path, ok := lookNodeOnChildPath(env); ok {
+		return path
 	}
 	if lookPath == nil {
 		lookPath = exec.LookPath
@@ -329,6 +353,59 @@ func resolveNodeRuntime(shimDir string, lookPath func(string) (string, error)) s
 		}
 	}
 	return ""
+}
+
+// lookNodeOnChildPath searches the session PATH for a Node runtime, mirroring
+// the fallback the `.cmd` shim itself performs. It reports false when env
+// carries no PATH so the caller falls back to the daemon environment.
+func lookNodeOnChildPath(env map[string]string) (string, bool) {
+	pathVar := env["PATH"]
+	if strings.TrimSpace(pathVar) == "" {
+		return "", false
+	}
+	dirs := strings.Split(pathVar, string(os.PathListSeparator))
+	if path, ok := findOnDirs(dirs, "node.exe"); ok {
+		return path, true
+	}
+	for _, ext := range pathExts(env) {
+		if path, ok := findOnDirs(dirs, "node"+ext); ok {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// findOnDirs reports the first regular file named name under dirs.
+func findOnDirs(dirs []string, name string) (string, bool) {
+	for _, dir := range dirs {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		if path := filepath.Join(dir, name); isRegularFile(path) {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// pathExts lists the executable extensions a bare `node` name may carry, in
+// search order. It honors the session PATHEXT and falls back to the Windows
+// default order otherwise.
+func pathExts(env map[string]string) []string {
+	raw := env["PATHEXT"]
+	if raw == "" {
+		raw = os.Getenv("PATHEXT")
+	}
+	var exts []string
+	for _, ext := range strings.Split(raw, ";") {
+		if ext = strings.TrimSpace(ext); ext != "" {
+			exts = append(exts, strings.ToLower(ext))
+		}
+	}
+	if len(exts) == 0 {
+		exts = []string{".com", ".exe", ".bat", ".cmd"}
+	}
+	return exts
 }
 
 func isRegularFile(path string) bool {

@@ -4768,7 +4768,7 @@ func (m *Manager) augmentRuntimePATHForLaunchBinary(ctx context.Context, env map
 // is idempotent and a native `.exe` harness yields identical argv either way.
 func (m *Manager) prepareLaunchArgv(ctx context.Context, env map[string]string, argv []string) []string {
 	m.augmentRuntimePATHForLaunchBinary(ctx, env, argv)
-	return agentlaunch.ResolveWindowsShimArgv(argv, m.lookPath)
+	return agentlaunch.ResolveWindowsShimArgvWithEnv(argv, env, m.lookPath)
 }
 
 // AugmentRuntimePATHForLaunchBinary is retained at the session-manager boundary
