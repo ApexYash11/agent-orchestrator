@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,25 +23,46 @@ var githubSlugPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,99}$`)
 const workOSAPIBaseURL = "https://api.workos.com"
 
 type Config struct {
-	Environment             string
-	HTTPAddress             string
-	DatabaseURL             string
-	MigrationDatabaseURL    string
-	MigrateOnStartup        bool
-	MigrationTimeout        time.Duration
-	WorkOSIssuer            string
-	WorkOSClientID          string
-	WorkOSAPIKey            string
-	WorkOSJWKSURL           string
-	LocalAuthEnabled        bool
-	LocalSessionTTL         time.Duration
-	SandboxProvider         string
-	AllowAnonymousCheckout  bool
-	ProviderSecretKey       []byte
-	Release                 string
-	RepositoryBrokerURL     string
-	RepositoryBrokerToken   string
-	EnvironmentControlToken string
+	Environment          string
+	HTTPAddress          string
+	DatabaseURL          string
+	MigrationDatabaseURL string
+	MigrateOnStartup     bool
+	MigrationTimeout     time.Duration
+	WorkOSIssuer         string
+	WorkOSClientID       string
+	WorkOSAPIKey         string
+	WorkOSJWKSURL        string
+	// WorkOSLegacy* describe the WorkOS environment AO signed users in with
+	// before the current one. While set, the control plane also accepts that
+	// environment's tokens, so older desktop builds keep working while users
+	// move to the current environment.
+	WorkOSLegacyIssuer   string
+	WorkOSLegacyClientID string
+	WorkOSLegacyAPIKey   string
+	WorkOSLegacyJWKSURL  string
+	LocalAuthEnabled     bool
+	LocalSessionTTL      time.Duration
+	SandboxProvider      string
+	// AvailableSandboxProviders lists every provider this control plane offers.
+	// It always contains SandboxProvider (the default) and is derived from
+	// AO_CLOUD_SANDBOX_PROVIDERS, so a single CP can serve more than one
+	// provider and a client can pick per session. Single-provider deployments
+	// leave it as just the default and are unchanged.
+	AvailableSandboxProviders []string
+	// CapabilityGatedProviders lists sandbox providers that require a matching
+	// organization capability (seeded from WorkOS org metadata) before a client
+	// may select them. Empty by default, so every offered provider is ungated
+	// and behavior is unchanged; set AO_CLOUD_CAPABILITY_GATED_PROVIDERS
+	// (comma-separated, e.g. "coder") to turn the gate on once the entitled
+	// organizations have been flagged in WorkOS.
+	CapabilityGatedProviders []string
+	AllowAnonymousCheckout   bool
+	ProviderSecretKey        []byte
+	Release                  string
+	RepositoryBrokerURL      string
+	RepositoryBrokerToken    string
+	EnvironmentControlToken  string
 
 	// PublicURL is the origin a sandbox worker dials back to. A worker opens
 	// no inbound port, so this is the only way it can reach the control plane.
@@ -64,9 +87,17 @@ type Config struct {
 	// IdlePauseThreshold is how long a session must be quiet, with no turn in
 	// flight, before the control plane pauses its sandbox.
 	IdlePauseThreshold time.Duration
-	// PRStatusPollInterval is how often the pull-request status scanner
-	// refreshes CI, review, and mergeability state from GitHub.
-	PRStatusPollInterval time.Duration
+	// TerminalStreamEnabled turns on the low-latency terminal path: workers
+	// hold a persistent stream to the control plane and Postgres NOTIFY
+	// replaces the input/output polling loops. Off means the polled
+	// store-and-forward behavior, byte for byte.
+	TerminalStreamEnabled bool
+	// InterfaceHandoffInterval is how often the durable controller handoff runs.
+	InterfaceHandoffInterval time.Duration
+	// TerminalRelayEnabled forwards terminal output to an attached browser
+	// directly from the worker stream, before the same frame is mirrored to
+	// durable replay storage.
+	TerminalRelayEnabled bool
 
 	NodeOpsBaseURL       string
 	NodeOpsAPIKey        string
@@ -87,6 +118,15 @@ type Config struct {
 	DockerNetwork        string
 	DockerNamespace      string
 	DockerWorkerTokenTTL time.Duration
+
+	CoderURL            string
+	CoderAPIToken       string
+	CoderOwner          string
+	CoderTemplateID     string
+	CoderAgentName      string
+	CoderParameters     map[string]string
+	CoderDurableRoot    string
+	CoderWorkerTokenTTL time.Duration
 
 	GitHub GitHubConfig
 }
@@ -123,10 +163,9 @@ const defaultIdlePauseThreshold = time.Hour
 
 const defaultIdlePauseInterval = 30 * time.Second
 
-const defaultPRStatusPollInterval = 30 * time.Second
-
 func Load() (Config, error) {
 	environment := strings.ToLower(strings.TrimSpace(os.Getenv("AO_CLOUD_ENV")))
+	githubLocalTest := boolEnv("AO_CLOUD_GITHUB_LOCAL_TEST", false)
 	hosted := environment == "staging" || environment == "production"
 	defaultHTTPAddress := ":8080"
 	if environment == "development" || environment == "test" {
@@ -136,6 +175,12 @@ func Load() (Config, error) {
 	if raw := strings.TrimSpace(os.Getenv("AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS")); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &rootFSByHarnessEnv); err != nil {
 			return Config{}, fmt.Errorf("invalid AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS: %w", err)
+		}
+	}
+	coderParametersEnv := map[string]string{}
+	if raw := strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_PARAMETERS_JSON")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &coderParametersEnv); err != nil {
+			return Config{}, fmt.Errorf("invalid AO_CLOUD_CODER_PARAMETERS_JSON: %w", err)
 		}
 	}
 
@@ -150,13 +195,20 @@ func Load() (Config, error) {
 		WorkOSClientID:         strings.TrimSpace(os.Getenv("AO_CLOUD_WORKOS_CLIENT_ID")),
 		WorkOSAPIKey:           strings.TrimSpace(os.Getenv("AO_CLOUD_WORKOS_API_KEY")),
 		WorkOSJWKSURL:          strings.TrimSpace(os.Getenv("AO_CLOUD_WORKOS_JWKS_URL")),
+		WorkOSLegacyIssuer:     strings.TrimSpace(os.Getenv("AO_CLOUD_WORKOS_LEGACY_ISSUER")),
+		WorkOSLegacyClientID:   strings.TrimSpace(os.Getenv("AO_CLOUD_WORKOS_LEGACY_CLIENT_ID")),
+		WorkOSLegacyAPIKey:     strings.TrimSpace(os.Getenv("AO_CLOUD_WORKOS_LEGACY_API_KEY")),
+		WorkOSLegacyJWKSURL:    strings.TrimSpace(os.Getenv("AO_CLOUD_WORKOS_LEGACY_JWKS_URL")),
 		LocalAuthEnabled:       boolEnv("AO_CLOUD_LOCAL_AUTH", false),
 		LocalSessionTTL:        durationEnv("AO_CLOUD_LOCAL_SESSION_TTL", 24*time.Hour),
 		AllowAnonymousCheckout: boolEnv("AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT", false),
+		TerminalStreamEnabled:  boolEnv("AO_CLOUD_TERMINAL_STREAM", false),
+		TerminalRelayEnabled:   boolEnv("AO_CLOUD_TERMINAL_RELAY", false),
 		SandboxProvider: strings.ToLower(
 			envOrDefault("AO_CLOUD_SANDBOX_PROVIDER", defaultSandboxProvider(hosted)),
 		),
-		Release: strings.TrimSpace(os.Getenv("AO_CLOUD_RELEASE")),
+		CapabilityGatedProviders: lowerCSVList(os.Getenv("AO_CLOUD_CAPABILITY_GATED_PROVIDERS")),
+		Release:                  strings.TrimSpace(os.Getenv("AO_CLOUD_RELEASE")),
 		RepositoryBrokerURL: strings.TrimRight(
 			strings.TrimSpace(os.Getenv("AO_CLOUD_REPOSITORY_BROKER_URL")), "/",
 		),
@@ -173,11 +225,16 @@ func Load() (Config, error) {
 		WorkerHelperBinaryPath: strings.TrimSpace(os.Getenv("AO_CLOUD_WORKER_HELPER_BINARY_PATH")),
 		MaxSandboxesPerOrg:     intEnvOrDefault("AO_CLOUD_MAX_ACTIVE_SANDBOXES_PER_ORG", 1000),
 		ReconcileInterval:      durationEnv("AO_CLOUD_SANDBOX_RECONCILE_INTERVAL", 2*time.Second),
-		SandboxStartupTimeout:  durationEnv("AO_CLOUD_SANDBOX_STARTUP_TIMEOUT", 3*time.Minute),
-		WorkerHeartbeatTimeout: durationEnv("AO_CLOUD_WORKER_HEARTBEAT_TIMEOUT", time.Minute),
-		IdlePauseInterval:      durationEnv("AO_CLOUD_IDLE_PAUSE_INTERVAL", defaultIdlePauseInterval),
-		IdlePauseThreshold:     durationEnv("AO_CLOUD_IDLE_PAUSE_THRESHOLD", defaultIdlePauseThreshold),
-		PRStatusPollInterval:   durationEnv("AO_CLOUD_PR_STATUS_POLL_INTERVAL", defaultPRStatusPollInterval),
+		// Cold coder/Azure VMs routinely need >3 min to first-heartbeat (VM boot +
+		// snap/lxd, a fresh durable-disk mkfs, harness warming), which tripped the
+		// old 3m budget and triggered a needless worker reinstall mid-startup. This
+		// is the value the reconciler actually uses (it overrides the
+		// DefaultStartupTimeout fallback), so it is the one that has to change.
+		SandboxStartupTimeout:    durationEnv("AO_CLOUD_SANDBOX_STARTUP_TIMEOUT", 6*time.Minute),
+		WorkerHeartbeatTimeout:   durationEnv("AO_CLOUD_WORKER_HEARTBEAT_TIMEOUT", time.Minute),
+		IdlePauseInterval:        durationEnv("AO_CLOUD_IDLE_PAUSE_INTERVAL", defaultIdlePauseInterval),
+		IdlePauseThreshold:       durationEnv("AO_CLOUD_IDLE_PAUSE_THRESHOLD", defaultIdlePauseThreshold),
+		InterfaceHandoffInterval: durationEnv("AO_CLOUD_INTERFACE_HANDOFF_INTERVAL", 500*time.Millisecond),
 
 		NodeOpsBaseURL:         strings.TrimSpace(os.Getenv("AO_CLOUD_NODEOPS_BASE_URL")),
 		NodeOpsAPIKey:          strings.TrimSpace(os.Getenv("AO_CLOUD_NODEOPS_API_KEY")),
@@ -199,6 +256,19 @@ func Load() (Config, error) {
 		DockerNamespace:   envOrDefault("AO_CLOUD_DOCKER_NAMESPACE", "ao-cloud-local"),
 		DockerWorkerTokenTTL: durationEnv(
 			"AO_CLOUD_DOCKER_WORKER_TOKEN_TTL", sandbox.DefaultWorkerTokenTTL,
+		),
+
+		CoderURL:        strings.TrimRight(strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_URL")), "/"),
+		CoderAPIToken:   strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_TOKEN")),
+		CoderOwner:      strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_OWNER")),
+		CoderTemplateID: strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_TEMPLATE_ID")),
+		CoderAgentName:  strings.TrimSpace(os.Getenv("AO_CLOUD_CODER_AGENT_NAME")),
+		CoderParameters: coderParametersEnv,
+		CoderDurableRoot: strings.TrimSpace(
+			os.Getenv("AO_CLOUD_CODER_DURABLE_ROOT"),
+		),
+		CoderWorkerTokenTTL: durationEnv(
+			"AO_CLOUD_CODER_WORKER_TOKEN_TTL", sandbox.DefaultWorkerTokenTTL,
 		),
 
 		GitHub: GitHubConfig{
@@ -251,32 +321,35 @@ func Load() (Config, error) {
 	default:
 		return Config{}, errors.New("AO_CLOUD_ENV must be development, test, staging, or production")
 	}
-	workosValues := []string{cfg.WorkOSIssuer, cfg.WorkOSClientID, cfg.WorkOSAPIKey}
-	configuredWorkOSValues := 0
-	for _, value := range workosValues {
-		if value != "" {
-			configuredWorkOSValues++
-		}
+	if githubLocalTest && cfg.Environment != "development" {
+		return Config{}, errors.New("AO_CLOUD_GITHUB_LOCAL_TEST may only be enabled in development")
 	}
-	if configuredWorkOSValues != 0 && configuredWorkOSValues != len(workosValues) {
-		return Config{}, errors.New("AO_CLOUD_WORKOS_ISSUER, AO_CLOUD_WORKOS_CLIENT_ID, and AO_CLOUD_WORKOS_API_KEY must be set together")
+	var err error
+	cfg.WorkOSIssuer, cfg.WorkOSJWKSURL, err = resolveWorkOS(
+		"AO_CLOUD_WORKOS",
+		cfg.WorkOSIssuer,
+		cfg.WorkOSClientID,
+		cfg.WorkOSAPIKey,
+		cfg.WorkOSJWKSURL,
+	)
+	if err != nil {
+		return Config{}, err
 	}
-	if strings.TrimRight(cfg.WorkOSIssuer, "/") == workOSAPIBaseURL {
-		cfg.WorkOSIssuer = workOSAPIBaseURL + "/user_management/" + cfg.WorkOSClientID
+	cfg.WorkOSLegacyIssuer, cfg.WorkOSLegacyJWKSURL, err = resolveWorkOS(
+		"AO_CLOUD_WORKOS_LEGACY",
+		cfg.WorkOSLegacyIssuer,
+		cfg.WorkOSLegacyClientID,
+		cfg.WorkOSLegacyAPIKey,
+		cfg.WorkOSLegacyJWKSURL,
+	)
+	if err != nil {
+		return Config{}, err
 	}
-	if cfg.WorkOSIssuer != "" {
-		workOSIssuer := workOSAPIBaseURL + "/user_management/" + cfg.WorkOSClientID
-		if strings.HasPrefix(cfg.WorkOSIssuer, workOSAPIBaseURL+"/user_management/") &&
-			cfg.WorkOSIssuer != workOSIssuer {
-			return Config{}, errors.New("AO_CLOUD_WORKOS_ISSUER must match AO_CLOUD_WORKOS_CLIENT_ID")
-		}
-		if cfg.WorkOSJWKSURL == "" {
-			if cfg.WorkOSIssuer == workOSIssuer {
-				cfg.WorkOSJWKSURL = workOSAPIBaseURL + "/sso/jwks/" + cfg.WorkOSClientID
-			} else {
-				cfg.WorkOSJWKSURL = strings.TrimRight(cfg.WorkOSIssuer, "/") + "/oauth2/jwks"
-			}
-		}
+	if cfg.WorkOSLegacyIssuer != "" && cfg.WorkOSIssuer == "" {
+		return Config{}, errors.New("AO_CLOUD_WORKOS_LEGACY_* requires AO_CLOUD_WORKOS_* to be configured")
+	}
+	if cfg.WorkOSLegacyIssuer != "" && cfg.WorkOSLegacyClientID == cfg.WorkOSClientID {
+		return Config{}, errors.New("AO_CLOUD_WORKOS_LEGACY_CLIENT_ID must differ from AO_CLOUD_WORKOS_CLIENT_ID")
 	}
 	if cfg.WorkOSIssuer == "" && !cfg.LocalAuthEnabled {
 		return Config{}, errors.New("configure WorkOS or enable AO_CLOUD_LOCAL_AUTH")
@@ -296,46 +369,97 @@ func Load() (Config, error) {
 		return Config{}, errors.New("AO_CLOUD_LOCAL_SESSION_TTL must be positive")
 	}
 	switch cfg.SandboxProvider {
-	case "ecs", "daytona", "docker", "nodeops":
+	case "ecs", "daytona", "docker", "nodeops", "coder":
 	default:
-		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be ecs, daytona, docker, or nodeops")
+		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be coder, daytona, docker, ecs, or nodeops")
 	}
-	if cfg.Hosted() && cfg.SandboxProvider != "nodeops" {
-		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be nodeops in staging and production")
+	if cfg.Hosted() && cfg.SandboxProvider != "nodeops" && cfg.SandboxProvider != "coder" {
+		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be coder or nodeops in staging and production")
 	}
-	if cfg.SandboxProvider == "docker" {
-		if err := (sandbox.DockerConfig{
-			Host:           cfg.DockerHost,
-			WorkerImage:    cfg.DockerWorkerImage,
-			Network:        cfg.DockerNetwork,
-			Namespace:      cfg.DockerNamespace,
-			WorkerTokenTTL: cfg.DockerWorkerTokenTTL,
-		}).Validate(); err != nil {
-			return Config{}, err
+	available, err := resolveAvailableProviders(cfg.SandboxProvider, cfg.Hosted())
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.AvailableSandboxProviders = available
+	// Validate every provider this control plane offers, not just the default,
+	// so a CP configured with both providers fails fast when either is
+	// misconfigured rather than at the first session that selects it. Hosted
+	// environments (staging/production) keep that fail-fast behavior: a
+	// misconfigured hosted provider must never come up quietly. Local/dev
+	// environments instead drop an unconfigured provider (e.g. Coder or
+	// NodeOps credentials left blank because only Docker is set up locally)
+	// and fall back to the remaining providers, so a developer without
+	// Coder/NodeOps access can still boot the control plane against Docker.
+	validated := make([]string, 0, len(cfg.AvailableSandboxProviders))
+	for _, provider := range cfg.AvailableSandboxProviders {
+		var err error
+		switch provider {
+		case "docker":
+			err = (sandbox.DockerConfig{
+				Host:           cfg.DockerHost,
+				WorkerImage:    cfg.DockerWorkerImage,
+				Network:        cfg.DockerNetwork,
+				Namespace:      cfg.DockerNamespace,
+				WorkerTokenTTL: cfg.DockerWorkerTokenTTL,
+			}).Validate()
+		case "nodeops":
+			err = (sandbox.NodeOpsConfig{
+				BaseURL:          cfg.NodeOpsBaseURL,
+				APIKey:           cfg.NodeOpsAPIKey,
+				DefaultShape:     cfg.NodeOpsDefaultShape,
+				DefaultRootFS:    cfg.NodeOpsDefaultRootFS,
+				RootFSByHarness:  cfg.NodeOpsRootFSByHarness,
+				Ingress:          cfg.NodeOpsIngress,
+				SSHKeyPath:       cfg.NodeOpsSSHKeyPath,
+				WorkerTokenTTL:   cfg.NodeOpsWorkerTokenTTL,
+				AutoPauseSeconds: cfg.NodeOpsAutoPauseSeconds,
+			}).Validate()
+		case "coder":
+			err = (sandbox.CoderConfig{
+				BaseURL:        cfg.CoderURL,
+				Owner:          cfg.CoderOwner,
+				TemplateID:     cfg.CoderTemplateID,
+				AgentName:      cfg.CoderAgentName,
+				Parameters:     cfg.CoderParameters,
+				DurableRoot:    cfg.CoderDurableRoot,
+				WorkerTokenTTL: cfg.CoderWorkerTokenTTL,
+			}).Validate()
+			if err == nil && cfg.CoderAPIToken == "" {
+				err = errors.New("AO_CLOUD_CODER_TOKEN is required")
+			}
+			if err == nil {
+				coderURL, _ := url.Parse(cfg.CoderURL)
+				if cfg.Hosted() && coderURL.Scheme != "https" {
+					err = errors.New("AO_CLOUD_CODER_URL must use HTTPS in hosted environments")
+				}
+			}
+		}
+		if err != nil {
+			if cfg.Hosted() {
+				return Config{}, err
+			}
+			log.Printf("ao-cloud: sandbox provider %q is unconfigured locally (%v); continuing without it", provider, err)
+			continue
+		}
+		validated = append(validated, provider)
+	}
+	cfg.AvailableSandboxProviders = validated
+	if len(cfg.AvailableSandboxProviders) == 0 {
+		return Config{}, errors.New("no configured sandbox provider is available")
+	}
+	if !slices.Contains(cfg.AvailableSandboxProviders, cfg.SandboxProvider) {
+		if slices.Contains(cfg.AvailableSandboxProviders, "docker") {
+			cfg.SandboxProvider = "docker"
+		} else {
+			cfg.SandboxProvider = cfg.AvailableSandboxProviders[0]
 		}
 	}
-	if cfg.SandboxProvider == "nodeops" || cfg.Hosted() {
-		if err := (sandbox.NodeOpsConfig{
-			BaseURL:          cfg.NodeOpsBaseURL,
-			APIKey:           cfg.NodeOpsAPIKey,
-			DefaultShape:     cfg.NodeOpsDefaultShape,
-			DefaultRootFS:    cfg.NodeOpsDefaultRootFS,
-			RootFSByHarness:  cfg.NodeOpsRootFSByHarness,
-			Ingress:          cfg.NodeOpsIngress,
-			SSHKeyPath:       cfg.NodeOpsSSHKeyPath,
-			WorkerTokenTTL:   cfg.NodeOpsWorkerTokenTTL,
-			AutoPauseSeconds: cfg.NodeOpsAutoPauseSeconds,
-		}).Validate(); err != nil {
-			return Config{}, err
-		}
-	}
-	if cfg.SandboxProvider == "nodeops" || cfg.SandboxProvider == "docker" {
+	if providersRequireWorkerHome(cfg.AvailableSandboxProviders) {
 		// A worker can only dial home if it is told where home is, and can only
 		// be trusted if its token is signed by a key strong enough to matter.
 		if cfg.PublicURL == "" {
-			return Config{}, fmt.Errorf(
-				"AO_CLOUD_PUBLIC_URL is required when AO_CLOUD_SANDBOX_PROVIDER=%s",
-				cfg.SandboxProvider,
+			return Config{}, errors.New(
+				"AO_CLOUD_PUBLIC_URL is required when a nodeops, docker, or coder provider is available",
 			)
 		}
 		// A worker reads this origin out of its environment and dials it with
@@ -356,12 +480,12 @@ func Load() (Config, error) {
 			)
 		}
 	}
-	if cfg.SandboxProvider == "nodeops" {
+	if cfg.SandboxProvider == "nodeops" || cfg.SandboxProvider == "coder" {
 		if cfg.WorkerBinaryPath == "" {
-			return Config{}, errors.New("AO_CLOUD_WORKER_BINARY_PATH is required when AO_CLOUD_SANDBOX_PROVIDER=nodeops")
+			return Config{}, fmt.Errorf("AO_CLOUD_WORKER_BINARY_PATH is required when AO_CLOUD_SANDBOX_PROVIDER=%s", cfg.SandboxProvider)
 		}
 		if cfg.WorkerHelperBinaryPath == "" {
-			return Config{}, errors.New("AO_CLOUD_WORKER_HELPER_BINARY_PATH is required when AO_CLOUD_SANDBOX_PROVIDER=nodeops")
+			return Config{}, fmt.Errorf("AO_CLOUD_WORKER_HELPER_BINARY_PATH is required when AO_CLOUD_SANDBOX_PROVIDER=%s", cfg.SandboxProvider)
 		}
 	}
 	if cfg.ReconcileInterval <= 0 {
@@ -379,11 +503,14 @@ func Load() (Config, error) {
 	if cfg.IdlePauseInterval <= 0 {
 		return Config{}, errors.New("AO_CLOUD_IDLE_PAUSE_INTERVAL must be positive")
 	}
-	if cfg.IdlePauseThreshold < time.Minute {
-		return Config{}, errors.New("AO_CLOUD_IDLE_PAUSE_THRESHOLD must be at least 1m")
+	if cfg.TerminalRelayEnabled && !cfg.TerminalStreamEnabled {
+		return Config{}, errors.New("AO_CLOUD_TERMINAL_RELAY requires AO_CLOUD_TERMINAL_STREAM")
 	}
-	if cfg.PRStatusPollInterval <= 0 {
-		return Config{}, errors.New("AO_CLOUD_PR_STATUS_POLL_INTERVAL must be positive")
+	if cfg.IdlePauseThreshold != 0 && cfg.IdlePauseThreshold < time.Minute {
+		return Config{}, errors.New("AO_CLOUD_IDLE_PAUSE_THRESHOLD must be 0 (disabled) or at least 1m")
+	}
+	if cfg.InterfaceHandoffInterval <= 0 {
+		return Config{}, errors.New("AO_CLOUD_INTERFACE_HANDOFF_INTERVAL must be positive")
 	}
 	if cfg.MaxSandboxesPerOrg < 1 {
 		return Config{}, errors.New("AO_CLOUD_MAX_ACTIVE_SANDBOXES_PER_ORG must be at least 1")
@@ -422,7 +549,9 @@ func Load() (Config, error) {
 	if cfg.GitHub.Enabled() && cfg.GitHub.PublicURL == "" {
 		return Config{}, errors.New("AO_CLOUD_PUBLIC_URL is required when the GitHub App is configured")
 	}
-	if cfg.GitHub.Enabled() && cfg.Environment != "production" {
+	githubAllowed := cfg.Environment == "production" ||
+		(cfg.Environment == "development" && githubLocalTest)
+	if cfg.GitHub.Enabled() && !githubAllowed {
 		return Config{}, errors.New("GitHub App credentials may only be configured in production")
 	}
 	if cfg.GitHub.Enabled() {
@@ -474,9 +603,20 @@ func (c Config) Hosted() bool {
 	return c.Environment == "staging" || c.Environment == "production"
 }
 
+// IdlePauseDisabled reports whether idle auto-pause is turned off (keep-warm):
+// AO_CLOUD_IDLE_PAUSE_THRESHOLD=0. When disabled the idle scanner does not run
+// and the reconciler keeps sandboxes alive through idle — including extending
+// the Coder workspace deadline that would otherwise auto-stop the VM — so a
+// cloud session behaves like a local one (no teardown, no terminal reconnect on
+// resume). The cost is continuous compute for every non-terminated session.
+func (c Config) IdlePauseDisabled() bool { return c.IdlePauseThreshold == 0 }
+
 func (c Config) WorkerTokenTTL() time.Duration {
 	if c.SandboxProvider == sandbox.ProviderDocker {
 		return c.DockerWorkerTokenTTL
+	}
+	if c.SandboxProvider == sandbox.ProviderCoder {
+		return c.CoderWorkerTokenTTL
 	}
 	return c.NodeOpsWorkerTokenTTL
 }
@@ -523,6 +663,68 @@ func defaultSandboxProvider(hosted bool) string {
 	return sandbox.DefaultProvider
 }
 
+// resolveAvailableProviders returns the set of providers a control plane offers.
+// It reads AO_CLOUD_SANDBOX_PROVIDERS (a comma-separated list) and always
+// includes defaultProvider, so an unset value yields exactly the single default
+// and existing single-provider deployments are unchanged. Order is preserved
+// (default first) and duplicates are dropped. Every entry must be a known
+// provider, and in hosted environments only nodeops and coder are permitted,
+// mirroring the AO_CLOUD_SANDBOX_PROVIDER rules.
+func resolveAvailableProviders(defaultProvider string, hosted bool) ([]string, error) {
+	list := []string{defaultProvider}
+	seen := map[string]bool{defaultProvider: true}
+	for _, part := range strings.Split(os.Getenv("AO_CLOUD_SANDBOX_PROVIDERS"), ",") {
+		provider := strings.ToLower(strings.TrimSpace(part))
+		if provider == "" || seen[provider] {
+			continue
+		}
+		seen[provider] = true
+		list = append(list, provider)
+	}
+	for _, provider := range list {
+		switch provider {
+		case "ecs", "daytona", "docker", "nodeops", "coder":
+		default:
+			return nil, fmt.Errorf("AO_CLOUD_SANDBOX_PROVIDERS contains unknown provider %q", provider)
+		}
+		if hosted && provider != "nodeops" && provider != "coder" {
+			return nil, fmt.Errorf(
+				"AO_CLOUD_SANDBOX_PROVIDERS may only contain coder or nodeops in staging and production, got %q",
+				provider,
+			)
+		}
+	}
+	return list, nil
+}
+
+// lowerCSVList parses a comma-separated env value into a lowercased, trimmed,
+// de-duplicated slice. A blank value yields nil.
+func lowerCSVList(raw string) []string {
+	seen := map[string]bool{}
+	var list []string
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.ToLower(strings.TrimSpace(part))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		list = append(list, value)
+	}
+	return list
+}
+
+// providersRequireWorkerHome reports whether any available provider launches a
+// worker that must dial back to AO_CLOUD_PUBLIC_URL.
+func providersRequireWorkerHome(providers []string) bool {
+	for _, provider := range providers {
+		switch provider {
+		case "nodeops", "docker", "coder":
+			return true
+		}
+	}
+	return false
+}
+
 func intEnvOrDefault(key string, fallback int) int {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -558,4 +760,37 @@ func (c Config) String() string {
 		authMode = "local"
 	}
 	return fmt.Sprintf("environment=%s address=%s auth=%s release=%s", c.Environment, c.HTTPAddress, authMode, c.Release)
+}
+
+// resolveWorkOS validates one WorkOS environment's settings and derives its
+// issuer and JWKS URL. The issuer may be the WorkOS API base URL (expanded to
+// the client-specific AuthKit issuer) or a custom AuthKit domain.
+func resolveWorkOS(prefix, issuer, clientID, apiKey, jwksURL string) (string, string, error) {
+	configured := 0
+	for _, value := range []string{issuer, clientID, apiKey} {
+		if value != "" {
+			configured++
+		}
+	}
+	if configured == 0 {
+		return "", jwksURL, nil
+	}
+	if configured != 3 {
+		return "", "", fmt.Errorf("%[1]s_ISSUER, %[1]s_CLIENT_ID, and %[1]s_API_KEY must be set together", prefix)
+	}
+	clientIssuer := workOSAPIBaseURL + "/user_management/" + clientID
+	if strings.TrimRight(issuer, "/") == workOSAPIBaseURL {
+		issuer = clientIssuer
+	}
+	if strings.HasPrefix(issuer, workOSAPIBaseURL+"/user_management/") && issuer != clientIssuer {
+		return "", "", fmt.Errorf("%[1]s_ISSUER must match %[1]s_CLIENT_ID", prefix)
+	}
+	if jwksURL == "" {
+		if issuer == clientIssuer {
+			jwksURL = workOSAPIBaseURL + "/sso/jwks/" + clientID
+		} else {
+			jwksURL = strings.TrimRight(issuer, "/") + "/oauth2/jwks"
+		}
+	}
+	return issuer, jwksURL, nil
 }

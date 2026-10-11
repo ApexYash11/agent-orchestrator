@@ -3,12 +3,14 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +19,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -27,9 +30,24 @@ const (
 	maxWorkspaceFiles     = 5000
 	maxWorkspaceFileBytes = 256 * 1024
 	maxWorkspaceDiffBytes = 512 * 1024
+	// AO's agent adapters write this marker into self-ignoring .gitignore
+	// files beside their workspace-local control files. Scratch workspaces have
+	// no Git index to hide that infrastructure from the review surfaces, so the
+	// filesystem readers honor the same ownership marker directly.
+	aoManagedGitignoreSentinel = hookutil.GitignoreSentinel
+	// Copilot profiles are ignored through .git/info/exclude in project
+	// worktrees, but standalone workspaces have no Git metadata. The profile
+	// carries its own ownership marker so scratch readers can hide it directly.
+	aoManagedCopilotProfileSentinel = hookutil.CopilotAgentProfileSentinel
 	// maxWorkspaceImageBytes caps a single image revision streamed to the diff
 	// viewer. Anything larger is refused rather than buffered.
 	maxWorkspaceImageBytes = 16 * 1024 * 1024
+	// maxCommitLogCommits caps a Commits menu to its newest commits. GitHub's
+	// pull request commits API stops at the same 250.
+	maxCommitLogCommits = 250
+	// maxCommitLogBytes caps each of a Commits menu's two git log passes, so a
+	// huge commit cannot become an unbounded in-memory buffer.
+	maxCommitLogBytes = 2 * 1024 * 1024
 )
 
 // WorkspaceFileStatus describes a session-worktree file relative to its compare base.
@@ -57,23 +75,31 @@ const (
 
 // WorkspaceFiles is the read model for the session workspace file browser.
 type WorkspaceFiles struct {
-	SessionID      domain.SessionID
-	CompareBaseSHA string
-	CompareBaseRef string
-	CompareMode    WorkspaceCompareMode
-	Files          []WorkspaceFileSummary
-	Truncated      bool
+	SessionID        domain.SessionID
+	WorkspaceVersion string
+	CompareBaseSHA   string
+	CompareBaseRef   string
+	CompareMode      WorkspaceCompareMode
+	Files            []WorkspaceFileSummary
+	Truncated        bool
 	// Sections splits the same working tree into git-state groups (staged,
 	// unstaged, untracked, committed-since-base), independent of the
 	// base..worktree Files list above. Only populated for single-repo
 	// sessions; workspace-project (multi-repo) and scratch sessions leave it
 	// zero-valued.
 	Sections WorkspaceFileSections
-	// Commits are the commits between the compare base and HEAD, newest last.
+	// Commits are the commits between the compare base and HEAD, newest first.
 	Commits []CommitSummary
+	// CommitsTruncated means older commits were left out of Commits.
+	CommitsTruncated bool
 	// Summary aggregates Files (excluding unmodified entries) into totals for
 	// the panel header.
 	Summary WorkspaceSummary
+	// Degraded means the primary file list was returned but optional Git state
+	// enrichment could not be collected. Callers should keep the file list and
+	// offer a retry for sections/commit metadata.
+	Degraded     bool
+	DegradedCode string
 	// Ahead and Behind are commit counts against the branch's upstream (or
 	// origin/<branch> when no upstream is configured). Nil when neither can
 	// be resolved — that means "no push/pull data," not an error.
@@ -112,6 +138,7 @@ type CommitSummary struct {
 	Subject   string
 	Author    string
 	Timestamp time.Time
+	Files     []WorkspaceFileSummary
 }
 
 // WorkspaceSummary aggregates the base..worktree diff into totals.
@@ -121,15 +148,50 @@ type WorkspaceSummary struct {
 	Deletions int
 }
 
+// WorkspaceManifest is the latency-sensitive workspace review read model.
+// Unlike WorkspaceFiles it contains only changed files and omits complete
+// repository inventory and commit-history enrichment. WorkspaceVersion is
+// deliberately identical to the compatible WorkspaceFiles snapshot so the
+// existing detail, revision, and batch-diff endpoints can fence requests
+// against either read model during migration.
+type WorkspaceManifest struct {
+	SessionID        domain.SessionID
+	WorkspaceVersion string
+	CompareBaseSHA   string
+	CompareBaseRef   string
+	CompareMode      WorkspaceCompareMode
+	Files            []WorkspaceFileSummary
+	Sections         WorkspaceFileSections
+	Summary          WorkspaceSummary
+	Truncated        bool
+	Stale            bool
+	Refreshing       bool
+	Degraded         bool
+	DegradedCode     string
+}
+
+// WorkspaceHistory is the non-critical commit metadata loaded after the
+// latency-sensitive manifest. It deliberately avoids enumerating every file
+// in the repository.
+type WorkspaceHistory struct {
+	SessionID        domain.SessionID
+	Commits          []CommitSummary
+	CommitsTruncated bool
+	Ahead            *int
+	Behind           *int
+}
+
 // WorkspaceFileSummary is one file row in the session workspace browser.
 type WorkspaceFileSummary struct {
-	Path         string
-	PreviousPath string
-	Status       WorkspaceFileStatus
-	Additions    int
-	Deletions    int
-	Size         int64
-	Binary       bool
+	Path            string
+	PreviousPath    string
+	Status          WorkspaceFileStatus
+	Additions       int
+	Deletions       int
+	Size            int64
+	Binary          bool
+	Editable        bool
+	FileFingerprint string
 }
 
 // WorkspaceFileDetail is the selected file's current content and diff.
@@ -143,6 +205,7 @@ type WorkspaceFileDetail struct {
 	Size               int64
 	Binary             bool
 	Deleted            bool
+	Editable           bool
 	ImageMediaType     string
 	Content            string
 	ContentTruncated   bool
@@ -152,6 +215,17 @@ type WorkspaceFileDetail struct {
 	CompareBaseSHA     string
 	CompareBaseRef     string
 	CompareMode        WorkspaceCompareMode
+	WorkspaceVersion   string
+	FileFingerprint    string
+	Historical         bool
+}
+
+// UpdateWorkspaceFileInput replaces one existing text file. The fingerprint is
+// required so a UI edit cannot silently overwrite a newer agent-authored copy.
+type UpdateWorkspaceFileInput struct {
+	Path                    string
+	Content                 string
+	ExpectedFileFingerprint string
 }
 
 // WorkspaceWatchPaths returns every worktree that contributes files to a
@@ -188,11 +262,14 @@ func (s *Service) WorkspaceWatchPaths(ctx context.Context, id domain.SessionID) 
 }
 
 // InvalidateWorkspaceCache purges cached compare-base and git-status data for
-// a session. Called from the workspace SSE stream the instant its filesystem
-// watcher observes a real change, so a list/detail request racing a fresh
-// git mutation never returns stale cached state.
+// a session when the workspace SSE filesystem watcher observes a change.
+// Callers sharing an in-flight load may still receive its uncached snapshot;
+// the first request after that load completes recomputes the data.
 func (s *Service) InvalidateWorkspaceCache(id domain.SessionID) {
 	s.workspaceCache.invalidateSession(id)
+	if s.workspaceManifests.markStale(id) {
+		s.refreshWorkspaceManifestInBackground(id)
+	}
 }
 
 // ListWorkspaceFiles returns all tracked and untracked, non-ignored files in a
@@ -208,6 +285,9 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (
 		return WorkspaceFiles{}, err
 	}
 	projectKind := domain.ProjectKindSingleRepo
+	if isStandaloneScratchWorkspace(rec) {
+		projectKind = domain.ProjectKindScratch
+	}
 	if projectOK {
 		projectKind = project.Kind.WithDefault()
 	}
@@ -216,10 +296,14 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (
 		if err != nil {
 			return WorkspaceFiles{}, err
 		}
-		return WorkspaceFiles{SessionID: id, Files: files, Truncated: truncated}, nil
+		return finalizeWorkspaceFiles(WorkspaceFiles{SessionID: id, Files: files, Truncated: truncated}), nil
 	}
 	if projectKind == domain.ProjectKindWorkspace {
-		return s.listWorkspaceProjectFiles(ctx, rec, project)
+		result, err := s.listWorkspaceProjectFiles(ctx, rec, project)
+		if err != nil {
+			return WorkspaceFiles{}, err
+		}
+		return finalizeWorkspaceFiles(result), nil
 	}
 	prs, err := s.workspaceComparePRs(ctx, rec.ID)
 	if err != nil {
@@ -235,21 +319,93 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	sections, commits, ahead, behind, err := workspaceGitState(ctx, rec.Metadata.WorkspacePath, compare.gitBase())
 	if err != nil {
-		return WorkspaceFiles{}, err
+		if errors.Is(err, ports.ErrWorkspaceRepoUnavailable) {
+			return WorkspaceFiles{}, err
+		}
+		return finalizeWorkspaceFiles(WorkspaceFiles{
+			SessionID:      id,
+			CompareBaseSHA: compare.BaseSHA,
+			CompareBaseRef: compare.BaseRef,
+			CompareMode:    compare.Mode,
+			Files:          files,
+			Truncated:      truncated,
+			Summary:        workspaceSummaryFromFiles(files),
+			Degraded:       true,
+			DegradedCode:   workspaceDegradedCode(err),
+		}), nil
 	}
-	return WorkspaceFiles{
-		SessionID:      id,
-		CompareBaseSHA: compare.BaseSHA,
-		CompareBaseRef: compare.BaseRef,
-		CompareMode:    compare.Mode,
-		Files:          files,
-		Truncated:      truncated,
-		Sections:       sections,
-		Commits:        commits,
-		Summary:        workspaceSummaryFromFiles(files),
-		Ahead:          ahead,
-		Behind:         behind,
-	}, nil
+	return finalizeWorkspaceFiles(WorkspaceFiles{
+		SessionID:        id,
+		CompareBaseSHA:   compare.BaseSHA,
+		CompareBaseRef:   compare.BaseRef,
+		CompareMode:      compare.Mode,
+		Files:            files,
+		Truncated:        truncated,
+		Sections:         sections,
+		Commits:          commits.list,
+		CommitsTruncated: commits.truncated,
+		Summary:          workspaceSummaryFromFiles(files),
+		Ahead:            ahead,
+		Behind:           behind,
+	}), nil
+}
+
+// GetWorkspaceHistory loads commit and upstream metadata without paying for
+// the legacy all-files inventory used by the full workspace browser.
+func (s *Service) GetWorkspaceHistory(ctx context.Context, id domain.SessionID) (WorkspaceHistory, error) {
+	rec, err := s.sessionWorkspaceRecord(ctx, id)
+	if err != nil {
+		return WorkspaceHistory{}, err
+	}
+	project, projectOK, err := s.sessionProject(ctx, rec)
+	if err != nil {
+		return WorkspaceHistory{}, err
+	}
+	if isStandaloneScratchWorkspace(rec) || (projectOK && project.Kind.WithDefault() == domain.ProjectKindWorkspace) {
+		return WorkspaceHistory{SessionID: id, Commits: []CommitSummary{}}, nil
+	}
+	prs, err := s.workspaceComparePRs(ctx, rec.ID)
+	if err != nil {
+		return WorkspaceHistory{}, err
+	}
+	resolve := func(rctx context.Context) workspaceCompareTarget {
+		return resolveWorkspaceCompare(rctx, rec.Metadata.WorkspacePath, rec.Metadata.DiffBaseSHA, rec.Metadata.DiffBaseRef, defaultBranchForProject(project, projectOK), prs)
+	}
+	compare, _, err := s.resolveWorkspaceChanges(ctx, id, rec.Metadata.WorkspacePath, resolve)
+	if err != nil {
+		return WorkspaceHistory{}, err
+	}
+	var commits workspaceCommits
+	var ahead, behind *int
+	g, gctx := errgroup.WithContext(ctx)
+	if base := strings.TrimSpace(compare.gitBase()); base != "" && base != "HEAD" {
+		g.Go(func() (err error) {
+			commits.list, commits.truncated, err = gitCommitLog(gctx, rec.Metadata.WorkspacePath, base)
+			return err
+		})
+	}
+	g.Go(func() error {
+		ahead, behind = gitAheadBehind(gctx, rec.Metadata.WorkspacePath)
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return WorkspaceHistory{}, err
+	}
+	if commits.list == nil {
+		commits.list = []CommitSummary{}
+	}
+	return WorkspaceHistory{SessionID: id, Commits: commits.list, CommitsTruncated: commits.truncated, Ahead: ahead, Behind: behind}, nil
+}
+
+func workspaceDegradedCode(err error) string {
+	var apiErr *apierr.Error
+	if errors.As(err, &apiErr) && apiErr.Code != "" {
+		return apiErr.Code
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "WORKSPACE_GIT_TIMEOUT"
+	}
+	return "WORKSPACE_GIT_STATE_UNAVAILABLE"
 }
 
 // GetWorkspaceFile returns one session-worktree file's current text content and
@@ -263,9 +419,110 @@ func (s *Service) GetWorkspaceFile(ctx context.Context, id domain.SessionID, raw
 		return WorkspaceFileDetail{}, err
 	}
 	if target.scratch {
-		return scratchWorkspaceFile(target.root, id, target.rel)
+		detail, err := scratchWorkspaceFile(target.root, id, target.rel)
+		return finalizeWorkspaceFileDetail(detail), err
 	}
-	return workspaceFileDetail(ctx, id, target.root, target.prefix, target.rel, section, target.compare, target.changes)
+	detail, err := workspaceFileDetail(ctx, id, target.root, target.prefix, target.rel, section, target.compare, target.changes)
+	return finalizeWorkspaceFileDetail(detail), err
+}
+
+// GetWorkspaceFileAtCommit returns the immutable file snapshot and patch for
+// one commit that belongs to the session's compare-base..HEAD range.
+func (s *Service) GetWorkspaceFileAtCommit(ctx context.Context, id domain.SessionID, rawPath, commitSHA string) (WorkspaceFileDetail, error) {
+	current, err := s.ListWorkspaceFiles(ctx, id)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	commit, err := workspaceCommit(current, commitSHA)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	target, err := s.resolveWorkspaceFileTarget(ctx, id, rawPath)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	wantedPath := joinWorkspaceRelative(target.prefix, target.rel)
+	var summary *WorkspaceFileSummary
+	for i := range commit.Files {
+		if commit.Files[i].Path == wantedPath {
+			summary = &commit.Files[i]
+			break
+		}
+	}
+	if summary == nil {
+		return WorkspaceFileDetail{}, apierr.NotFound("WORKSPACE_COMMIT_FILE_NOT_FOUND", "File was not changed by this commit")
+	}
+	detail, err := workspaceCommitFileDetail(ctx, id, target.root, target.prefix, target.rel, commit.SHA, *summary)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	detail = finalizeWorkspaceFileDetail(detail)
+	// A selected commit is historical even when its after-side path still
+	// exists in the current worktree. Never present it as directly editable.
+	detail.Editable = false
+	detail.WorkspaceVersion = current.WorkspaceVersion
+	return detail, nil
+}
+
+// UpdateWorkspaceFile replaces one existing, bounded UTF-8 workspace file and
+// returns its refreshed detail. It deliberately does not create or delete
+// paths; those remain agent/editor workflows rather than implicit viewer side
+// effects.
+func (s *Service) UpdateWorkspaceFile(ctx context.Context, id domain.SessionID, input UpdateWorkspaceFileInput) (WorkspaceFileDetail, error) {
+	if input.ExpectedFileFingerprint == "" {
+		return WorkspaceFileDetail{}, apierr.Invalid("WORKSPACE_FILE_FINGERPRINT_REQUIRED", "expectedFileFingerprint is required", nil)
+	}
+	if len(input.Content) > maxWorkspaceFileBytes {
+		return WorkspaceFileDetail{}, apierr.Invalid("WORKSPACE_FILE_TOO_LARGE", "File is too large to edit", map[string]any{"limitBytes": maxWorkspaceFileBytes})
+	}
+	if !utf8.ValidString(input.Content) || isBinary([]byte(input.Content)) {
+		return WorkspaceFileDetail{}, apierr.Invalid("WORKSPACE_FILE_BINARY", "Only UTF-8 text files can be edited", nil)
+	}
+	if err := ctx.Err(); err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+
+	s.workspaceEditsMu.Lock()
+	defer s.workspaceEditsMu.Unlock()
+
+	current, err := s.GetWorkspaceFile(ctx, id, input.Path, "")
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	if current.Deleted {
+		return WorkspaceFileDetail{}, apierr.Conflict("WORKSPACE_FILE_DELETED", "Deleted files cannot be edited", nil)
+	}
+	if current.Binary || current.ContentTruncated {
+		return WorkspaceFileDetail{}, apierr.Invalid("WORKSPACE_FILE_NOT_EDITABLE", "Only complete text files can be edited", nil)
+	}
+	if current.FileFingerprint != input.ExpectedFileFingerprint {
+		return WorkspaceFileDetail{}, apierr.Conflict("WORKSPACE_FILE_STALE", "File changed while it was being edited", map[string]any{"fileFingerprint": current.FileFingerprint})
+	}
+
+	target, err := s.resolveWorkspaceFileTarget(ctx, id, input.Path)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	fileName, info, err := confinedWorkspaceFile(target.root, target.rel)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	latest, err := os.ReadFile(fileName)
+	if err != nil {
+		return WorkspaceFileDetail{}, apierr.NotFound("WORKSPACE_FILE_NOT_FOUND", "Workspace file not found")
+	}
+	if string(latest) != current.Content {
+		return WorkspaceFileDetail{}, apierr.Conflict("WORKSPACE_FILE_STALE", "File changed while it was being edited", nil)
+	}
+	if err := os.WriteFile(fileName, []byte(input.Content), info.Mode().Perm()); err != nil {
+		return WorkspaceFileDetail{}, fmt.Errorf("write workspace file: %w", err)
+	}
+	s.InvalidateWorkspaceCache(id)
+	return s.GetWorkspaceFile(ctx, id, input.Path, "")
+}
+
+func workspaceFileEditable(size int64, binary, deleted bool) bool {
+	return !binary && !deleted && size <= maxWorkspaceFileBytes
 }
 
 // workspaceFileTarget is one resolved workspace path: the worktree that owns
@@ -297,6 +554,9 @@ func (s *Service) resolveWorkspaceFileTarget(ctx context.Context, id domain.Sess
 		return workspaceFileTarget{}, err
 	}
 	projectKind := domain.ProjectKindSingleRepo
+	if isStandaloneScratchWorkspace(rec) {
+		projectKind = domain.ProjectKindScratch
+	}
 	if projectOK {
 		projectKind = project.Kind.WithDefault()
 	}
@@ -948,14 +1208,16 @@ func (s *Service) resolveWorkspaceChanges(
 		if cached, ok := s.workspaceCache.get(key); ok {
 			return cached, nil
 		}
+		entry := s.workspaceCache.beginLoad(key)
+		defer s.workspaceCache.finishLoad(key, entry, false)
 		compare := resolve(ctx)
 		changes, err := workspaceChangeMaps(ctx, root, compare.gitBase())
 		if err != nil {
 			return nil, err
 		}
-		entry := workspaceCacheEntry{at: s.now(), compare: compare, changes: changes}
-		s.workspaceCache.set(key, entry)
-		return entry, nil
+		*entry = workspaceCacheEntry{at: s.now(), compare: compare, changes: changes}
+		s.workspaceCache.finishLoad(key, entry, true)
+		return *entry, nil
 	})
 	if err != nil {
 		return workspaceCompareTarget{}, workspaceChangeSet{}, err
@@ -1010,6 +1272,61 @@ func workspaceFileDetail(ctx context.Context, id domain.SessionID, root, prefix,
 	}
 	detail.Diff = diff
 	detail.DiffTruncated = truncated
+	return detail, nil
+}
+
+func workspaceCommit(files WorkspaceFiles, rawSHA string) (CommitSummary, error) {
+	sha := strings.TrimSpace(rawSHA)
+	for _, commit := range files.Commits {
+		if commit.SHA == sha {
+			return commit, nil
+		}
+	}
+	return CommitSummary{}, apierr.NotFound("WORKSPACE_COMMIT_NOT_FOUND", "Commit is not available in this workspace comparison")
+}
+
+func workspaceCommitFileDetail(ctx context.Context, id domain.SessionID, root, prefix, rel, commitSHA string, summary WorkspaceFileSummary) (WorkspaceFileDetail, error) {
+	detail := WorkspaceFileDetail{
+		SessionID:      id,
+		Path:           joinWorkspaceRelative(prefix, rel),
+		PreviousPath:   joinWorkspaceRelative(prefix, summary.PreviousPath),
+		Status:         summary.Status,
+		Additions:      summary.Additions,
+		Deletions:      summary.Deletions,
+		Deleted:        summary.Status == WorkspaceFileDeleted,
+		CompareBaseSHA: commitSHA + "^",
+		CompareBaseRef: commitSHA,
+		CompareMode:    WorkspaceCompareBase,
+		Historical:     true,
+	}
+	if !detail.Deleted {
+		data, size, exists, truncated, err := readGitRevision(ctx, root, commitSHA+":"+rel)
+		if err != nil {
+			return WorkspaceFileDetail{}, err
+		}
+		if !exists {
+			return WorkspaceFileDetail{}, apierr.NotFound("WORKSPACE_COMMIT_FILE_NOT_FOUND", "File does not exist in this commit")
+		}
+		detail.Size = size
+		detail.ContentTruncated = truncated || size > maxWorkspaceFileBytes
+		if !truncated {
+			detail.Binary = isBinary(data) || !utf8.Valid(data)
+			if !detail.Binary && !detail.ContentTruncated {
+				detail.Content = string(data)
+			}
+		}
+	}
+	detail.ImageMediaType = workspaceImageDetailMediaType(rel, detail.Binary, detail.Deleted)
+	args := []string{"diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3", commitSHA + "^", commitSHA, "--"}
+	if summary.Status == WorkspaceFileRenamed && summary.PreviousPath != "" {
+		args = append(args, summary.PreviousPath)
+	}
+	args = append(args, rel)
+	out, err := gitWorkspaceOutput(ctx, root, args...)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	detail.Diff, detail.DiffTruncated = truncateUTF8(out, maxWorkspaceDiffBytes)
 	return detail, nil
 }
 
@@ -1153,6 +1470,7 @@ func scratchWorkspaceFiles(root string) ([]WorkspaceFileSummary, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	managedByDir := make(map[string]map[string]struct{})
 	var files []WorkspaceFileSummary
 	truncated := false
 	err = filepath.WalkDir(rootResolved, func(fullPath string, entry fs.DirEntry, walkErr error) error {
@@ -1173,7 +1491,22 @@ func scratchWorkspaceFiles(root string) ([]WorkspaceFileSummary, bool, error) {
 			}
 			return nil
 		}
+		dirPath := filepath.Dir(fullPath)
+		managed, ok := managedByDir[dirPath]
+		if !ok {
+			managed = scratchAOManagedNamesIn(dirPath)
+			managedByDir[dirPath] = managed
+		}
+		if _, hidden := managed[entry.Name()]; hidden {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if entry.IsDir() {
+			return nil
+		}
+		if scratchAOManagedCopilotProfile(path.Dir(rel), entry.Name(), fullPath) {
 			return nil
 		}
 		info, include, err := scratchWorkspaceFileInfo(rootResolved, fullPath, entry)
@@ -1206,6 +1539,116 @@ func scratchWorkspaceFiles(root string) ([]WorkspaceFileSummary, bool, error) {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, truncated, nil
+}
+
+// scratchAOManagedNamesIn returns the basenames claimed by an AO-managed
+// .gitignore in dir. Adapter-owned patterns are anchored to that directory and
+// name files only. Missing, malformed, or unreadable markers safely reveal the
+// files instead of failing an otherwise readable workspace-tree request.
+func scratchAOManagedNamesIn(dir string) map[string]struct{} {
+	managed := make(map[string]struct{})
+	marker := filepath.Join(dir, ".gitignore")
+	info, err := os.Lstat(marker)
+	if err != nil || !info.Mode().IsRegular() {
+		return managed
+	}
+	content, binary, _, err := readWorkspaceTextFile(marker, 64*1024)
+	if err != nil || binary || !strings.Contains(content, aoManagedGitignoreSentinel) {
+		return managed
+	}
+	for _, rawLine := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "/") || strings.HasPrefix(line, "//") {
+			continue
+		}
+		name := path.Clean(strings.TrimPrefix(line, "/"))
+		if name == "." || name == ".." || strings.Contains(name, "/") {
+			continue
+		}
+		managed[name] = struct{}{}
+	}
+	return managed
+}
+
+func scratchAOManagedCopilotProfile(dir, name, fullPath string) bool {
+	if dir != ".github/agents" || !strings.HasPrefix(name, "ao-") || !strings.HasSuffix(name, ".agent.md") {
+		return false
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	content, binary, _, err := readWorkspaceTextFile(fullPath, 64*1024)
+	return err == nil && !binary && strings.Contains(content, aoManagedCopilotProfileSentinel)
+}
+
+// scratchDirectoryOnlyAOManaged reports whether a directory contains control
+// files but no user-visible file. This keeps an otherwise empty .kimi,
+// .claude, or similar adapter directory from surviving as a misleading folder
+// in the Files tree after its contents have been filtered.
+func scratchDirectoryOnlyAOManaged(rootResolved, rel string) bool {
+	// AO workspace metadata lives under hidden roots. Avoid recursively probing
+	// ordinary scratch directories just to prove that they are user-visible.
+	rootName := strings.SplitN(rel, "/", 2)[0]
+	if !strings.HasPrefix(rootName, ".") {
+		return false
+	}
+	hasManaged := false
+	hasVisible := false
+	visited := 0
+	managedByDir := make(map[string]map[string]struct{})
+	target := filepath.Join(rootResolved, filepath.FromSlash(rel))
+	err := filepath.WalkDir(target, func(fullPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if fullPath != target {
+			visited++
+			if visited > maxWorkspaceFiles {
+				hasVisible = true
+				return filepath.SkipAll
+			}
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" && fullPath != target {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		pathRel, err := filepath.Rel(rootResolved, fullPath)
+		if err != nil {
+			return err
+		}
+		workspaceRel := filepath.ToSlash(pathRel)
+		dirPath := filepath.Dir(fullPath)
+		managed, ok := managedByDir[dirPath]
+		if !ok {
+			managed = scratchAOManagedNamesIn(dirPath)
+			managedByDir[dirPath] = managed
+		}
+		if _, hidden := managed[entry.Name()]; hidden {
+			hasManaged = true
+			return nil
+		}
+		if scratchAOManagedCopilotProfile(path.Dir(workspaceRel), entry.Name(), fullPath) {
+			hasManaged = true
+			return nil
+		}
+		_, include, err := scratchWorkspaceFileInfo(rootResolved, fullPath, entry)
+		if err != nil {
+			return err
+		}
+		if include {
+			hasVisible = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return err == nil && hasManaged && !hasVisible
+}
+
+func isStandaloneScratchWorkspace(rec domain.SessionRecord) bool {
+	return rec.IsStandalone() && rec.Kind == domain.KindWorker
 }
 
 func scratchWorkspaceFile(root string, id domain.SessionID, rel string) (WorkspaceFileDetail, error) {
@@ -1370,17 +1813,14 @@ func workspaceChangeMaps(ctx context.Context, root, base string) (workspaceChang
 	)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() (err error) {
-		diffStatuses, diffPrevious, err = workspaceDiffStatuses(gctx, root, base)
+		diffStatuses, diffPrevious, counts, err = workspaceDiffStats(gctx, root, base)
 		return err
 	})
 	g.Go(func() (err error) {
 		statusStatuses, statusPrevious, err = workspaceStatuses(gctx, root)
 		return err
 	})
-	g.Go(func() (err error) {
-		counts, err = workspaceNumstat(gctx, root, base)
-		return err
-	})
+
 	if err := g.Wait(); err != nil {
 		return workspaceChangeSet{}, err
 	}
@@ -1430,21 +1870,24 @@ func workspaceChangeMaps(ctx context.Context, root, base string) (workspaceChang
 	return workspaceChangeSet{statuses: statuses, counts: counts, previous: previous, untracked: untracked}, nil
 }
 
+// workspaceCommits is the commit list between base and HEAD, newest first,
+// and whether older commits were left out of it.
+type workspaceCommits struct {
+	list      []CommitSummary
+	truncated bool
+}
+
 // workspaceGitState computes the git-state sections, the commit list between
 // base and HEAD, and ahead/behind counts for one worktree root. The four
 // section diffs, the commit log, and the ahead/behind lookup are independent
 // git subprocesses and run concurrently.
-func workspaceGitState(ctx context.Context, root, base string) (WorkspaceFileSections, []CommitSummary, *int, *int, error) {
+func workspaceGitState(ctx context.Context, root, base string) (WorkspaceFileSections, workspaceCommits, *int, *int, error) {
 	var sections WorkspaceFileSections
-	var commits []CommitSummary
+	var commits workspaceCommits
 	var ahead, behind *int
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		statuses, previous, err := workspaceDiffNameStatus(gctx, root, "--cached")
-		if err != nil {
-			return err
-		}
-		counts, err := workspaceDiffNumstat(gctx, root, "--cached")
+		statuses, previous, counts, err := workspaceDiffStats(gctx, root, "--cached")
 		if err != nil {
 			return err
 		}
@@ -1452,11 +1895,7 @@ func workspaceGitState(ctx context.Context, root, base string) (WorkspaceFileSec
 		return nil
 	})
 	g.Go(func() error {
-		statuses, previous, err := workspaceDiffNameStatus(gctx, root)
-		if err != nil {
-			return err
-		}
-		counts, err := workspaceDiffNumstat(gctx, root)
+		statuses, previous, counts, err := workspaceDiffStats(gctx, root)
 		if err != nil {
 			return err
 		}
@@ -1473,11 +1912,7 @@ func workspaceGitState(ctx context.Context, root, base string) (WorkspaceFileSec
 	})
 	if base = strings.TrimSpace(base); base != "" && base != "HEAD" {
 		g.Go(func() error {
-			statuses, previous, err := workspaceDiffNameStatus(gctx, root, base, "HEAD")
-			if err != nil {
-				return err
-			}
-			counts, err := workspaceDiffNumstat(gctx, root, base, "HEAD")
+			statuses, previous, counts, err := workspaceDiffStats(gctx, root, base, "HEAD")
 			if err != nil {
 				return err
 			}
@@ -1485,7 +1920,7 @@ func workspaceGitState(ctx context.Context, root, base string) (WorkspaceFileSec
 			return nil
 		})
 		g.Go(func() (err error) {
-			commits, err = gitCommitLog(gctx, root, base)
+			commits.list, commits.truncated, err = gitCommitLog(gctx, root, base)
 			return err
 		})
 	}
@@ -1494,7 +1929,7 @@ func workspaceGitState(ctx context.Context, root, base string) (WorkspaceFileSec
 		return nil
 	})
 	if err := g.Wait(); err != nil {
-		return WorkspaceFileSections{}, nil, nil, nil, err
+		return WorkspaceFileSections{}, workspaceCommits{}, nil, nil, err
 	}
 	return sections, commits, ahead, behind, nil
 }
@@ -1565,28 +2000,118 @@ func gitUntrackedFiles(ctx context.Context, root string) ([]string, error) {
 	return splitNUL(out), nil
 }
 
-// gitCommitLog lists the commits reachable from HEAD but not base, oldest
-// first, matching the order they'd be reviewed in.
-func gitCommitLog(ctx context.Context, root, base string) ([]CommitSummary, error) {
-	out, err := gitWorkspaceOutput(ctx, root, "log", "--format=%H%x1f%s%x1f%an%x1f%aI", "--reverse", base+"..HEAD")
+// gitCommitLog lists the commits reachable from HEAD but not base, newest
+// first, up to maxCommitLogCommits of them. truncated reports that older
+// commits were left out.
+func gitCommitLog(ctx context.Context, root, base string) ([]CommitSummary, bool, error) {
+	commits, changes, counts, truncated, err := gitCommitLogChanges(ctx, root, base+"..HEAD", maxCommitLogCommits, maxCommitLogBytes)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	trimmed := strings.TrimRight(out, "\n")
-	if trimmed == "" {
-		return nil, nil
+	for i := range commits {
+		change := changes[commits[i].SHA]
+		commits[i].Files = buildSectionSummaries(root, change.statuses, counts[commits[i].SHA], change.previous)
 	}
-	lines := strings.Split(trimmed, "\n")
-	commits := make([]CommitSummary, 0, len(lines))
-	for _, line := range lines {
-		fields := strings.Split(line, "\x1f")
+	return commits, truncated, nil
+}
+
+// gitCommitLogChanges lists up to maxCommits commits in revRange, newest
+// first, with each commit's name-status changes and numstat counts. Both are
+// collected in two Git passes, rather than spawning Git once or twice for every
+// commit, and each pass keeps at most maxBytes of output. A commit either
+// fits whole in both passes or is left out, never listed with part of its
+// files. truncated reports that older commits were left out.
+func gitCommitLogChanges(ctx context.Context, root, revRange string, maxCommits, maxBytes int) ([]CommitSummary, map[string]commitChangeSet, map[string]map[string][2]int, bool, error) {
+	// Reading one commit past the cap tells a full list from a truncated one.
+	maxCount := "--max-count=" + strconv.Itoa(maxCommits+1)
+	var statusOutput, numstatOutput string
+	var statusCapped, numstatCapped bool
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() (err error) {
+		statusOutput, statusCapped, err = gitWorkspaceOutputCapped(gctx, root, maxBytes, "log", maxCount, "--format=%x1e%H%x1f%s%x1f%an%x1f%aI", "--name-status", "--find-renames", "-z", revRange)
+		return err
+	})
+	g.Go(func() (err error) {
+		numstatOutput, numstatCapped, err = gitWorkspaceOutputCapped(gctx, root, maxBytes, "log", maxCount, "--format=%x1e%H", "--numstat", "--find-renames", "-z", revRange)
+		return err
+	})
+	if err := g.Wait(); err != nil {
+		return nil, nil, nil, false, err
+	}
+	commits, changes := parseCommitStatusLog(wholeCommitChunks(statusOutput, statusCapped))
+	counts := parseCommitNumstatLog(wholeCommitChunks(numstatOutput, numstatCapped))
+	truncated := statusCapped || numstatCapped
+	if numstatCapped {
+		// Past the numstat pass's last whole commit, text files would read as
+		// binary for want of counts.
+		for i, commit := range commits {
+			if _, ok := counts[commit.SHA]; !ok {
+				commits = commits[:i]
+				break
+			}
+		}
+	}
+	if len(commits) > maxCommits {
+		commits = commits[:maxCommits]
+		truncated = true
+	}
+	return commits, changes, counts, truncated, nil
+}
+
+// wholeCommitChunks drops the commit a capped git log pass stopped partway
+// through. Every commit's chunk starts with \x1e, so all output before the
+// last one is whole.
+func wholeCommitChunks(out string, capped bool) string {
+	if !capped {
+		return out
+	}
+	if end := strings.LastIndexByte(out, '\x1e'); end >= 0 {
+		return out[:end]
+	}
+	return ""
+}
+
+type commitChangeSet struct {
+	statuses map[string]WorkspaceFileStatus
+	previous map[string]string
+}
+
+func parseCommitStatusLog(out string) ([]CommitSummary, map[string]commitChangeSet) {
+	chunks := strings.Split(out, "\x1e")
+	commits := make([]CommitSummary, 0, len(chunks)-1)
+	changes := make(map[string]commitChangeSet, len(chunks)-1)
+	for _, chunk := range chunks[1:] {
+		headerEnd := strings.IndexByte(chunk, 0)
+		if headerEnd < 0 {
+			continue
+		}
+		fields := strings.Split(chunk[:headerEnd], "\x1f")
 		if len(fields) < 4 {
 			continue
 		}
 		timestamp, _ := time.Parse(time.RFC3339, fields[3])
-		commits = append(commits, CommitSummary{SHA: fields[0], Subject: fields[1], Author: fields[2], Timestamp: timestamp})
+		commit := CommitSummary{SHA: fields[0], Subject: fields[1], Author: fields[2], Timestamp: timestamp}
+		statuses, previous := parseNameStatusOutput(strings.TrimLeft(chunk[headerEnd+1:], "\r\n"))
+		commits = append(commits, commit)
+		changes[commit.SHA] = commitChangeSet{statuses: statuses, previous: previous}
 	}
-	return commits, nil
+	return commits, changes
+}
+
+func parseCommitNumstatLog(out string) map[string]map[string][2]int {
+	result := map[string]map[string][2]int{}
+	for _, chunk := range strings.Split(out, "\x1e")[1:] {
+		headerEnd := strings.IndexByte(chunk, 0)
+		if headerEnd < 0 {
+			continue
+		}
+		sha := strings.TrimSpace(chunk[:headerEnd])
+		if sha == "" {
+			continue
+		}
+		result[sha] = parseNumstatOutput(strings.TrimLeft(chunk[headerEnd+1:], "\x00\r\n"))
+	}
+	return result
 }
 
 // gitAheadBehind reports HEAD's commit counts against its upstream, falling
@@ -1663,16 +2188,53 @@ func classifyWorkspaceStatus(xy string) WorkspaceFileStatus {
 	}
 }
 
-func workspaceDiffStatuses(ctx context.Context, root, base string) (map[string]WorkspaceFileStatus, map[string]string, error) {
-	return workspaceDiffNameStatus(ctx, root, base)
+// workspaceDiffStats obtains status, rename sources and line counts in one
+// Git traversal. Separate name-status and numstat calls each rescan the worktree.
+func workspaceDiffStats(ctx context.Context, root string, revArgs ...string) (map[string]WorkspaceFileStatus, map[string]string, map[string][2]int, error) {
+	args := append([]string{"diff", "--raw", "--numstat", "--find-renames", "-z"}, revArgs...)
+	args = append(args, "--")
+	out, err := gitWorkspaceOutput(ctx, root, args...)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	parts := splitNUL(out)
+	statuses := map[string]WorkspaceFileStatus{}
+	previous := map[string]string{}
+	index := 0
+	for index < len(parts) && strings.HasPrefix(parts[index], ":") {
+		fields := strings.Fields(parts[index])
+		if len(fields) != 5 || index+1 >= len(parts) {
+			return nil, nil, nil, fmt.Errorf("invalid Git raw diff record")
+		}
+		code := fields[4]
+		oldPath := filepath.ToSlash(parts[index+1])
+		newPath := oldPath
+		index += 2
+		status := classifyNameStatus(code)
+		if status == WorkspaceFileRenamed {
+			if index >= len(parts) {
+				return nil, nil, nil, fmt.Errorf("invalid Git rename record")
+			}
+			newPath = filepath.ToSlash(parts[index])
+			index++
+			previous[newPath] = oldPath
+		}
+		statuses[newPath] = status
+	}
+	return statuses, previous, parseNumstatOutput(strings.Join(parts[index:], "\x00")), nil
 }
 
 // workspaceDiffNameStatus runs `git diff --name-status` with the given
 // revision arguments (e.g. a single base for base..worktree, "--cached" for
 // index..HEAD, or two revisions for a committed range) and parses the result.
 func workspaceDiffNameStatus(ctx context.Context, root string, revArgs ...string) (map[string]WorkspaceFileStatus, map[string]string, error) {
+	return workspaceDiffNameStatusPaths(ctx, root, revArgs, nil)
+}
+
+func workspaceDiffNameStatusPaths(ctx context.Context, root string, revArgs, paths []string) (map[string]WorkspaceFileStatus, map[string]string, error) {
 	args := append([]string{"diff", "--name-status", "--find-renames", "-z"}, revArgs...)
 	args = append(args, "--")
+	args = append(args, paths...)
 	out, err := gitWorkspaceOutput(ctx, root, args...)
 	if err != nil {
 		return nil, nil, err
@@ -1747,15 +2309,16 @@ func classifyNameStatus(status string) WorkspaceFileStatus {
 	}
 }
 
-func workspaceNumstat(ctx context.Context, root, base string) (map[string][2]int, error) {
-	return workspaceDiffNumstat(ctx, root, base)
-}
-
 // workspaceDiffNumstat runs `git diff --numstat` with the given revision
 // arguments; see workspaceDiffNameStatus for the argument forms.
 func workspaceDiffNumstat(ctx context.Context, root string, revArgs ...string) (map[string][2]int, error) {
+	return workspaceDiffNumstatPaths(ctx, root, revArgs, nil)
+}
+
+func workspaceDiffNumstatPaths(ctx context.Context, root string, revArgs, paths []string) (map[string][2]int, error) {
 	args := append([]string{"diff", "--numstat", "--find-renames", "-z"}, revArgs...)
 	args = append(args, "--")
+	args = append(args, paths...)
 	out, err := gitWorkspaceOutput(ctx, root, args...)
 	if err != nil {
 		return nil, err
@@ -1767,7 +2330,7 @@ func parseNumstatOutput(out string) map[string][2]int {
 	counts := map[string][2]int{}
 	parts := splitNUL(out)
 	for i := 0; i < len(parts); {
-		fields := strings.Split(parts[i], "\t")
+		fields := strings.SplitN(parts[i], "\t", 3)
 		i++
 		if len(fields) < 3 {
 			continue
@@ -1832,7 +2395,7 @@ func workspaceFileDiff(ctx context.Context, root, base, rel string, status Works
 	// vs HEAD); unstaged mirrors the bare diff sections.Unstaged is built from
 	// (worktree vs index). Anything else falls back to base..worktree, the
 	// combined change shown before per-section diffs existed.
-	args := []string{"diff", "--no-ext-diff", "--find-renames", "--unified=3"}
+	args := []string{"diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3"}
 	switch section {
 	case WorkspaceFileSectionStaged:
 		args = append(args, "--cached")
@@ -1919,7 +2482,15 @@ func confinedWorkspaceFile(root, rel string) (string, os.FileInfo, error) {
 }
 
 func cleanWorkspaceRelativePath(raw string) (string, error) {
-	trimmed := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	// Backslash is a path separator only on Windows. Everywhere else it is a
+	// legal filename character, so folding it here makes a file named `a\b.txt`
+	// unopenable — and worse, silently resolves it to `a/b.txt`, a different
+	// file that may well exist.
+	normalized := raw
+	if runtime.GOOS == "windows" {
+		normalized = strings.ReplaceAll(raw, "\\", "/")
+	}
+	trimmed := strings.TrimSpace(normalized)
 	if trimmed == "" || path.IsAbs(trimmed) || filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" {
 		return "", apierr.Invalid("INVALID_WORKSPACE_PATH", "workspace path must be relative", nil)
 	}
@@ -1949,14 +2520,24 @@ func readWorkspaceTextFile(file string, limit int) (string, bool, bool, error) {
 	if truncated {
 		data = data[:limit]
 	}
-	if isBinary(data) {
+	if bytes.IndexByte(data, 0) >= 0 {
 		return "", true, truncated, nil
 	}
-	content := string(data)
-	if !utf8.ValidString(content) {
+	if !utf8.Valid(data) && truncated {
+		// A bounded preview can end in the middle of a valid multi-byte rune.
+		// Remove only that possible partial suffix; invalid UTF-8 elsewhere is
+		// still classified as binary below.
+		for trim := 1; trim < utf8.UTFMax && trim < len(data); trim++ {
+			if candidate := data[:len(data)-trim]; utf8.Valid(candidate) {
+				data = candidate
+				break
+			}
+		}
+	}
+	if !utf8.Valid(data) {
 		return "", true, truncated, nil
 	}
-	return content, false, truncated, nil
+	return string(data), false, truncated, nil
 }
 
 func isBinary(data []byte) bool {
@@ -2003,7 +2584,10 @@ func truncateUTF8(in string, limit int) (string, bool) {
 }
 
 func gitWorkspaceOutput(ctx context.Context, root string, args ...string) (string, error) {
-	cmd := aoprocess.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+	globalArgs := make([]string, 0, 10+len(args))
+	globalArgs = append(globalArgs, "--no-pager", "--no-optional-locks", "-c", "core.hooksPath="+os.DevNull, "-c", "diff.external=", "-c", "core.fsmonitor=false", "-C", root)
+	cmd := aoprocess.CommandContext(ctx, "git", append(globalArgs, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -2022,9 +2606,77 @@ func gitWorkspaceOutput(ctx context.Context, root string, args ...string) (strin
 		if workspaceRepoUnavailable(root) {
 			return "", fmt.Errorf("git -C %s %s: %w", root, strings.Join(args, " "), ports.ErrWorkspaceRepoUnavailable)
 		}
-		return "", fmt.Errorf("git -C %s %s: %w: %s", root, strings.Join(args, " "), err, detail)
+		return "", classifyWorkspaceGitError(ctx, err, detail)
 	}
 	return string(out), nil
+}
+
+type cappedWorkspaceOutput struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (w *cappedWorkspaceOutput) Write(p []byte) (int, error) {
+	written := len(p)
+	remaining := w.limit - w.buffer.Len()
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		_, _ = w.buffer.Write(p[:remaining])
+	}
+	if remaining < len(p) {
+		w.truncated = true
+	}
+	return written, nil
+}
+
+// gitWorkspaceOutputCapped drains all output while retaining only a bounded
+// prefix, preventing large diffs from becoming an unbounded in-memory buffer.
+func gitWorkspaceOutputCapped(ctx context.Context, root string, limit int, args ...string) (string, bool, error) {
+	globalArgs := make([]string, 0, 10+len(args))
+	globalArgs = append(globalArgs, "--no-pager", "--no-optional-locks", "-c", "core.hooksPath="+os.DevNull, "-c", "diff.external=", "-c", "core.fsmonitor=false", "-C", root)
+	cmd := aoprocess.CommandContext(ctx, "git", append(globalArgs, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
+	stdout := &cappedWorkspaceOutput{limit: limit}
+	stderr := &cappedWorkspaceOutput{limit: 64 * 1024}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		if workspaceRepoUnavailable(root) {
+			return "", false, fmt.Errorf("workspace git command: %w", ports.ErrWorkspaceRepoUnavailable)
+		}
+		return "", false, classifyWorkspaceGitError(ctx, err, strings.TrimSpace(stderr.buffer.String()))
+	}
+	return stdout.buffer.String(), stdout.truncated, nil
+}
+
+// classifyWorkspaceGitError keeps repository-read failures actionable at the
+// HTTP boundary. The old code returned raw exec.ExitError values, which the
+// envelope rendered as an indistinguishable INTERNAL_ERROR. Context deadlines
+// remain discoverable by the envelope's transient mapper, while lock/contention
+// failures are explicitly retryable.
+func classifyWorkspaceGitError(ctx context.Context, err error, detail string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	lower := strings.ToLower(detail)
+	for _, marker := range []string{
+		"index.lock",
+		"unable to create",
+		"could not lock",
+		"resource temporarily unavailable",
+		"another git process",
+	} {
+		if strings.Contains(lower, marker) {
+			return apierr.Unavailable("WORKSPACE_GIT_BUSY", "Workspace Git state is temporarily unavailable")
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return apierr.Internal("WORKSPACE_GIT_READ_FAILED", "Unable to read workspace Git state")
 }
 
 // workspaceRepoUnavailable reports whether a worktree root can no longer reach

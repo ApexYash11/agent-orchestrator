@@ -178,8 +178,10 @@ func TestTelemetryMetaClassifiesRegisteredCommandPaths(t *testing.T) {
 		"ao completion":              {},
 		"ao daemon":                  {},
 		"ao help":                    {},
+		"ao mcp":                     {},
 		"ao pty-host":                {},
 		"ao start":                   {},
+		"ao unreal-provider":         {},
 	}
 
 	var failures []string
@@ -443,6 +445,7 @@ func setConfigEnv(t *testing.T) testConfig {
 	t.Setenv("AO_RUN_FILE", cfg.runFile)
 	t.Setenv("AO_DATA_DIR", cfg.dataDir)
 	t.Setenv("AO_PORT", "3001")
+	t.Setenv("AO_PROJECT_ID", "")
 	t.Setenv("AO_REQUEST_TIMEOUT", "")
 	t.Setenv("AO_SHUTDOWN_TIMEOUT", "")
 	return cfg

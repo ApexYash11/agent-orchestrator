@@ -61,6 +61,7 @@ func (f *fakeAgentReadiness) RecheckAgent(agentID string) {
 }
 
 type fakeStore struct {
+	cleanupFacts        map[domain.SessionID]domain.SessionCleanupRecord
 	sessions            map[domain.SessionID]domain.SessionRecord
 	getSessionErr       error
 	activeSwitches      map[domain.SessionID]domain.AgentSwitch
@@ -69,6 +70,7 @@ type fakeStore struct {
 	pr                  map[domain.SessionID]domain.PRFacts
 	prFacts             map[domain.SessionID][]domain.PRFacts
 	prs                 map[domain.SessionID][]domain.PullRequest
+	reportedPRURLs      map[domain.SessionID][]string
 	projects            map[string]domain.ProjectRecord
 	worktrees           map[domain.SessionID][]domain.SessionWorktreeRecord
 	checks              map[string][]domain.PullRequestCheck
@@ -90,6 +92,7 @@ func newFakeStore() *fakeStore {
 		pr:             map[domain.SessionID]domain.PRFacts{},
 		prFacts:        map[domain.SessionID][]domain.PRFacts{},
 		prs:            map[domain.SessionID][]domain.PullRequest{},
+		reportedPRURLs: map[domain.SessionID][]string{},
 		projects:       map[string]domain.ProjectRecord{},
 		worktrees:      map[domain.SessionID][]domain.SessionWorktreeRecord{},
 		checks:         map[string][]domain.PullRequestCheck{},
@@ -98,6 +101,10 @@ func newFakeStore() *fakeStore {
 		comments:       map[string][]domain.PullRequestComment{},
 		reviewRuns:     map[domain.SessionID][]domain.CurrentHeadReviewRun{},
 	}
+}
+
+func (f *fakeStore) ListWorkspaceRepos(context.Context, string) ([]domain.WorkspaceRepoRecord, error) {
+	return nil, nil
 }
 
 func TestListBatchesKanbanReads(t *testing.T) {
@@ -124,6 +131,28 @@ func TestListBatchesKanbanReads(t *testing.T) {
 	}
 }
 
+func TestTaskPreparationsStayOutOfSessionReads(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", IsTaskPreparation: true}
+	svc := &Service{store: st}
+
+	list, err := svc.List(context.Background(), ListFilter{ProjectID: "mer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("list = %+v, want no preparations", list)
+	}
+	_, err = svc.Get(context.Background(), "mer-1")
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Code != "SESSION_NOT_FOUND" {
+		t.Fatalf("get preparation error = %v", err)
+	}
+	if first, err := svc.isFirstSession(context.Background()); err != nil || !first {
+		t.Fatalf("isFirstSession = %v, %v", first, err)
+	}
+}
+
 func (f *fakeStore) GetActiveAgentSwitch(_ context.Context, id domain.SessionID) (domain.AgentSwitch, bool, error) {
 	if f.activeSwitchGetErr != nil {
 		return domain.AgentSwitch{}, false, f.activeSwitchGetErr
@@ -143,7 +172,7 @@ func (f *fakeStore) ListActiveAgentSwitches(context.Context) ([]domain.AgentSwit
 	return out, nil
 }
 
-func newWorkspaceRepo(t *testing.T) string {
+func newWorkspaceRepo(t testing.TB) string {
 	t.Helper()
 	dir := t.TempDir()
 	runGit(t, dir, "init")
@@ -157,7 +186,7 @@ func newWorkspaceRepo(t *testing.T) string {
 	return dir
 }
 
-func runGit(t *testing.T, dir string, args ...string) string {
+func runGit(t testing.TB, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	out, err := cmd.CombinedOutput()
@@ -167,7 +196,7 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-func writeWorkspaceFile(t *testing.T, root, rel, content string) {
+func writeWorkspaceFile(t testing.TB, root, rel, content string) {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -176,6 +205,40 @@ func writeWorkspaceFile(t *testing.T, root, rel, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+// fixtureCommit is one commit for importCommits: its message and the files it
+// writes.
+type fixtureCommit struct {
+	message string
+	files   map[string]string
+}
+
+// importCommits appends commits to branch on top of parent in one git
+// fast-import, far faster than a git commit per commit for the hundreds a
+// capped commit list needs, and returns their SHAs oldest first.
+func importCommits(t *testing.T, repo, branch, parent string, commits []fixtureCommit) []string {
+	t.Helper()
+	var stream strings.Builder
+	for i, commit := range commits {
+		fmt.Fprintf(&stream, "commit refs/heads/%s\ncommitter AO Tests <ao@example.com> %d +0000\ndata %d\n%s\n", branch, 1700000000+i, len(commit.message), commit.message)
+		if i == 0 {
+			fmt.Fprintf(&stream, "from %s\n", parent)
+		}
+		for path, content := range commit.files {
+			fmt.Fprintf(&stream, "M 100644 inline %s\ndata %d\n%s\n", path, len(content), content)
+		}
+	}
+	cmd := exec.Command("git", "-C", repo, "fast-import", "--quiet")
+	cmd.Stdin = strings.NewReader(stream.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import: %v\n%s", err, out)
+	}
+	shas := strings.Fields(runGit(t, repo, "rev-list", "--reverse", parent+".."+branch))
+	if len(shas) != len(commits) {
+		t.Fatalf("imported %d commits, want %d", len(shas), len(commits))
+	}
+	return shas
 }
 
 func linkWorkspaceDir(t *testing.T, target, link string) {
@@ -207,6 +270,15 @@ func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.S
 	return r, ok, nil
 }
 
+func (f *fakeStore) GetSessionByClientRequestID(_ context.Context, id string) (domain.SessionRecord, bool, error) {
+	for _, rec := range f.sessions {
+		if id != "" && rec.ClientRequestID == id {
+			return rec, true, nil
+		}
+	}
+	return domain.SessionRecord{}, false, nil
+}
+
 func (f *fakeStore) ListSessions(_ context.Context, p domain.ProjectID) ([]domain.SessionRecord, error) {
 	var out []domain.SessionRecord
 	for _, r := range f.sessions {
@@ -228,6 +300,17 @@ func (f *fakeStore) ListAllSessions(_ context.Context) ([]domain.SessionRecord, 
 func (f *fakeStore) RenameSession(_ context.Context, id domain.SessionID, displayName string, updatedAt time.Time) (bool, error) {
 	r, ok := f.sessions[id]
 	if !ok {
+		return false, nil
+	}
+	r.DisplayName = displayName
+	r.UpdatedAt = updatedAt
+	f.sessions[id] = r
+	return true, nil
+}
+
+func (f *fakeStore) RenameSessionIfDisplayName(_ context.Context, id domain.SessionID, currentDisplayName, displayName string, updatedAt time.Time) (bool, error) {
+	r, ok := f.sessions[id]
+	if !ok || r.DisplayName != currentDisplayName {
 		return false, nil
 	}
 	r.DisplayName = displayName
@@ -329,6 +412,10 @@ func (f *fakeStore) ListPRsBySession(_ context.Context, id domain.SessionID) ([]
 		return nil, nil
 	}
 	return []domain.PullRequest{{URL: pr.URL, SessionID: id, Number: pr.Number, Draft: pr.Draft, Merged: pr.Merged, Closed: pr.Closed, CI: pr.CI, Review: pr.Review, Mergeability: pr.Mergeability, UpdatedAt: pr.UpdatedAt, TargetBranch: pr.TargetBranch}}, nil
+}
+
+func (f *fakeStore) ListReportedPRURLs(_ context.Context, id domain.SessionID) ([]string, error) {
+	return append([]string(nil), f.reportedPRURLs[id]...), nil
 }
 
 func (f *fakeStore) ListPRFactsForSession(_ context.Context, id domain.SessionID) ([]domain.PRFacts, error) {
@@ -478,6 +565,37 @@ func TestSessionRenameUpdatesDisplayName(t *testing.T) {
 	}
 	if got := st.sessions["mer-1"].DisplayName; got != "Fix issue #90" {
 		t.Fatalf("display name = %q, want trimmed rename", got)
+	}
+}
+
+func TestSessionRenameRejectsOrchestrator(t *testing.T) {
+	for _, terminated := range []bool{false, true} {
+		st := newFakeStore()
+		st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator, IsTerminated: terminated}
+
+		err := (&Service{store: st}).Rename(context.Background(), "mer-1", "My orchestrator")
+		var e *apierr.Error
+		if !errors.As(err, &e) || e.Kind != apierr.KindInvalid || e.Code != "ORCHESTRATOR_RENAME_UNSUPPORTED" {
+			t.Fatalf("terminated=%v: err = %v, want apierr Invalid ORCHESTRATOR_RENAME_UNSUPPORTED", terminated, err)
+		}
+		if got := st.sessions["mer-1"].DisplayName; got != "" {
+			t.Fatalf("terminated=%v: display name = %q, want unchanged", terminated, got)
+		}
+	}
+}
+
+func TestSessionRenameRejectsOverlongDisplayName(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+
+	overlong := strings.Repeat("x", 101)
+	err := (&Service{store: st}).Rename(context.Background(), "mer-1", overlong)
+	if err == nil {
+		t.Fatal("expected error for overlong display name, got nil")
+	}
+	var e *apierr.Error
+	if !errors.As(err, &e) || e.Code != "DISPLAY_NAME_TOO_LONG" {
+		t.Fatalf("err = %v, want DISPLAY_NAME_TOO_LONG", err)
 	}
 }
 
@@ -722,6 +840,138 @@ func TestListWorkspaceFilesRepoUnavailableWrapsSentinel(t *testing.T) {
 	}
 	if !errors.Is(err, ports.ErrWorkspaceRepoUnavailable) {
 		t.Fatalf("error = %v, want errors.Is(ErrWorkspaceRepoUnavailable)", err)
+	}
+}
+
+func TestListWorkspaceFilesClassifiesGitReadFailure(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".git", "index"), []byte("not a git index"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{
+		ID:       "ao-1",
+		Metadata: domain.SessionMetadata{WorkspacePath: repo},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+
+	_, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "ao-1")
+	if err == nil {
+		t.Fatal("ListWorkspaceFiles succeeded with a corrupt Git index")
+	}
+	var apiErr *apierr.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %v, want typed API error", err)
+	}
+	if apiErr.Code != "WORKSPACE_GIT_READ_FAILED" {
+		t.Fatalf("error code = %q, want WORKSPACE_GIT_READ_FAILED", apiErr.Code)
+	}
+}
+
+func TestListWorkspaceFilesTreatsStandaloneWorkerAsNonGitWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, "notes.txt", "standalone note\n")
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "standalone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "notes.txt" || got.Files[0].Status != WorkspaceFileAdded {
+		t.Fatalf("standalone files = %#v, want added notes.txt", got.Files)
+	}
+}
+
+func TestListWorkspaceFilesHidesAOManagedStandaloneFiles(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, ".kimi/.gitignore", aoManagedGitignoreSentinel+"\n/.gitignore\n/AGENTS.md\n")
+	writeWorkspaceFile(t, workspace, ".kimi/AGENTS.md", "AO instructions\n")
+	writeWorkspaceFile(t, workspace, ".kimi/draft.md", "agent-created work\n")
+	writeWorkspaceFile(t, workspace, "notes.txt", "user work\n")
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "standalone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{".kimi/draft.md", "notes.txt"}
+	if len(got.Files) != len(want) {
+		t.Fatalf("standalone files = %#v, want user-created files %v", got.Files, want)
+	}
+	for i, path := range want {
+		if got.Files[i].Path != path {
+			t.Fatalf("standalone file[%d] = %q, want %q", i, got.Files[i].Path, path)
+		}
+	}
+}
+
+func TestListWorkspaceFilesHidesAOManagedStandaloneDirectoryContents(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, ".ao/.gitignore", aoManagedGitignoreSentinel+"\n/.gitignore\n/hooks\n")
+	writeWorkspaceFile(t, workspace, ".ao/hooks/run.sh", "#!/bin/sh\n")
+	writeWorkspaceFile(t, workspace, "notes.txt", "user work\n")
+	st := newFakeStore()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:       "standalone-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "standalone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "notes.txt" {
+		t.Fatalf("standalone files = %#v, want only user-created notes.txt", got.Files)
+	}
+}
+
+func TestListWorkspaceFilesHidesAOManagedCopilotProfile(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, ".github/agents/ao-standalone-4.agent.md", "---\nname: ao-standalone-4\ntarget: github-copilot\n---\n\n"+aoManagedCopilotProfileSentinel+"\n\nAO instructions\n")
+	writeWorkspaceFile(t, workspace, "result.md", "agent-created work\n")
+	st := newFakeStore()
+	st.sessions["standalone-4"] = domain.SessionRecord{
+		ID:       "standalone-4",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "standalone-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "result.md" {
+		t.Fatalf("standalone files = %#v, want only agent-created result.md", got.Files)
+	}
+}
+
+func TestListWorkspaceFilesTreatsMigratedScratchWorkerAsNonGitWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	writeWorkspaceFile(t, workspace, "notes.txt", "migrated scratch note\n")
+	st := newFakeStore()
+	st.sessions["scratch-1"] = domain.SessionRecord{
+		ID:       "scratch-1",
+		Kind:     domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	got, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "scratch-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "notes.txt" || got.Files[0].Status != WorkspaceFileAdded {
+		t.Fatalf("migrated scratch files = %#v, want added notes.txt", got.Files)
 	}
 }
 
@@ -1671,6 +1921,12 @@ func TestWorkspaceFileSectionsSplitByGitState(t *testing.T) {
 	if len(files.Commits) != 1 || files.Commits[0].Subject != "agent: add committed.go" {
 		t.Fatalf("commits = %+v, want one commit for agent: add committed.go", files.Commits)
 	}
+	if len(files.Commits[0].Files) != 1 || files.Commits[0].Files[0].Path != "committed.go" || files.Commits[0].Files[0].Status != WorkspaceFileAdded || files.Commits[0].Files[0].Additions != 1 {
+		t.Fatalf("commit files = %+v, want added committed.go with one addition", files.Commits[0].Files)
+	}
+	if files.Commits[0].Files[0].Editable {
+		t.Fatal("historical commit file must not be editable")
+	}
 	if files.Summary.Files == 0 || files.Summary.Additions == 0 {
 		t.Fatalf("summary = %+v, want non-zero files and additions", files.Summary)
 	}
@@ -2072,6 +2328,9 @@ func TestListWorkspaceFilesScratchUsesFilesystem(t *testing.T) {
 	if !byPath["image.bin"].Binary || byPath["image.bin"].Additions != 0 || byPath["image.bin"].Deletions != 0 {
 		t.Fatalf("binary summary = %#v, want binary with zero counts", byPath["image.bin"])
 	}
+	if !byPath["README.md"].Editable || byPath["image.bin"].Editable {
+		t.Fatalf("editable flags = README:%v image:%v, want true/false", byPath["README.md"].Editable, byPath["image.bin"].Editable)
+	}
 	if _, ok := byPath[".git/config"]; ok {
 		t.Fatal(".git content should not be listed for scratch")
 	}
@@ -2164,6 +2423,25 @@ func TestGetWorkspaceFileScratchReturnsContentWithEmptyDiff(t *testing.T) {
 	if got.Diff != "" || got.DiffTruncated {
 		t.Fatalf("scratch diff = %q truncated=%v, want empty", got.Diff, got.DiffTruncated)
 	}
+	if !got.Editable {
+		t.Fatal("Editable = false, want true for a complete UTF-8 text file")
+	}
+}
+
+func TestGetWorkspaceFileMarksOversizedTextAsNotEditable(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, "large.yaml", strings.Repeat("a", maxWorkspaceFileBytes+1))
+	st := newFakeStore()
+	st.projects["scratch"] = domain.ProjectRecord{ID: "scratch", Kind: domain.ProjectKindScratch}
+	st.sessions["scratch-1"] = domain.SessionRecord{ID: "scratch-1", ProjectID: "scratch", Metadata: domain.SessionMetadata{WorkspacePath: root}}
+
+	got, err := (&Service{store: st}).GetWorkspaceFile(context.Background(), "scratch-1", "large.yaml", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Editable || !got.ContentTruncated {
+		t.Fatalf("editable=%v truncated=%v, want false/true", got.Editable, got.ContentTruncated)
+	}
 }
 
 func TestGetWorkspaceFileRejectsTraversal(t *testing.T) {
@@ -2193,6 +2471,70 @@ func TestGetWorkspaceFileRejectsIntermediateSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestUpdateWorkspaceFileReplacesExistingTextWithOptimisticFingerprint(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeWorkspaceFile(t, repo, "notes.txt", "before\n")
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	svc := &Service{store: st, workspaceCache: newWorkspaceCache(workspaceCacheTTL, time.Now)}
+
+	before, err := svc.GetWorkspaceFile(context.Background(), "ao-1", "notes.txt", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := svc.UpdateWorkspaceFile(context.Background(), "ao-1", UpdateWorkspaceFileInput{
+		Path:                    "notes.txt",
+		Content:                 "after\n",
+		ExpectedFileFingerprint: before.FileFingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Content != "after\n" || after.FileFingerprint == before.FileFingerprint {
+		t.Fatalf("updated detail = %#v", after)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "notes.txt"))
+	if err != nil || string(data) != "after\n" {
+		t.Fatalf("workspace content = %q err=%v", data, err)
+	}
+}
+
+func TestUpdateWorkspaceFileRejectsStaleFingerprintWithoutWriting(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeWorkspaceFile(t, repo, "notes.txt", "current\n")
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	svc := &Service{store: st, workspaceCache: newWorkspaceCache(workspaceCacheTTL, time.Now)}
+
+	_, err := svc.UpdateWorkspaceFile(context.Background(), "ao-1", UpdateWorkspaceFileInput{
+		Path:                    "notes.txt",
+		Content:                 "replacement\n",
+		ExpectedFileFingerprint: "stale",
+	})
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Kind != apierr.KindConflict || apiError.Code != "WORKSPACE_FILE_STALE" {
+		t.Fatalf("err = %v, want conflict WORKSPACE_FILE_STALE", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(repo, "notes.txt"))
+	if readErr != nil || string(data) != "current\n" {
+		t.Fatalf("workspace content = %q err=%v", data, readErr)
+	}
+}
+
+func TestWorkspaceFileSizeDoesNotTreatTruncatedUTF8RuneAsBinary(t *testing.T) {
+	repo := t.TempDir()
+	content := strings.Repeat("a", 8190) + "你tail"
+	writeWorkspaceFile(t, repo, "translated.json", content)
+
+	size, binary := workspaceFileSizeAndBinary(repo, "translated.json", WorkspaceFileModified)
+	if binary {
+		t.Fatal("valid UTF-8 file was classified as binary when the preview ended mid-rune")
+	}
+	if size != int64(len(content)) {
+		t.Fatalf("size = %d, want %d", size, len(content))
+	}
+}
+
 func TestSessionRenameMissingSessionReturnsNotFound(t *testing.T) {
 	st := newFakeStore()
 
@@ -2206,32 +2548,48 @@ func TestSessionRenameMissingSessionReturnsNotFound(t *testing.T) {
 // fakeCommander records Kill/Spawn calls so a test can assert the
 // clean-orchestrator ordering without wiring a real session engine.
 type fakeCommander struct {
-	killed          []domain.SessionID
-	retired         []domain.SessionID
-	exited          []domain.SessionID
-	resumed         []domain.SessionID
-	ready           []domain.SessionID
-	sent            []domain.SessionID
-	sentMessages    []string
-	cleanupProjects []domain.ProjectID
-	killErr         error
-	retireErr       error
-	sendErr         error
-	sendFunc        func(domain.SessionID, string) error
-	cleanupErr      error
-	spawnErr        error
-	spawnRecord     domain.SessionRecord
-	spawnFunc       func(ports.SpawnConfig) domain.SessionRecord
-	spawnCalls      int
-	spawned         bool
-	spawnedCfg      ports.SpawnConfig
-	killsAtSpawn    int
-	restoreErr      error
-	restoreResult   sessionmanager.RestoreResult
-	readyErr        error
+	killed           []domain.SessionID
+	retired          []domain.SessionID
+	exited           []domain.SessionID
+	resumed          []domain.SessionID
+	ready            []domain.SessionID
+	sent             []domain.SessionID
+	sentMessages     []string
+	cleanupProjects  []domain.ProjectID
+	killErr          error
+	retireErr        error
+	retireFunc       func(context.Context, domain.SessionID) error
+	sendErr          error
+	sendFunc         func(domain.SessionID, string) error
+	cleanupErr       error
+	spawnErr         error
+	spawnRecord      domain.SessionRecord
+	spawnFunc        func(ports.SpawnConfig) domain.SessionRecord
+	spawnCalls       int
+	spawned          bool
+	spawnedCfg       ports.SpawnConfig
+	spawnCtx         context.Context
+	killsAtSpawn     int
+	restoreErr       error
+	restoreResult    sessionmanager.RestoreResult
+	readyErr         error
+	backgroundResult string
+	backgroundErr    error
+	backgroundFunc   func(backgroundTaskCall) (string, error)
+	backgroundCalls  []backgroundTaskCall
+	killFunc         func(domain.SessionID)
+	killMu           sync.Mutex
 }
 
-func (f *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
+type backgroundTaskCall struct {
+	ctx          context.Context
+	id           domain.SessionID
+	systemPrompt string
+	prompt       string
+}
+
+func (f *fakeCommander) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
+	f.spawnCtx = ctx
 	if f.spawnErr != nil {
 		return domain.SessionRecord{}, 0, 0, f.spawnErr
 	}
@@ -2246,6 +2604,12 @@ func (f *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.
 		return f.spawnRecord, len(cfg.Prompt), 0, nil
 	}
 	return domain.SessionRecord{ID: "mer-9", ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness}, len(cfg.Prompt), 0, nil
+}
+func (*fakeCommander) PrepareTaskWorkspace(context.Context, domain.ProjectRecord) (domain.TaskPreparationToken, error) {
+	return "", nil
+}
+func (*fakeCommander) CancelTaskPreparation(context.Context, domain.TaskPreparationToken) error {
+	return nil
 }
 func (*fakeCommander) SwitchAgent(context.Context, domain.SessionID, sessionmanager.SwitchAgentConfig) (domain.AgentSwitch, error) {
 	return domain.AgentSwitch{}, nil
@@ -2286,10 +2650,18 @@ func (f *fakeCommander) Kill(_ context.Context, id domain.SessionID) (bool, erro
 	if f.killErr != nil {
 		return false, f.killErr
 	}
+	f.killMu.Lock()
 	f.killed = append(f.killed, id)
+	f.killMu.Unlock()
+	if f.killFunc != nil {
+		f.killFunc(id)
+	}
 	return true, nil
 }
-func (f *fakeCommander) RetireForReplacement(_ context.Context, id domain.SessionID) error {
+func (f *fakeCommander) RetireForReplacement(ctx context.Context, id domain.SessionID) error {
+	if f.retireFunc != nil {
+		return f.retireFunc(ctx, id)
+	}
 	if f.retireErr != nil {
 		return f.retireErr
 	}
@@ -2310,6 +2682,25 @@ func (f *fakeCommander) Send(_ context.Context, id domain.SessionID, message str
 	f.sent = append(f.sent, id)
 	f.sentMessages = append(f.sentMessages, message)
 	return nil
+}
+func (f *fakeCommander) SendWithOptions(_ context.Context, id domain.SessionID, message string, _ *ports.SpawnAttachment, _ ports.MessageDeliveryOptions) error {
+	return f.Send(context.Background(), id, message, nil)
+}
+func (f *fakeCommander) RunBackgroundTask(ctx context.Context, id domain.SessionID, systemPrompt, prompt string) (string, error) {
+	call := backgroundTaskCall{
+		ctx: ctx, id: id, systemPrompt: systemPrompt, prompt: prompt,
+	}
+	f.backgroundCalls = append(f.backgroundCalls, call)
+	if f.backgroundFunc != nil {
+		return f.backgroundFunc(call)
+	}
+	if f.backgroundErr != nil {
+		return "", f.backgroundErr
+	}
+	if f.backgroundResult != "" {
+		return f.backgroundResult, nil
+	}
+	return "Generated task", nil
 }
 func (f *fakeCommander) Cleanup(_ context.Context, project domain.ProjectID) (sessionmanager.CleanupResult, error) {
 	f.cleanupProjects = append(f.cleanupProjects, project)
@@ -2368,6 +2759,65 @@ func TestTeardownProjectKillsActiveSessionsThenCleansProject(t *testing.T) {
 	}
 }
 
+// Project removal must tear live sessions down in parallel: the per-session
+// cost (agent/runtime shutdown, controller teardown) dominates and is
+// independent, which is exactly what makes removing a many-session project
+// slow when kills run one after another. Stalling one session's kill must not
+// delay the others.
+func TestTeardownProjectKillsActiveSessionsConcurrently(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	st.sessions["mer-2"] = domain.SessionRecord{ID: "mer-2", ProjectID: "mer"}
+	st.sessions["other-1"] = domain.SessionRecord{ID: "other-1", ProjectID: "other"}
+	mer1Entered := make(chan struct{})
+	mer2Killed := make(chan struct{})
+	releaseMer1 := make(chan struct{})
+	fc := &fakeCommander{killFunc: func(id domain.SessionID) {
+		switch id {
+		case "mer-1":
+			close(mer1Entered)
+			<-releaseMer1
+		case "mer-2":
+			close(mer2Killed)
+		}
+	}}
+	svc := &Service{manager: fc, store: st}
+
+	done := make(chan error, 1)
+	go func() { done <- svc.TeardownProject(context.Background(), "mer") }()
+
+	select {
+	case <-mer1Entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("kill of mer-1 never started")
+	}
+	select {
+	case <-mer2Killed:
+		// mer-2 was killed while mer-1's teardown was still blocked.
+	case <-time.After(5 * time.Second):
+		t.Fatal("kill of mer-2 waited for mer-1's teardown to finish; kills are serial, not parallel")
+	}
+	close(releaseMer1)
+	if err := <-done; err != nil {
+		t.Fatalf("TeardownProject: %v", err)
+	}
+
+	fc.killMu.Lock()
+	killed := append([]domain.SessionID(nil), fc.killed...)
+	fc.killMu.Unlock()
+	if len(killed) != 2 {
+		t.Fatalf("killed = %#v, want mer-1 and mer-2", killed)
+	}
+	for _, id := range killed {
+		if id != "mer-1" && id != "mer-2" {
+			t.Fatalf("unexpected session killed: %s", id)
+		}
+	}
+	if len(fc.cleanupProjects) != 1 || fc.cleanupProjects[0] != "mer" {
+		t.Fatalf("cleanup projects = %#v, want [mer]", fc.cleanupProjects)
+	}
+}
+
 func TestTeardownProjectStopsOnKillError(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
@@ -2397,7 +2847,7 @@ func TestSpawnOrchestratorCleanRetiresActiveOrchestratorsBeforeSpawn(t *testing.
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, ""); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "", ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 
@@ -2422,7 +2872,7 @@ func TestSpawnOrchestratorCleanContinuesWhenRetireNoticeFails(t *testing.T) {
 	fc := &fakeCommander{sendErr: errors.New("pane closed")}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, ""); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "", ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 	if len(fc.retired) != 1 || fc.retired[0] != "mer-1" {
@@ -2430,6 +2880,28 @@ func TestSpawnOrchestratorCleanContinuesWhenRetireNoticeFails(t *testing.T) {
 	}
 	if !fc.spawned {
 		t.Fatal("replacement should still spawn when retire notice delivery fails")
+	}
+}
+
+func TestSpawnOrchestratorCleanPreservesCancellationForReplacement(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fc := &fakeCommander{retireFunc: func(retireCtx context.Context, _ domain.SessionID) error {
+		cancel()
+		if err := retireCtx.Err(); err != nil {
+			t.Fatalf("retirement must finish after request cancellation: %v", err)
+		}
+		return nil
+	}}
+	svc := &Service{manager: fc, store: st}
+	if _, err := svc.SpawnOrchestrator(ctx, "mer", true, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if fc.spawnCtx == nil || !errors.Is(fc.spawnCtx.Err(), context.Canceled) {
+		t.Fatal("replacement spawn must receive the cancelled request context")
 	}
 }
 
@@ -2443,7 +2915,7 @@ func TestSpawnOrchestratorCleanPreservesPersistedMode(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, ""); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "", ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 	if fc.spawnedCfg.RequestedMode != domain.SessionModeChat {
@@ -2461,7 +2933,7 @@ func TestSpawnOrchestratorCleanHonorsExplicitReplacementMode(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, domain.SessionModeChat); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", true, domain.SessionModeChat, ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 	if fc.spawnedCfg.RequestedMode != domain.SessionModeChat {
@@ -2475,11 +2947,28 @@ func TestSpawnOrchestratorUsesExplicitModeForNewProjectOrchestrator(t *testing.T
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", false, domain.SessionModeChat); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", false, domain.SessionModeChat, ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
+	}
+	if !fc.spawnedCfg.Async {
+		t.Fatal("orchestrator startup must publish a session before Chat launches")
 	}
 	if fc.spawnedCfg.RequestedMode != domain.SessionModeChat {
 		t.Fatalf("requested mode = %q, want chat", fc.spawnedCfg.RequestedMode)
+	}
+}
+
+func TestSpawnOrchestratorPassesApprovalOverrideToSpawn(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	fc := &fakeCommander{}
+	svc := &Service{manager: fc, store: st}
+
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", false, domain.SessionModeChat, domain.PermissionModeBypassPermissions); err != nil {
+		t.Fatalf("SpawnOrchestrator: %v", err)
+	}
+	if fc.spawnedCfg.AgentConfig.Permissions != domain.PermissionModeBypassPermissions {
+		t.Fatalf("spawn permissions = %q, want bypass", fc.spawnedCfg.AgentConfig.Permissions)
 	}
 }
 
@@ -2490,7 +2979,7 @@ func TestSpawnOrchestratorCleanRetireNoticeIsBranchNeutral(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.SpawnOrchestrator(context.Background(), "scratch", true, ""); err != nil {
+	if _, err := svc.SpawnOrchestrator(context.Background(), "scratch", true, "", ""); err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
 	if len(fc.sentMessages) != 1 {
@@ -2520,6 +3009,47 @@ func TestSpawnUnknownProjectReturns404(t *testing.T) {
 	}
 }
 
+func TestSpawnStandaloneWorkerDoesNotRequireProject(t *testing.T) {
+	st := newFakeStore()
+	fc := &fakeCommander{spawnRecord: domain.SessionRecord{
+		ID: "standalone-1", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+	}}
+	svc := &Service{manager: fc, store: st}
+
+	session, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{
+		Kind:    domain.KindWorker,
+		Harness: domain.HarnessCodex,
+		Prompt:  "Research release options",
+	})
+	if err != nil {
+		t.Fatalf("Spawn standalone: %v", err)
+	}
+	if session.ID != "standalone-1" || session.ProjectID != "" {
+		t.Fatalf("standalone session = %#v", session)
+	}
+	if fc.spawnedCfg.ProjectID != "" || fc.spawnedCfg.Kind != domain.KindWorker {
+		t.Fatalf("manager config = %#v", fc.spawnedCfg)
+	}
+}
+
+func TestSpawnStandaloneRejectsProjectFeatures(t *testing.T) {
+	for _, cfg := range []ports.SpawnConfig{
+		{Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex},
+		{Kind: domain.KindWorker, Harness: domain.HarnessCodex, Branch: "feature/x"},
+		{Kind: domain.KindWorker, Harness: domain.HarnessCodex, IssueID: "42"},
+		{Kind: domain.KindWorker},
+	} {
+		fc := &fakeCommander{}
+		svc := &Service{manager: fc, store: newFakeStore()}
+		if _, _, _, err := svc.Spawn(context.Background(), cfg); err == nil {
+			t.Fatalf("Spawn(%#v) succeeded, want validation error", cfg)
+		}
+		if fc.spawned {
+			t.Fatalf("manager called for invalid standalone config %#v", cfg)
+		}
+	}
+}
+
 func TestSpawnBlocksDefinitelyMissingHarnessBeforeManager(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
@@ -2543,21 +3073,51 @@ func TestSpawnBlocksDefinitelyMissingHarnessBeforeManager(t *testing.T) {
 	}
 }
 
-func TestSpawnTreatsUnauthorizedReadinessAsAdvisory(t *testing.T) {
+func TestSpawnProjectClaudeGatewayTreatsGlobalUnauthorizedAsAdvisory(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{
+		ID: "mer",
+		Config: domain.ProjectConfig{Env: map[string]string{
+			"ANTHROPIC_BASE_URL": "https://gateway.example",
+			"ANTHROPIC_API_KEY":  "project-fixture-key",
+		}},
+	}
+	fc := &fakeCommander{}
+	readiness := &fakeAgentReadiness{snapshot: domain.AgentReadinessSnapshot{
+		ID: "claude-code", Installation: domain.AgentInstallationObservation{State: domain.AgentInstallationInstalled},
+		Authentication: domain.AgentAuthenticationObservation{
+			State: domain.AgentAuthenticationUnauthorized, Freshness: domain.AgentReadinessFresh,
+		},
+	}}
+	svc := NewWithDeps(Deps{Manager: fc, Store: st, AgentReadiness: readiness})
+
+	if _, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if fc.spawnCalls != 1 {
+		t.Fatalf("manager.Spawn calls = %d, want project-aware launch to remain authoritative", fc.spawnCalls)
+	}
+}
+
+func TestSpawnStillRejectsFreshUnauthorizedCodexAccount(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
 	fc := &fakeCommander{}
 	readiness := &fakeAgentReadiness{snapshot: domain.AgentReadinessSnapshot{
 		ID: "codex", Installation: domain.AgentInstallationObservation{State: domain.AgentInstallationInstalled},
-		Authentication: domain.AgentAuthenticationObservation{State: domain.AgentAuthenticationUnauthorized},
+		Authentication: domain.AgentAuthenticationObservation{
+			State: domain.AgentAuthenticationUnauthorized, Freshness: domain.AgentReadinessFresh,
+		},
 	}}
 	svc := NewWithDeps(Deps{Manager: fc, Store: st, AgentReadiness: readiness})
 
-	if _, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: "codex"}); err != nil {
-		t.Fatalf("Spawn: %v", err)
+	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex})
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Code != "CODEX_ACCOUNT_AUTH_UNVERIFIED" {
+		t.Fatalf("Spawn error = %v, want CODEX_ACCOUNT_AUTH_UNVERIFIED", err)
 	}
-	if fc.spawnCalls != 1 {
-		t.Fatalf("manager.Spawn calls = %d, want unauthorized readiness to remain advisory", fc.spawnCalls)
+	if fc.spawnCalls != 0 {
+		t.Fatalf("manager.Spawn calls = %d, want fresh unauthorized Codex account blocked", fc.spawnCalls)
 	}
 }
 
@@ -2944,6 +3504,11 @@ func TestSpawnEmitsTelemetryOnSuccess(t *testing.T) {
 	if ev.ProjectID == nil || *ev.ProjectID != "mer" || ev.SessionID == nil || *ev.SessionID != "mer-9" {
 		t.Fatalf("event ids = %+v", ev)
 	}
+	// With no GitHub identity resolver wired, the handle degrades to anonymous and
+	// the carrier event omits github_actor entirely.
+	if _, ok := ev.Payload["github_actor"]; ok {
+		t.Fatalf("payload should omit github_actor without a resolver: %#v", ev.Payload)
+	}
 }
 
 func TestSpawnEmitsTelemetryOnFailure(t *testing.T) {
@@ -3025,7 +3590,7 @@ func TestSpawnOrchestratorUnknownProjectReturns404(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	_, err := svc.SpawnOrchestrator(context.Background(), "ghost", false, "")
+	_, err := svc.SpawnOrchestrator(context.Background(), "ghost", false, "", "")
 	var e *apierr.Error
 	if !errors.As(err, &e) || e.Kind != apierr.KindNotFound || e.Code != "PROJECT_NOT_FOUND" {
 		t.Fatalf("err = %v, want apierr.NotFound PROJECT_NOT_FOUND", err)
@@ -3051,8 +3616,10 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"invalid branch", fmt.Errorf("spawn mer-1: workspace: %w: \"bad!!\" (exit 1)", ports.ErrWorkspaceBranchInvalid), apierr.KindInvalid, "INVALID_BRANCH"},
 		{"agent binary not found", fmt.Errorf("spawn mer-1: %w", ports.ErrAgentBinaryNotFound), apierr.KindInvalid, "AGENT_BINARY_NOT_FOUND"},
 		{"runtime prerequisite missing", fmt.Errorf("spawn: %w: tmux required on macOS/Linux but not in PATH", ports.ErrRuntimePrerequisite), apierr.KindInvalid, "RUNTIME_PREREQUISITE_MISSING"},
+		{"Windows command line too long", fmt.Errorf("spawn: %w: escaped command line is 32769 UTF-16 code units", ports.ErrRuntimeCommandLineTooLong), apierr.KindInvalid, "WINDOWS_COMMAND_LINE_TOO_LONG"},
 		{"runtime workspace cwd mismatch", fmt.Errorf("spawn mer-1: runtime: %w: session mer-1 started in \"/deleted/shipit\", want \"/tmp/ws\"", ports.ErrRuntimeWorkspaceCwdMismatch), apierr.KindConflict, "WORKSPACE_CWD_MISMATCH"},
 		{"workspace locked", fmt.Errorf("restore mer-1: %w: \"/tmp/ws\" (branch \"ao/mer-1\") is registered but its directory is missing", ports.ErrWorkspaceLocked), apierr.KindConflict, "WORKSPACE_LOCKED"},
+		{"cleanup script failed", fmt.Errorf("kill mer-1: %w: secret output", sessionmanager.ErrCleanupScript), apierr.KindConflict, "WORKSPACE_CLEANUP_FAILED"},
 		{"unknown harness", fmt.Errorf("spawn: %w: %q", sessionmanager.ErrUnknownHarness, "bogus"), apierr.KindInvalid, "UNKNOWN_HARNESS"},
 		{"missing harness", fmt.Errorf("spawn: %w: configure project worker.agent or pass --harness", sessionmanager.ErrMissingHarness), apierr.KindInvalid, "AGENT_REQUIRED"},
 		{"harness install active", fmt.Errorf("spawn: %w", sessionmanager.ErrHarnessInstallActive), apierr.KindConflict, "HARNESS_INSTALL_ACTIVE"},
@@ -3061,6 +3628,7 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"agent exited", fmt.Errorf("send mer-1: %w", sessionmanager.ErrAgentExited), apierr.KindConflict, "AGENT_EXITED"},
 		{"agent not exited", fmt.Errorf("resume agent mer-1: %w", sessionmanager.ErrAgentNotExited), apierr.KindConflict, "AGENT_NOT_EXITED"},
 		{"resume in progress", fmt.Errorf("resume agent mer-1: %w", sessionmanager.ErrResumeInProgress), apierr.KindConflict, "AGENT_RESUME_IN_PROGRESS"},
+		{"provider resume failed", fmt.Errorf("resume agent mer-1: %w", ports.ErrChatResumeFailed), apierr.KindConflict, "CHAT_RESUME_FAILED"},
 		{"target agent unauthorized", fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrTargetAgentUnauthorized), apierr.KindInvalid, "TARGET_AGENT_UNAUTHORIZED"},
 		{"worker session required", fmt.Errorf("switch agent mer-orchestrator: %w", sessionmanager.ErrUnsupportedSwitchKind), apierr.KindInvalid, "WORKER_SESSION_REQUIRED"},
 		{"unsupported switch harness", fmt.Errorf("switch agent mer-1: %w", sessionmanager.ErrUnsupportedSwitchHarness), apierr.KindInvalid, "UNSUPPORTED_SWITCH_HARNESS"},
@@ -3075,12 +3643,19 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"switch in progress", fmt.Errorf("switch agent mer-1: %w", domain.ErrAgentSwitchInProgress), apierr.KindConflict, "AGENT_SWITCH_IN_PROGRESS"},
 		{"switch idempotency conflict", fmt.Errorf("switch agent mer-1: %w", domain.ErrAgentSwitchIdempotencyConflict), apierr.KindConflict, "AGENT_SWITCH_IDEMPOTENCY_CONFLICT"},
 		{"chat mode unsupported", fmt.Errorf("spawn: %w", ports.ErrChatUnsupported), apierr.KindConflict, "SESSION_MODE_UNSUPPORTED"},
+		{"chat recovery inconclusive with deadline", fmt.Errorf("resume agent mer-1: resume chat: %w: persistent ACP host: %w",
+			ports.ErrChatRecoveryInconclusive, fmt.Errorf("chat host ownership is inconclusive: %w", context.DeadlineExceeded)),
+			apierr.KindConflict, "CHAT_RECOVERY_INCONCLUSIVE"},
 		{"chat driver unavailable", fmt.Errorf("spawn: %w", ports.ErrChatDriverUnavailable), apierr.KindConflict, "CHAT_DRIVER_UNAVAILABLE"},
 		{"chat driver incompatible", fmt.Errorf("spawn: %w", ports.ErrChatDriverIncompatible), apierr.KindConflict, "CHAT_DRIVER_INCOMPATIBLE"},
 		{"chat auth required", fmt.Errorf("spawn: %w", ports.ErrChatAuthRequired), apierr.KindConflict, "CHAT_AUTH_REQUIRED"},
+		{"agent auth required", fmt.Errorf("spawn: %w", ports.ErrAgentAuthRequired), apierr.KindConflict, "AGENT_AUTH_REQUIRED"},
 		{"interface notice not acknowledgeable", fmt.Errorf("acknowledge interface notice: %w", sessionmanager.ErrInterfaceTransitionNoticeNotAcknowledgeable), apierr.KindConflict, "INTERFACE_TRANSITION_NOTICE_NOT_ACKNOWLEDGEABLE"},
+		{"provider history recovery unavailable", fmt.Errorf("recover interface: %w", sessionmanager.ErrInterfaceProviderHistoryRecoveryUnavailable), apierr.KindConflict, "PROVIDER_HISTORY_RECOVERY_UNAVAILABLE"},
 		{"native conversation missing", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationMissing), apierr.KindConflict, "NATIVE_SESSION_MISSING"},
 		{"native conversation unverified", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationUnverified), apierr.KindConflict, "NATIVE_SESSION_UNVERIFIED"},
+		{"unsupported effort", fmt.Errorf("spawn: %w", ports.ErrUnsupportedEffort), apierr.KindInvalid, "UNSUPPORTED_EFFORT"},
+		{"model capabilities unavailable", fmt.Errorf("spawn: %w", ports.ErrModelCapabilitiesUnavailable), apierr.KindInvalid, "MODEL_CAPABILITIES_UNAVAILABLE"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3088,6 +3663,9 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 			var e *apierr.Error
 			if !errors.As(mapped, &e) || e.Kind != tc.wantKind || e.Code != tc.wantCode {
 				t.Fatalf("mapped = %v, want %s %s", mapped, tc.wantCode, e)
+			}
+			if strings.Contains(e.Message, "secret output") {
+				t.Fatalf("mapped message leaked script output: %q", e.Message)
 			}
 		})
 	}
@@ -3428,6 +4006,26 @@ func TestSpawnGenericOrchestratorReturnsExistingActiveSession(t *testing.T) {
 	}
 }
 
+// A scheduled orchestrator must never be falsely linked to an unrelated
+// interactive orchestrator. It stays retryable until the active one exits.
+func TestSpawnAutomationOrchestratorConflictsWithUnrelatedActiveSession(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	st.sessions["mer-orch"] = domain.SessionRecord{ID: "mer-orch", ProjectID: "mer", Kind: domain.KindOrchestrator}
+	fc := &fakeCommander{}
+	svc := &Service{manager: fc, store: st}
+	runID := domain.AutomationRunID("run-1")
+
+	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindOrchestrator, AutomationRunID: &runID})
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Kind != apierr.KindConflict || apiError.Code != "ORCHESTRATOR_ALREADY_ACTIVE" {
+		t.Fatalf("Spawn error = %v, want ORCHESTRATOR_ALREADY_ACTIVE conflict", err)
+	}
+	if fc.spawned {
+		t.Fatal("manager.Spawn must not run while another orchestrator is active")
+	}
+}
+
 func TestSpawnGenericOrchestratorAllowsReplacementAfterTermination(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
@@ -3564,7 +4162,7 @@ func TestSpawnOrchestratorNoCleanReturnsExistingWhenActiveExists(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	got, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
+	got, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "", "")
 	if err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
@@ -3596,7 +4194,7 @@ func TestSpawnOrchestratorNoCleanSpawnsWhenNoneExists(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	got, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
+	got, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "", "")
 	if err != nil {
 		t.Fatalf("SpawnOrchestrator: %v", err)
 	}
@@ -3628,7 +4226,7 @@ func TestSpawnOrchestratorVerifiesReplacementHarness(t *testing.T) {
 	}
 	svc := &Service{manager: fc, store: st}
 
-	_, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
+	_, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "", "")
 	if err == nil || !strings.Contains(err.Error(), `uses harness "claude-code", want "codex"`) {
 		t.Fatalf("SpawnOrchestrator err = %v, want harness verification failure", err)
 	}
@@ -3705,36 +4303,23 @@ func TestClaimRowsFromSCMSnapshotsSessionReviewPolicy(t *testing.T) {
 		PR: ports.SCMPRObservation{URL: "https://github.com/acme/repo/pull/7", Number: 7},
 		Review: ports.SCMReviewObservation{
 			Reviews: []ports.SCMReviewSummaryObservation{{ID: "r1", State: string(domain.ReviewChangesRequest), Body: "review body"}},
-			Threads: []ports.SCMReviewThreadObservation{{ID: "t1", Comments: []ports.SCMReviewCommentObservation{{ID: "c1", Body: "inline comment"}}}},
+			Threads: []ports.SCMReviewThreadObservation{{ID: "t1", IsBot: true, Comments: []ports.SCMReviewCommentObservation{{ID: "c1", Author: "human", IsBot: false, Body: "inline comment"}}}},
 		},
 	}
 	for _, autoInject := range []bool{false, true} {
 		t.Run(fmt.Sprintf("auto_inject_%t", autoInject), func(t *testing.T) {
-			_, _, reviews, _, comments := claimRowsFromSCM("mer-1", obs, now, domain.SessionRecord{AutoInjectReview: autoInject})
+			_, _, reviews, _, comments := claimRowsFromSCM("mer-1", obs, ports.ReviewWriteReplace, now, domain.SessionRecord{AutoInjectReview: autoInject})
 			if len(reviews) != 1 || reviews[0].AutoInjectReview != autoInject {
 				t.Fatalf("reviews = %+v, want policy %t", reviews, autoInject)
 			}
 			if len(comments) != 1 || comments[0].AutoInjectReview != autoInject {
 				t.Fatalf("comments = %+v, want policy %t", comments, autoInject)
 			}
+			if comments[0].IsBot {
+				t.Fatalf("human comment in bot-started thread was persisted as bot-authored: %+v", comments[0])
+			}
 		})
 	}
-}
-
-// noopSCMProvider implements scmProvider but always fails ParseRepository
-// to exercise the scmRepoForClaim fallback path.
-type noopSCMProvider struct{}
-
-func (noopSCMProvider) ParseRepository(string) (ports.SCMRepo, bool) { return ports.SCMRepo{}, false }
-func (noopSCMProvider) FetchPullRequests(_ context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error) {
-	out := make([]ports.SCMObservation, len(refs))
-	for i := range out {
-		out[i].Error = ports.ErrSCMNotFound
-	}
-	return out, nil
-}
-func (noopSCMProvider) FetchReviewThreads(context.Context, ports.SCMPRRef) (ports.SCMReviewObservation, error) {
-	return ports.SCMReviewObservation{}, nil
 }
 
 func (f fakeSCM) ParseRepository(remote string) (ports.SCMRepo, bool) {
@@ -3875,6 +4460,245 @@ func TestClaimPRAllowsDraftPR(t *testing.T) {
 	}
 	if len(res.PRs) != 1 || res.PRs[0].URL != "https://github.com/acme/repo/pull/7" || !res.PRs[0].Draft {
 		t.Fatalf("claim result = %+v, want the draft PR", res.PRs)
+	}
+}
+
+type fakeOutputTypeReconciler struct {
+	reconciled []domain.SessionID
+	err        error
+}
+
+func (f *fakeOutputTypeReconciler) ReconcileSessionOutputType(_ context.Context, id domain.SessionID) error {
+	f.reconciled = append(f.reconciled, id)
+	return f.err
+}
+
+// A session that already produced artifacts must flip to pr OutputType as
+// soon as a PR is claimed, not on the next artifact-output poll tick — the
+// same immediacy claiming a PR always had before OutputType was persisted.
+func TestClaimPRReconcilesOutputTypeImmediately(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata:   domain.SessionMetadata{WorkspacePath: "/ws"},
+		OutputType: domain.SessionOutputArtifact,
+	}
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", RepoOriginURL: "https://github.com/acme/repo"}
+	st.pr["mer-1"] = domain.PRFacts{URL: "https://github.com/acme/repo/pull/7", Number: 7, CI: domain.CIPending}
+
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{
+		Store:     st,
+		PRClaimer: &fakePRClaimer{out: errorFreeClaimOutcome{ports.ClaimOutcome{}}},
+		SCM: fakeSCM{obs: ports.SCMObservation{
+			Fetched: true, Provider: "github", Host: "github.com", Repo: "acme/repo",
+			PR: ports.SCMPRObservation{URL: "https://github.com/acme/repo/pull/7", Number: 7},
+		}},
+		OutputTypeReconciler: reconciler,
+	})
+
+	if _, err := svc.ClaimPR(context.Background(), "mer-1", "7", ClaimPROptions{}); err != nil {
+		t.Fatalf("claim PR: %v", err)
+	}
+	if len(reconciler.reconciled) != 1 || reconciler.reconciled[0] != "mer-1" {
+		t.Fatalf("reconciled = %v, want [mer-1]", reconciler.reconciled)
+	}
+}
+
+// TestGetBackfillsEmptyArtifactDirOnRead covers the review-flagged gap: a
+// session row created before artifact_dir existed carries it as ” (the
+// migration's default), even though session_manager always prompts the
+// agent to write into the deterministic dataDir/artifacts/<id> path. Get
+// must fall back to that derived path immediately, rather than showing no
+// artifacts (and a broken preview root) until the artifact poller's next
+// tick persists the backfill.
+func TestGetBackfillsEmptyArtifactDirOnRead(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "report.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: ""},
+	}
+
+	got, err := (&Service{store: st, dataDir: dataDir}).Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata.ArtifactDir != artifactDir {
+		t.Fatalf("ArtifactDir = %q, want backfilled %q", got.Metadata.ArtifactDir, artifactDir)
+	}
+	if len(got.ArtifactFiles) != 1 || got.ArtifactFiles[0].Name != "report.html" {
+		t.Fatalf("ArtifactFiles = %+v, want [report.html]", got.ArtifactFiles)
+	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("OutputType = %q, want %q reflected in this same response, not just a future one", got.OutputType, domain.SessionOutputArtifact)
+	}
+}
+
+// TestGetBackfillsArtifactDirAndReconcilesEvenForTerminatedSessions is the
+// review regression for a gap in the read-triggered backfill above: the
+// artifact-output poller (observe/artifacts.Observer) explicitly skips
+// terminated sessions, so a terminated legacy row (ArtifactDir == "" from
+// before that column existed) could never get its durable OutputType
+// repaired through the poller alone, leaving its real artifact files hidden
+// from anything that filters on OutputType. Get must trigger the durable
+// reconcile unconditionally of IsTerminated.
+func TestGetBackfillsArtifactDirAndReconcilesEvenForTerminatedSessions(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "report.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		IsTerminated: true,
+		Metadata:     domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: ""},
+	}
+
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{Store: st, DataDir: dataDir, OutputTypeReconciler: reconciler})
+
+	got, err := svc.Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata.ArtifactDir != artifactDir {
+		t.Fatalf("ArtifactDir = %q, want backfilled %q even though the session is terminated", got.Metadata.ArtifactDir, artifactDir)
+	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("OutputType = %q, want %q", got.OutputType, domain.SessionOutputArtifact)
+	}
+	if len(reconciler.reconciled) != 1 || reconciler.reconciled[0] != "mer-1" {
+		t.Fatalf("reconciled = %v, want the durable reconcile triggered for the terminated session too", reconciler.reconciled)
+	}
+}
+
+// A terminated session whose agent wrote an artifact before any reconcile ran
+// keeps a persisted ArtifactDir but a stale OutputType of none, and the
+// artifact poller skips terminated sessions. Get must repair it durably.
+func TestGetReconcilesTerminatedSessionWithPersistedDirAndUnreconciledArtifact(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "notes.md"), []byte("# notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		IsTerminated: true,
+		OutputType:   domain.SessionOutputNone,
+		Metadata:     domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: artifactDir},
+	}
+
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{Store: st, DataDir: dataDir, OutputTypeReconciler: reconciler})
+
+	got, err := svc.Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("OutputType = %q, want %q", got.OutputType, domain.SessionOutputArtifact)
+	}
+	if len(reconciler.reconciled) != 1 || reconciler.reconciled[0] != "mer-1" {
+		t.Fatalf("reconciled = %v, want the durable reconcile triggered on read", reconciler.reconciled)
+	}
+}
+
+func TestGetToleratesUnwalkableArtifactRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permissions are not enforced on Windows")
+	}
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(artifactDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(artifactDir, 0o755) })
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: artifactDir},
+	}
+	svc := NewWithDeps(Deps{Store: st, DataDir: dataDir})
+
+	got, err := svc.Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("Get failed on an unwalkable artifact root: %v", err)
+	}
+	if len(got.ArtifactFiles) != 0 {
+		t.Fatalf("ArtifactFiles = %+v, want empty", got.ArtifactFiles)
+	}
+}
+
+func TestGetDoesNotReconcileWhenPersistedOutputTypeAlreadyHasArtifact(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "notes.md"), []byte("# notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		OutputType: domain.SessionOutputArtifact,
+		Metadata:   domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: artifactDir},
+	}
+
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{Store: st, DataDir: dataDir, OutputTypeReconciler: reconciler})
+	if _, err := svc.Get(context.Background(), "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciler.reconciled) != 0 {
+		t.Fatalf("reconciled = %v, want none for an already-reconciled session", reconciler.reconciled)
+	}
+}
+
+// A reconcile failure must not fail an otherwise-successful claim: the
+// artifact-output poller still corrects OutputType on its next tick.
+func TestClaimPRSucceedsWhenOutputTypeReconcileFails(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Metadata: domain.SessionMetadata{WorkspacePath: "/ws"}}
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", RepoOriginURL: "https://github.com/acme/repo"}
+	st.pr["mer-1"] = domain.PRFacts{URL: "https://github.com/acme/repo/pull/7", Number: 7, CI: domain.CIPending}
+
+	svc := NewWithDeps(Deps{
+		Store:     st,
+		PRClaimer: &fakePRClaimer{out: errorFreeClaimOutcome{ports.ClaimOutcome{}}},
+		SCM: fakeSCM{obs: ports.SCMObservation{
+			Fetched: true, Provider: "github", Host: "github.com", Repo: "acme/repo",
+			PR: ports.SCMPRObservation{URL: "https://github.com/acme/repo/pull/7", Number: 7},
+		}},
+		OutputTypeReconciler: &fakeOutputTypeReconciler{err: errors.New("boom")},
+	})
+
+	if _, err := svc.ClaimPR(context.Background(), "mer-1", "7", ClaimPROptions{}); err != nil {
+		t.Fatalf("claim PR should succeed despite reconcile failure: %v", err)
 	}
 }
 
@@ -4054,7 +4878,7 @@ func TestRequireSameRepoGitLab(t *testing.T) {
 	}{
 		{"matching gitlab", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "https://gitlab.com/castai/ctxd", nil},
 		{"matching github", "https://github.com/owner/repo/pull/42", "https://github.com/owner/repo", nil},
-		{"empty origin allows any", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "", nil},
+		{"empty origin rejects", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "", ErrProjectMismatch},
 		{"mismatch", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "https://github.com/other/repo", ErrProjectMismatch},
 		{"gitlab mismatch repo", "https://gitlab.com/castai/ctxd/-/merge_requests/9", "https://gitlab.com/other/repo", ErrProjectMismatch},
 		// Cross-provider mismatch: same owner/repo name on GitHub and GitLab
@@ -4085,10 +4909,8 @@ func TestRequireSameRepoGitLab(t *testing.T) {
 }
 
 func TestScmRepoForClaimGitLab(t *testing.T) {
-	// When the provider cannot parse the origin, the fallback should detect
-	// GitLab from the PR URL and set Provider="gitlab".
-	var noopProvider noopSCMProvider
-	repo, err := scmRepoForClaim(noopProvider, "", "https://gitlab.com/castai/ctxd/-/merge_requests/9")
+	// The SCM target comes from the claimed URL, including its provider.
+	repo, err := scmRepoForClaim("https://gitlab.com/castai/ctxd/-/merge_requests/9")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4116,6 +4938,28 @@ func TestListPRsOrdersActiveBeforeClosedThenUpdatedDesc(t *testing.T) {
 	}
 }
 
+func TestListPRListingKeepsExternalReportsLinkedAndDedupesTracked(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	st.prs["mer-1"] = []domain.PullRequest{{
+		URL: "https://github.com/acme/app/pull/7", SessionID: "mer-1", Number: 7,
+		CI: domain.CIUnknown, Review: domain.ReviewNone, Mergeability: domain.MergeUnknown,
+		UpdatedAt: time.Now().UTC(),
+	}}
+	st.reportedPRURLs["mer-1"] = []string{
+		"https://www.github.com/ACME/App/pull/007", // tracked through existing SCM facts
+		"https://gitlab.com/release/notes/-/merge_requests/9",
+		"https://gitlab.com/release/notes/-/merge_requests/9", // report retry
+	}
+	got, err := (&Service{store: st}).ListPRListing(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tracked) != 1 || len(got.Linked) != 1 || got.Linked[0].URL != "https://gitlab.com/release/notes/-/merge_requests/9" {
+		t.Fatalf("listing = %+v", got)
+	}
+}
+
 func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPrivate(t *testing.T) {
 	st := newFakeStore()
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
@@ -4133,6 +4977,7 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 		Repo:                     "acme/repo",
 		Title:                    "Fix dashboard",
 		Author:                   "ada",
+		AuthorAvatarURL:          "https://avatars.githubusercontent.com/u/123?v=4",
 		SourceBranch:             "fix/dashboard",
 		TargetBranch:             "main",
 		HeadSHA:                  "abc123",
@@ -4155,6 +5000,12 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 		{Author: "reviewer-a", File: "main.go", Line: 14, Body: "resolved body", URL: "https://github.com/acme/repo/pull/7#discussion_r4", Resolved: true},
 		{Author: "reviewer-a", File: "test.go", Line: 22, Body: "another raw body", URL: "https://github.com/acme/repo/pull/7#discussion_r3", AutoInjectReview: true},
 	}
+	stList.threads[prURL] = []domain.PullRequestReviewThread{
+		{ThreadID: "thread-1"},
+		{ThreadID: "thread-2"},
+		{ThreadID: "thread-3", Resolved: true},
+		{ThreadID: "thread-4", IsBot: true},
+	}
 
 	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
 	if err != nil {
@@ -4167,10 +5018,13 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	if pr.Title != "Fix dashboard" || pr.State != domain.PRStateOpen || pr.Provider != "github" || pr.Repo != "acme/repo" || pr.HeadSHA != "abc123" {
 		t.Fatalf("metadata = %+v", pr)
 	}
+	if pr.Author != "ada" || pr.AuthorAvatarURL != "https://avatars.githubusercontent.com/u/123?v=4" {
+		t.Fatalf("author metadata = %+v", pr)
+	}
 	if len(pr.CI.FailingChecks) != 1 || pr.CI.FailingChecks[0].Name != "unit" || pr.CI.FailingChecks[0].URL == "" {
 		t.Fatalf("failing checks = %+v", pr.CI.FailingChecks)
 	}
-	if pr.Review.Decision != domain.ReviewChangesRequest || !pr.Review.HasUnresolvedHumanComments || len(pr.Review.UnresolvedBy) != 1 {
+	if pr.Review.Decision != domain.ReviewChangesRequest || !pr.Review.HasUnresolvedHumanComments || pr.Review.UnresolvedThreadCount == nil || *pr.Review.UnresolvedThreadCount != 2 || len(pr.Review.UnresolvedBy) != 1 {
 		t.Fatalf("review = %+v", pr.Review)
 	}
 	if reviewer := pr.Review.UnresolvedBy[0]; reviewer.ReviewerID != "reviewer-a" || reviewer.Count != 2 || len(reviewer.Links) != 2 {
@@ -4213,6 +5067,127 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	}
 }
 
+func TestListPRSummariesThreadCountKnownOnlyForCompleteObservations(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	unresolved := []domain.PullRequestReviewThread{{ThreadID: "thread-1"}, {ThreadID: "thread-2"}}
+
+	cases := []struct {
+		name string
+		pr   domain.PullRequest
+		want *int // nil means the count must stay unknown
+	}{
+		{
+			name: "complete observation publishes the exact count",
+			pr:   domain.PullRequest{URL: "https://github.com/acme/repo/pull/1", SessionID: "mer-1", Number: 1, ReviewObservedAt: now},
+			want: intPtrForTest(2),
+		},
+		{
+			name: "partial observation omits the count",
+			pr:   domain.PullRequest{URL: "https://github.com/acme/repo/pull/2", SessionID: "mer-1", Number: 2, ReviewObservedAt: now, ReviewPartial: true},
+			want: nil,
+		},
+		{
+			name: "never-observed reviews omit the count",
+			pr:   domain.PullRequest{URL: "https://github.com/acme/repo/pull/3", SessionID: "mer-1", Number: 3},
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+			stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{tc.pr}}
+			stList.threads[tc.pr.URL] = unresolved
+
+			got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("summaries = %+v", got)
+			}
+			count := got[0].Review.UnresolvedThreadCount
+			if tc.want == nil {
+				if count != nil {
+					t.Fatalf("unresolvedThreadCount = %d, want unknown (nil)", *count)
+				}
+				return
+			}
+			if count == nil || *count != *tc.want {
+				t.Fatalf("unresolvedThreadCount = %v, want %d", count, *tc.want)
+			}
+		})
+	}
+}
+
+func TestListPRSummariesThreadCountSerializesObservedZero(t *testing.T) {
+	// An observed zero must survive the DTO round trip as an explicit 0 rather
+	// than being dropped by omitempty.
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	prURL := "https://github.com/acme/repo/pull/4"
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{{URL: prURL, SessionID: "mer-1", Number: 4, ReviewObservedAt: now}}}
+	stList.threads[prURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", Resolved: true}}
+
+	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := got[0].Review.UnresolvedThreadCount; count == nil || *count != 0 {
+		t.Fatalf("unresolvedThreadCount = %v, want explicit 0", count)
+	}
+}
+
+func TestListPRSummariesDedupesAliasReviewThreads(t *testing.T) {
+	// The same provider thread persisted under two repository-URL aliases of
+	// one canonical PR must count once, with the fresher alias record winning
+	// a disagreement.
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	oldURL := "https://github.com/acme/repo/pull/9"
+	newURL := "https://github.com/acme-corp/repo/pull/9"
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	pr := func(url string) domain.PullRequest {
+		return domain.PullRequest{
+			URL: url, SessionID: "mer-1", Number: 9, Provider: "github",
+			SourceBranch: "fix/alias", HeadSHA: "abc123",
+			ReviewObservedAt: now, UpdatedAt: now,
+		}
+	}
+	stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{pr(oldURL), pr(newURL)}}
+	// Same unresolved thread under both aliases: one thread, not two.
+	stList.threads[oldURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", UpdatedAt: now.Add(-time.Hour)}}
+	stList.threads[newURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", UpdatedAt: now}}
+
+	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("aliases did not group: %+v", got)
+	}
+	if count := got[0].Review.UnresolvedThreadCount; count == nil || *count != 1 {
+		t.Fatalf("unresolvedThreadCount = %v, want 1", count)
+	}
+
+	// Conflicting aliases: the old alias still has the thread unresolved, the
+	// newer alias records it resolved. The fresher record wins, so the exact
+	// count is 0.
+	stList.threads[oldURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", UpdatedAt: now.Add(-time.Hour)}}
+	stList.threads[newURL] = []domain.PullRequestReviewThread{{ThreadID: "thread-1", Resolved: true, UpdatedAt: now}}
+
+	got, err = (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := got[0].Review.UnresolvedThreadCount; count == nil || *count != 0 {
+		t.Fatalf("unresolvedThreadCount = %v, want 0", count)
+	}
+}
+
+func intPtrForTest(v int) *int { return &v }
+
 func TestSummarizeReviewSurfacesSubmittedReviewSummaries(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	reviews := []domain.PullRequestReview{
@@ -4223,7 +5198,7 @@ func TestSummarizeReviewSurfacesSubmittedReviewSummaries(t *testing.T) {
 		{ID: "c", Author: "charlie", State: domain.ReviewNone, Body: "non-blocking suggestion", URL: "url-c", SubmittedAt: now},
 	}
 
-	got := summarizeReview(domain.PullRequest{URL: "u", Review: domain.ReviewChangesRequest}, nil, reviews)
+	got := summarizeReview(domain.PullRequest{URL: "u", Review: domain.ReviewChangesRequest}, nil, reviews, nil, false)
 
 	byReviewer := map[string]PRReviewEntry{}
 	for _, entry := range got.Reviews {
@@ -4616,7 +5591,7 @@ func TestToSessionWithFactsRemapsTransferredAliasReviewRuns(t *testing.T) {
 		CreatedAt: rec.UpdatedAt,
 	}}
 
-	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
+	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(context.Background(), rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4674,7 +5649,7 @@ func TestToSessionWithFactsCanonicalAliasRunSupersedesOlderAliasRun(t *testing.T
 		},
 	}
 
-	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
+	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(context.Background(), rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4779,5 +5754,69 @@ func TestSpawnTelemetryCarriesRequestID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGetReconcilesWhenPersistedArtifactOutputHasNoFilesLeft(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		OutputType: domain.SessionOutputArtifact,
+		Metadata:   domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: artifactDir},
+	}
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{Store: st, DataDir: dataDir, OutputTypeReconciler: reconciler})
+
+	got, err := svc.Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OutputType.HasArtifact() {
+		t.Fatalf("OutputType = %q, want no artifact once the directory is empty", got.OutputType)
+	}
+	if len(reconciler.reconciled) != 1 {
+		t.Fatalf("reconciled = %v, want the removal persisted", reconciler.reconciled)
+	}
+}
+
+func (f *fakeStore) GetSessionCleanupFacts(_ context.Context, id domain.SessionID) (domain.SessionCleanupRecord, bool, error) {
+	rec, ok := f.cleanupFacts[id]
+	return rec, ok, nil
+}
+func (f *fakeCommander) RequestKill(ctx context.Context, id domain.SessionID) (sessionmanager.KillResult, error) {
+	freed, err := f.Kill(ctx, id)
+	return sessionmanager.KillResult{Freed: freed}, err
+}
+
+func TestSessionReadsExposeOnlyCurrentTerminatedCleanupFacts(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", IsTerminated: true, CleanupGeneration: 2}
+	st.cleanupFacts = map[domain.SessionID]domain.SessionCleanupRecord{
+		"mer-1": {SessionID: "mer-1", SessionGeneration: 2, WorkspaceDisposition: domain.DispositionFailed},
+	}
+	svc := &Service{store: st}
+	for _, tc := range []struct {
+		terminated bool
+		generation int64
+		want       domain.WorkspaceDisposition
+	}{
+		{true, 2, domain.DispositionFailed}, {false, 2, ""}, {true, 3, ""},
+	} {
+		rec := st.sessions["mer-1"]
+		rec.IsTerminated, rec.CleanupGeneration = tc.terminated, tc.generation
+		st.sessions[rec.ID] = rec
+		got, err := svc.Get(context.Background(), rec.ID)
+		if err != nil || got.WorkspaceCleanup != tc.want {
+			t.Fatalf("cleanup=%q want=%q err=%v", got.WorkspaceCleanup, tc.want, err)
+		}
+		list, err := svc.List(context.Background(), ListFilter{})
+		if err != nil || len(list) != 1 || list[0].WorkspaceCleanup != tc.want {
+			t.Fatalf("list=%+v err=%v", list, err)
+		}
 	}
 }

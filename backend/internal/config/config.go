@@ -45,8 +45,9 @@ const (
 	ClientElevenX = "eleven_x"
 
 	// defaultCloudControlPlaneURL is the control plane a build talks to when no
-	// override is set. Staging while the offering is in its dogfooding phase.
-	defaultCloudControlPlaneURL = "https://staging-api.aoagents.dev"
+	// override is set. Production, now that the hosted offering is live;
+	// AO_CLOUD_CONTROL_PLANE_URL still overrides it (e.g. staging-api for dev).
+	defaultCloudControlPlaneURL = "https://api.aoagents.dev"
 )
 
 // TelemetryRemote selects the remote telemetry exporter.
@@ -139,14 +140,9 @@ type Config struct {
 	// Agent is the compatibility agent adapter id selected by AO_AGENT;
 	// startSession fails fast if no adapter with this id is registered.
 	Agent string
-	// AppRunID identifies one desktop-app launch. The Electron supervisor mints
-	// it and passes it down (AO_APP_RUN_ID), holding it constant across daemon
-	// restarts it performs, so standalone shell terminals can survive a daemon
-	// restart while still being reaped when the APP itself goes away.
-	//
-	// Empty means no supervising app (a bare `ao daemon`): the daemon mints a
-	// fresh id per boot, which correctly makes any surviving shell terminals
-	// from an earlier run look like orphans and get cleaned up.
+	// AppRunID identifies one desktop-app launch and scopes transient command
+	// terminals to it. User shells survive across launches. The supervisor keeps
+	// this constant across daemon restarts; bare daemons mint a fresh id per boot.
 	AppRunID string
 	// AllowedOrigins are the browser origins granted CORS read access (see
 	// DefaultAllowedOrigins). Overridden by AO_ALLOWED_ORIGINS.
@@ -160,6 +156,9 @@ type Config struct {
 	// GitLab carries the self-managed GitLab host allowlist and per-host
 	// token overrides, loaded once at boot from environment variables.
 	GitLab GitLabConfig
+	// TrackerIntake gates the issue-intake observer daemon-wide
+	// (AO_TRACKER_INTAKE).
+	TrackerIntake bool
 	// Client identifies which client this deployment serves (AO_CLIENT). Empty
 	// means no client identity, which keeps client-gated offerings off.
 	Client string
@@ -342,6 +341,14 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 		cfg.GitLab.HostTokens = tokens
+	}
+
+	if raw, ok := os.LookupEnv("AO_TRACKER_INTAKE"); ok && strings.TrimSpace(raw) != "" {
+		v, err := parseToggleEnv("AO_TRACKER_INTAKE", raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.TrackerIntake = v
 	}
 
 	if raw := os.Getenv("AO_CLIENT"); raw != "" {

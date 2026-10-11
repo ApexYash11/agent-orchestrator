@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildCommands,
+	buildFileSessionCommands,
 	buildSessionActions,
+	buildWorkspaceFileCommands,
 	filterCommands,
 	groupCommands,
 	displayGroups,
@@ -13,7 +15,13 @@ import {
 	type CommandItem,
 } from "./command-palette";
 import type { PRReviewState } from "./session-reviews";
-import type { PullRequestFacts, WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import {
+	STANDALONE_PROJECT_KIND,
+	STANDALONE_WORKSPACE_ID,
+	type PullRequestFacts,
+	type WorkspaceSession,
+	type WorkspaceSummary,
+} from "../types/workspace";
 import { appI18n } from "../i18n";
 
 function session(overrides: Partial<WorkspaceSession> & { id: string }): WorkspaceSession {
@@ -73,6 +81,47 @@ describe("findSession", () => {
 	});
 });
 
+describe("workspace file commands", () => {
+	it("offers file search for a current worker session and excludes orchestrators", () => {
+		const items = buildCommands({ workspaces: workspaces(), currentProjectId: "proj-1", currentSessionId: "w-working" });
+		expect(byId(items).get("current-search-files")?.action).toEqual({
+			kind: "open-file-search",
+			projectId: "proj-1",
+			target: { projectId: "proj-1", sessionId: "w-working" },
+		});
+
+		const picker = buildFileSessionCommands(workspaces()[0]!);
+		expect(picker.some((item) => item.title === "orchestrate")).toBe(false);
+	});
+
+	it("sorts active worktrees before terminated ones and omits unready worktrees", () => {
+		const workspace: WorkspaceSummary = {
+			...workspaces()[0]!,
+			sessions: [
+				session({ id: "done", status: "terminated" }),
+				session({ id: "starting", provisionState: "provisioning" }),
+				session({ id: "live", status: "working" }),
+			],
+		};
+		expect(buildFileSessionCommands(workspace).map((item) => item.title)).toEqual(["live", "done"]);
+	});
+
+	it("uses basenames as titles, full paths as keywords, and ranks basename matches first", () => {
+		const target = { projectId: "proj-1", sessionId: "w-working" };
+		const items = buildWorkspaceFileCommands(target, [
+			{ path: "docs/app/guide.md" },
+			{ path: "src/App.tsx" },
+		]);
+		expect(items[1]).toMatchObject({
+			id: "file:local:w-working:src/App.tsx",
+			title: "App.tsx",
+			subtitle: "src",
+			keywords: expect.arrayContaining(["src/App.tsx"]),
+		});
+		expect(filterCommands(items, "app").map((item) => item.title)).toEqual(["App.tsx", "guide.md"]);
+	});
+});
+
 describe("buildCommands grouping", () => {
 	it("uses the translator supplied by the reactive caller", () => {
 		const items = buildCommands(
@@ -128,6 +177,13 @@ describe("buildCommands grouping", () => {
 		rows[0].sessions.push(session({ id: "proj-1-orchestrator", title: "legacy orch", branch: "main" }));
 		const items = buildCommands({ workspaces: rows, currentSessionId: "proj-1-orchestrator" });
 		expect(byId(items).has("current-copy-branch")).toBe(false);
+	});
+});
+
+describe("buildCommands global", () => {
+	it("offers a Go to home command that navigates to the root route", () => {
+		const home = buildCommands({ workspaces: [] }).find((item) => item.id === "global-home");
+		expect(home).toMatchObject({ group: "global", action: { kind: "navigate", target: { to: "/" } } });
 	});
 });
 
@@ -611,6 +667,24 @@ describe("buildSessionActions", () => {
 		expect(items[0].action).toEqual({
 			kind: "navigate",
 			target: { to: "/projects/$projectId/sessions/$sessionId", params: { projectId: "proj-1", sessionId: "live" } },
+		});
+	});
+
+	it("routes a standalone session through the projectless session route", () => {
+		const standaloneWorkspace: WorkspaceSummary = {
+			id: STANDALONE_WORKSPACE_ID,
+			name: "Standalone agents",
+			kind: STANDALONE_PROJECT_KIND,
+			path: "",
+			sessions: [],
+		};
+		const items = buildSessionActions(
+			standaloneWorkspace,
+			session({ id: "standalone-1", workspaceId: "", workspaceName: "Standalone agents", branch: undefined }),
+		);
+		expect(items[0].action).toEqual({
+			kind: "navigate",
+			target: { to: "/sessions/$sessionId", params: { sessionId: "standalone-1" } },
 		});
 	});
 

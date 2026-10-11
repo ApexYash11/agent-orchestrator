@@ -1,17 +1,19 @@
-import { memo, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
+	scmUserAvatarUrl,
 	SessionCardView,
 	SessionUsageMetricView,
 	type BoardPullRequestLabels,
+	type BoardPullRequestProgress,
 	type BoardSessionPresentation,
 	type BoardColumnLabels,
 	type BoardUsagePresentation,
 	type ProductUITranslator,
 } from "@aoagents/product-ui";
-import { Check, Copy, GitBranch, LoaderCircle, RotateCcw, Trash2 } from "lucide-react";
+import { Archive, Check, Copy, GitBranch, LoaderCircle, RotateCcw } from "lucide-react";
 import type { MessageKey } from "../i18n";
 import { aoBridge } from "../lib/bridge";
 import { formatTimeCompact } from "../lib/format-time";
@@ -22,9 +24,12 @@ import {
 	agentSwitchStatusVisual,
 	deriveSessionAgentSwitchPresentation,
 } from "../lib/agent-switch-presentation";
+import { agentLabel } from "../lib/agent-options";
 import type { WorkspaceSession } from "../types/workspace";
 import { canonicalTrackerIssueId } from "../types/workspace";
-import { useSessionScmSummary, type SessionPRSummary } from "../hooks/useSessionScmSummary";
+import { formatCPU, formatMemory, type SessionMemoryReading } from "../hooks/useSessionMemory";
+import type { ChipTone } from "@aoagents/product-ui";
+import { useSessionScmSummary } from "../hooks/useSessionScmSummary";
 import type { SessionUsageSummary } from "../hooks/useSessionUsageSummaries";
 import {
 	clearTerminateSessionState,
@@ -33,7 +38,7 @@ import {
 import { cn } from "../lib/utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { ProductExternalLink } from "./ProductExternalLink";
-import { SessionTerminationPopover } from "./SessionTerminationPopover";
+import { SessionArchiveDialog } from "./SessionArchiveDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 export function toBoardSessionPresentation(
@@ -42,23 +47,44 @@ export function toBoardSessionPresentation(
 ): BoardSessionPresentation {
 	const switchPresentation = deriveSessionAgentSwitchPresentation(session);
 	const switchVisual = switchPresentation ? agentSwitchStatusVisual(switchPresentation) : undefined;
+	const provisioningStatus =
+		session.provisionState === "provisioning"
+			? {
+					className: "text-status-working",
+					indicatorClassName: "bg-status-working animate-status-pulse",
+					label: `Starting ${agentLabel(session.provider)}…`,
+					tone: "var(--color-status-working)",
+				}
+			: undefined;
+	const failedStartStatus =
+		session.provisionState === "failed"
+			? {
+					className: "text-status-exited",
+					indicatorClassName: "bg-status-exited",
+					label: "Start failed",
+					tone: "var(--color-status-exited)",
+				}
+			: undefined;
 	return {
 		activity: session.activity,
 		branch: session.branch,
 		id: session.id,
+		isTerminated: session.isTerminated,
 		kanbanColumn: session.kanbanColumn,
 		displayStatus: session.displayStatus,
 		provider: session.provider,
 		status: session.status,
+		statusReadiness: session.statusReadiness,
 		statusPresentation:
-			t && switchPresentation && switchVisual
+			provisioningStatus ?? failedStartStatus ??
+			(t && switchPresentation && switchVisual
 				? {
 						className: switchVisual.className,
 						indicatorClassName: `${switchVisual.indicatorClassName}${switchVisual.breathe ? " animate-status-pulse" : ""}`,
 						label: t(switchPresentation.compactLabelKey, switchPresentation.values),
 						tone: switchVisual.tone,
 					}
-				: undefined,
+				: undefined),
 		title: session.title,
 		trackerIssueId: canonicalTrackerIssueId(session.issueId),
 		updatedAt: session.updatedAt,
@@ -72,28 +98,37 @@ export function sessionsBoardLabels(t: TFunction): BoardColumnLabels {
 	};
 }
 
-export const BoardSessionCardAdapter = memo(function BoardSessionCardAdapter({
-	onOpenSession,
-	onTerminateSession,
+export function BoardSessionCardAdapter({
+	memory,
+	memoryTone,
+	onOpen,
+	onTerminate,
 	session,
 	usage,
 }: {
-	onOpenSession: (session: WorkspaceSession) => void;
-	onTerminateSession: (session: WorkspaceSession) => void;
+	/** Live reading of the session's process tree, for the card's resource chip. */
+	memory?: SessionMemoryReading;
+	/** Colour for the chip; neutral unless this card is part of the fix. */
+	memoryTone?: ChipTone;
+	onOpen: () => void;
+	onTerminate?: () => void;
 	session: WorkspaceSession;
 	usage?: SessionUsageSummary;
 }) {
 	return (
 		<DesktopSessionCard
-			onOpen={() => onOpenSession(session)}
-			onTerminate={() => onTerminateSession(session)}
+			memory={memory}
+			memoryTone={memoryTone}
+			onOpen={onOpen}
+			onTerminate={onTerminate}
 			session={session}
 			usage={usage}
 		/>
 	);
-});
+}
 
 export function ArchivedSessionCardAdapter({
+	hideTerminatedStatus = false,
 	isRestoreDisabled,
 	isRestoring,
 	restoreAction,
@@ -101,6 +136,7 @@ export function ArchivedSessionCardAdapter({
 	session,
 	usage,
 }: {
+	hideTerminatedStatus?: boolean;
 	isRestoreDisabled: boolean;
 	isRestoring: boolean;
 	restoreAction: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -111,6 +147,7 @@ export function ArchivedSessionCardAdapter({
 	const branch = session.branch ?? "";
 	return (
 		<DesktopSessionCard
+			hideTerminatedStatus={hideTerminatedStatus}
 			action={
 				<ArchiveRestoreButton
 					isDisabled={isRestoreDisabled}
@@ -128,11 +165,14 @@ export function ArchivedSessionCardAdapter({
 	);
 }
 
-const DesktopSessionCard = memo(function DesktopSessionCard({
+function DesktopSessionCard({
 	action,
 	branchAction,
 	footer,
+	hideTerminatedStatus = false,
 	interactive = true,
+	memory,
+	memoryTone,
 	onOpen,
 	onTerminate,
 	session,
@@ -141,7 +181,10 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 	action?: ReactNode;
 	branchAction?: ReactNode;
 	footer?: ReactNode;
+	hideTerminatedStatus?: boolean;
 	interactive?: boolean;
+	memory?: SessionMemoryReading;
+	memoryTone?: ChipTone;
 	onOpen?: () => void;
 	onTerminate?: () => void;
 	session: WorkspaceSession;
@@ -150,18 +193,22 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const [confirmOpen, setConfirmOpen] = useState(false);
-	const summaries = sessionPRDisplaySummaries(session, useSessionScmSummary(session.id).data);
-	const termination = useTerminateSessionState(session.id);
+	const summaries = sessionPRDisplaySummaries(
+		session,
+		useSessionScmSummary(session.id, true, session.cloud?.orgId, session.cloud?.orgId ? session.autoInjectCI === true : false, session.hostId).data?.prs,
+	);
+	const termination = useTerminateSessionState(session.id, session.hostId);
 	const showTerminate = interactive && session.isTerminated !== true && onTerminate;
 	const keepTerminateVisible = session.status === "merged";
 	const usagePresentation = toUsagePresentation(usage, t);
+	const resourcePresentation = toResourcePresentation(memory, session.activity?.state === "active", memoryTone, t);
 	const translate: ProductUITranslator = (key, values) => t(key as MessageKey, values);
 
 	const terminationOverlay = showTerminate ? (
 		<Tooltip>
 			<TooltipTrigger asChild>
 				<span className="inline-flex">
-					<SessionTerminationPopover
+					<SessionArchiveDialog
 						onConfirm={() => {
 							setConfirmOpen(false);
 							onTerminate();
@@ -173,18 +220,20 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 							<button
 								aria-label={
 									termination.isPending
-										? t("shell.killingNamedAria", { title: session.title })
-										: t("shell.terminateNamed", { title: session.title })
+										? t("shell.archivingNamedAria", { title: session.title })
+										: t("shell.archiveNamed", { title: session.title })
 								}
 								className={cn(
-									"inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-[color,background-color,opacity] hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+									"inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-[color,background-color,opacity] hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
 									keepTerminateVisible || termination.isPending
 										? "opacity-100"
 										: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
 								)}
 								onClick={(event) => {
 									event.stopPropagation();
-									clearTerminateSessionState(queryClient, session.id);
+									clearTerminateSessionState(queryClient, session.id, session.hostId);
+									// Always open the confirm; the modal owns its own dismissal.
+									setConfirmOpen(true);
 								}}
 								disabled={termination.isPending}
 								type="button"
@@ -192,7 +241,7 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 								{termination.isPending ? (
 									<LoaderCircle className="size-icon-sm animate-spin" aria-hidden="true" />
 								) : (
-									<Trash2 className="size-icon-sm" aria-hidden="true" />
+									<Archive className="size-icon-sm" aria-hidden="true" />
 								)}
 							</button>
 						}
@@ -200,7 +249,7 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 				</span>
 			</TooltipTrigger>
 			<TooltipContent side="bottom">
-				{termination.isPending ? t("shell.killingSession") : t("shell.terminateSession")}
+				{termination.isPending ? t("shell.archivingSession") : t("shell.archiveSession")}
 			</TooltipContent>
 		</Tooltip>
 	) : undefined;
@@ -212,7 +261,11 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 			branchIcon={<GitBranch aria-hidden="true" className="size-icon-2xs shrink-0" />}
 			error={termination.error ?? undefined}
 			externalLink={ProductExternalLink}
-			footer={footer}
+			footer={
+				<>
+					{footer}
+				</>
+			}
 			interactive={interactive}
 			labels={{
 				formatTime: formatTimeCompact,
@@ -222,19 +275,28 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 					t("shell.lastMessageAt", { time: formatTimeCompact(timestamp) }),
 			}}
 			onOpen={onOpen}
+			resource={resourcePresentation}
 			overlay={terminationOverlay}
 			prs={summaries.map((pr) => ({
 				commentCount: pr.review.unresolvedBy.reduce((count, reviewer) => count + reviewer.count, 0),
 				number: pr.number,
-				reviewerAvatars: (pr.review.reviews ?? []).map((review) => ({
-					login: review.reviewerId,
-					url: reviewerAvatarUrl(pr, review.reviewerId),
+				reviewers: Array.from(
+					new Map(
+						pr.review.unresolvedBy.map((reviewer) => [reviewer.reviewerId, reviewer]),
+					).values(),
+				).map((reviewer) => ({
+					avatarUrl: scmUserAvatarUrl(pr.provider, prBrowserUrl(pr), reviewer.reviewerId),
+					id: reviewer.reviewerId,
 				})),
 				state: pr.state,
 				url: prBrowserUrl(pr),
 			}))}
 			renderAvatar={(provider) => <AgentAvatar provider={provider} />}
-			session={toBoardSessionPresentation(session, t)}
+			session={
+				hideTerminatedStatus
+					? hideTerminatedCardStatus(toBoardSessionPresentation(session, t))
+					: toBoardSessionPresentation(session, t)
+			}
 			translate={translate}
 			renderUsage={(usage) => (
 				<Tooltip>
@@ -247,10 +309,28 @@ const DesktopSessionCard = memo(function DesktopSessionCard({
 			usage={usagePresentation}
 		/>
 	);
-});
+}
+
+function hideTerminatedCardStatus(session: BoardSessionPresentation): BoardSessionPresentation {
+	const terminated =
+		session.displayStatus === "Terminated" ||
+		(session.status === "terminated" && !session.displayStatus);
+	if (!terminated) return session;
+	return {
+		...session,
+		displayStatus: undefined,
+		statusPresentation: {
+			className: "hidden",
+			indicatorClassName: "hidden",
+			label: "",
+			tone: "transparent",
+		},
+	};
+}
 
 function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 	return {
+		progress: (progress) => pullRequestProgressLabel(progress, t),
 		short: t("pr.short"),
 		states: {
 			closed: t("pr.state.closed"),
@@ -261,22 +341,43 @@ function pullRequestLabels(t: TFunction): BoardPullRequestLabels {
 	};
 }
 
-function reviewerAvatarUrl(pr: SessionPRSummary, reviewerId: string): string | undefined {
-	let origin: string;
-	try {
-		origin = new URL(prBrowserUrl(pr)).origin;
-	} catch {
-		return undefined;
-	}
-
-	const encodedReviewer = encodeURIComponent(reviewerId);
-	if (pr.provider === "github") return `${origin}/${encodedReviewer}.png`;
-	if (pr.provider === "gitlab") return `${origin}/-/avatar?username=${encodedReviewer}`;
-	return undefined;
+function pullRequestProgressLabel(
+	{ closed, draft, merged, open, total }: BoardPullRequestProgress,
+	t: TFunction,
+): string {
+	return [
+		t("pr.progress.merged", { count: total, merged }),
+		open > 0 ? t("pr.progress.open", { count: open }) : undefined,
+		draft > 0 ? t("pr.progress.draft", { count: draft }) : undefined,
+		closed > 0 ? t("pr.progress.closed", { count: closed }) : undefined,
+	]
+		.filter((part): part is string => part !== undefined)
+		.join(" · ");
 }
 
 // Keep the board metric scannable by showing cost only. The full cost/token
 // summary remains available from the hover tooltip and to screen readers.
+/** "1.4 GB · 82%" while working, just "240 MB" while idle: an idle agent is
+ * always at 0% and printing it is noise. */
+function toResourcePresentation(
+	memory: SessionMemoryReading | undefined,
+	working: boolean,
+	tone: ChipTone | undefined,
+	t: TFunction,
+): (BoardUsagePresentation & { tone?: ChipTone }) | undefined {
+	if (!memory || memory.rssBytes <= 0) return undefined;
+	const size = formatMemory(memory.rssBytes);
+	if (!working) {
+		return { accessibleLabel: t("shell.sessionMemoryAria", { size }), compactLabel: size, tone };
+	}
+	const cpu = formatCPU(memory.cpuPercent);
+	return {
+		accessibleLabel: t("shell.sessionResourceAria", { size, cpu }),
+		compactLabel: `${size} · ${cpu}`,
+		tone,
+	};
+}
+
 function toUsagePresentation(
 	usage: SessionUsageSummary | undefined,
 	t: TFunction,

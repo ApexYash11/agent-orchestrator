@@ -1,11 +1,20 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import { CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, FOCUS_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL, SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, SET_TERMINAL_FOCUSED_CHANNEL, TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL, type KeybindingOverrides } from "./shared/shortcuts";
+import { APP_SHORTCUT_CHANNEL, CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL, SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, SET_TERMINAL_FOCUSED_CHANNEL, TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL, type AppShortcutEvent, type KeybindingOverrides } from "./shared/shortcuts";
+import {
+	SET_CHAT_DRAFT_RISK_CHANNEL,
+	type ChatDraftBoundaryKind,
+	type ChatDraftDialogCopy,
+} from "./shared/chat-draft-risk";
 import type {
 	BrowserAgentActivityState,
 	BrowserDevToolsInput,
 	BrowserDevToolsState,
+	BrowserFindInput,
+	BrowserFindState,
+	BrowserFindStopInput,
 	BrowserNavState,
 	BrowserRect,
+	BrowserRuntimeState,
 	BrowserTabsState,
 } from "./main/browser-view-host";
 import {
@@ -16,6 +25,9 @@ import {
 	type TrayOpenSessionTarget,
 } from "./shared/tray";
 import type { DaemonStatus } from "./shared/daemon-status";
+import type { RemoteHostView } from "./main/remotes-ipc";
+import type { ConnectedHostView } from "./main/remote-registry";
+import type { RemoteHealth } from "./main/remote-request";
 import type {
 	EditorHandoffState,
 	OpenSessionTargetInput,
@@ -31,7 +43,7 @@ import {
 	type TelemetryPolicyView,
 } from "./shared/telemetry-policy";
 import type { MigrationState } from "./main/app-state";
-import type { UpdateSettings, UpdateStatus } from "./main/update-settings";
+import type { UpdateSettings, UpdateStatus, UpdateInstallResult } from "./main/update-settings";
 import type { CloudAccount } from "./shared/cloud-account";
 import type { LocalLoginInput, LocalRegisterInput } from "./main/cloud-auth-local";
 import type {
@@ -48,8 +60,12 @@ import {
 	type AgentSwitchVisibilitySignalBody,
 } from "./shared/agent-switch-observability";
 import type {
+	BrowserAnnotationActionInput,
 	BrowserAnnotationCancelPayload,
+	BrowserAnnotationCompleteInput,
+	BrowserAnnotationDiscardInput,
 	BrowserAnnotationModeInput,
+	BrowserAnnotationStatePayload,
 	BrowserAnnotationSubmitPayload,
 } from "./shared/browser-annotations";
 import type {
@@ -62,10 +78,15 @@ import type {
 import type {
 	BrowserHistorySuggestion,
 	BrowserImportDiscovery,
+	BrowserImportDiscoveryRequest,
 	BrowserImportProgress,
 	BrowserImportRequest,
 	BrowserImportResult,
 } from "./shared/browser-profile-import";
+import type {
+	BrowserDownloadActionInput,
+	BrowserDownloadsState,
+} from "./shared/browser-downloads";
 
 if (typeof document !== "undefined") {
 	const markNativeBrowserComposition = () => {
@@ -84,9 +105,12 @@ if (typeof document !== "undefined") {
 
 export type BrowserBoundsInput = {
 	viewId: string;
+	revision: number;
 	rect: BrowserRect;
 	visible: boolean;
 };
+
+export type BrowserBoundsApplied = BrowserBoundsInput;
 
 export type BrowserNavigateInput = {
 	viewId: string;
@@ -102,6 +126,8 @@ export type ImportRepoScan = {
 	branch: string;
 	remote: string;
 	hasRemote: boolean;
+	isRepo: boolean;
+	hasCommit: boolean;
 	status?: "ok" | "error";
 	reason?: string;
 	needsGitInit?: boolean;
@@ -159,7 +185,8 @@ function isRendererQueuePurgeRequest(value: unknown): value is RendererTelemetry
 const api = {
 	app: {
 		getVersion: () => ipcRenderer.invoke("app:getVersion") as Promise<string>,
-		chooseDirectory: (title?: string) => ipcRenderer.invoke("app:chooseDirectory", title) as Promise<string | null>,
+		chooseDirectory: (input?: string | { title?: string; defaultPath?: string }) => ipcRenderer.invoke("app:chooseDirectory", input) as Promise<string | null>,
+		checkGitRepository: (remoteUrl: string) => ipcRenderer.invoke("app:checkGitRepository", remoteUrl) as Promise<boolean>,
 		openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url) as Promise<void>,
 		scanImportFolder: (input: { path: string; mode: ImportFolderMode }) =>
 			ipcRenderer.invoke("app:scanImportFolder", input) as Promise<ImportFolderScan>,
@@ -167,6 +194,11 @@ const api = {
 			ipcRenderer.invoke("app:checkAncestorRepo", path) as Promise<string | undefined>,
 		getRepositoryBranch: (path: string) =>
 			ipcRenderer.invoke("app:getRepositoryBranch", path) as Promise<string | undefined>,
+		getGitHubLogin: (repoPath?: string) => ipcRenderer.invoke("app:getGitHubLogin", repoPath) as Promise<string>,
+		getCachedGitHubOwners: () => ipcRenderer.invoke("app:getCachedGitHubOwners") as Promise<Array<{ login: string; avatarUrl: string }>>,
+		refreshGitHubOwners: () => ipcRenderer.invoke("app:refreshGitHubOwners") as Promise<Array<{ login: string; avatarUrl: string }>>,
+		checkGitHubRepositoryAvailability: (input: { owner: string; name: string }) =>
+			ipcRenderer.invoke("app:checkGitHubRepositoryAvailability", input) as Promise<{ available: boolean; message?: string }>,
 		// Resolves a dropped File's real filesystem path. Synchronous passthrough
 		// (not ipcRenderer.invoke — a File can't cross that boundary) so it must be
 		// called directly on the File from a drop event, in the same tick, per
@@ -220,6 +252,9 @@ const api = {
 		setCloseShellTerminalShortcutEnabled: (enabled: boolean) => {
 			ipcRenderer.send(SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, enabled);
 		},
+		setChatDraftRisk: (risks: readonly ChatDraftBoundaryKind[], copy?: ChatDraftDialogCopy) => {
+			ipcRenderer.send(SET_CHAT_DRAFT_RISK_CHANNEL, risks, copy);
+		},
 		onOpenSettingsShortcut: (listener: () => void) => {
 			const wrapped = () => listener();
 			ipcRenderer.on(OPEN_SETTINGS_SHORTCUT_CHANNEL, wrapped);
@@ -255,18 +290,19 @@ const api = {
 				ipcRenderer.off(NEXT_TAB_SHORTCUT_CHANNEL, wrapped);
 			};
 		},
-		onFocusTerminalShortcut: (listener: () => void) => {
-			const wrapped = () => listener();
-			ipcRenderer.on(FOCUS_TERMINAL_SHORTCUT_CHANNEL, wrapped);
+		onShortcut: (listener: (event: AppShortcutEvent) => void) => {
+			const wrapped = (_event: unknown, shortcut: AppShortcutEvent) => listener(shortcut);
+			ipcRenderer.on(APP_SHORTCUT_CHANNEL, wrapped);
 			return () => {
-				ipcRenderer.off(FOCUS_TERMINAL_SHORTCUT_CHANNEL, wrapped);
+				ipcRenderer.off(APP_SHORTCUT_CHANNEL, wrapped);
 			};
 		},
 	},
 	terminal: {
 		saveDroppedFile: (input: { name: string; bytes: Uint8Array }) =>
 			ipcRenderer.invoke("terminal:saveDroppedFile", input) as Promise<string>,
-		setFocused: (focused: boolean) => ipcRenderer.send(SET_TERMINAL_FOCUSED_CHANNEL, focused),
+		setFocused: (focused: boolean, handlesFontSize = false) =>
+			ipcRenderer.send(SET_TERMINAL_FOCUSED_CHANNEL, focused, handlesFontSize),
 		onFontSizeShortcut: (listener: (delta: -1 | 1) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, delta: -1 | 1) => listener(delta);
 			ipcRenderer.on(TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL, wrapped);
@@ -276,6 +312,12 @@ const api = {
 		},
 	},
 	window: {
+		getZoomFactor: () => ipcRenderer.invoke("window:getZoomFactor") as Promise<number>,
+		onZoomFactor: (listener: (zoomFactor: number) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, zoomFactor: number) => listener(zoomFactor);
+			ipcRenderer.on("window:zoom", wrapped);
+			return () => { ipcRenderer.off("window:zoom", wrapped); };
+		},
 		isMaximized: () => ipcRenderer.invoke("window:isMaximized") as Promise<boolean>,
 		onMaximized: (listener: (maximized: boolean) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, maximized: boolean) => listener(maximized);
@@ -300,6 +342,9 @@ const api = {
 		set: (preference: "light" | "dark" | "system") => ipcRenderer.invoke("theme:set", preference) as Promise<void>,
 		persistTerminal: (scheme: "light" | "dark") =>
 			ipcRenderer.invoke("theme:persist-terminal", scheme) as Promise<void>,
+		// The shell goes transparent over a live native browser page, so whatever
+		// shows through its unpainted gutters is the native window background.
+		setWindowBackground: (color: string) => ipcRenderer.invoke("theme:set-window-background", color) as Promise<void>,
 	},
 	menu: {
 		action: (action: string) => ipcRenderer.invoke("menu:action", action) as Promise<void>,
@@ -327,6 +372,8 @@ const api = {
 			ipcRenderer.invoke("editorHandoff:getState", sessionId) as Promise<EditorHandoffState>,
 		open: (input: OpenSessionTargetInput) =>
 			ipcRenderer.invoke("editorHandoff:open", input) as Promise<OpenSessionTargetResult>,
+		copyWorkspacePath: (sessionId: string) =>
+			ipcRenderer.invoke("editorHandoff:copyWorkspacePath", sessionId) as Promise<void>,
 	},
 	telemetry: {
 		getBootstrap: async () => {
@@ -354,19 +401,50 @@ const api = {
 		},
 	},
 	browser: {
+		reconnectRuntime: () => ipcRenderer.invoke("browser:runtime:reconnect") as Promise<void>,
+		getRuntimeState: () => ipcRenderer.invoke("browser:runtime:state") as Promise<BrowserRuntimeState>,
 		nativeCompositionEnabled: true,
 		ensure: (sessionId: string) => ipcRenderer.invoke("browser:ensure", sessionId) as Promise<BrowserNavState>,
 		setBounds: (input: BrowserBoundsInput) => ipcRenderer.send("browser:setBounds", input),
+		onBoundsApplied: (listener: (result: BrowserBoundsApplied) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, result: BrowserBoundsApplied) => listener(result);
+			ipcRenderer.on("browser:boundsApplied", wrapped);
+			return () => {
+				ipcRenderer.off("browser:boundsApplied", wrapped);
+			};
+		},
 		setOverlayOpen: (open: boolean) => ipcRenderer.send("browser:overlay", open),
 		navigate: (input: BrowserNavigateInput) =>
 			ipcRenderer.invoke("browser:navigate", input) as Promise<BrowserNavState>,
 		historySuggestions: (input: { viewId: string; query: string }) =>
 			ipcRenderer.invoke("browser:history:suggest", input) as Promise<BrowserHistorySuggestion[]>,
+		historyFavicon: (input: { viewId: string; url: string }) =>
+			ipcRenderer.invoke("browser:history:favicon", input) as Promise<string | undefined>,
 		clear: (viewId: string) => ipcRenderer.invoke("browser:clear", viewId) as Promise<BrowserNavState>,
 		goBack: (viewId: string) => ipcRenderer.invoke("browser:goBack", viewId) as Promise<BrowserNavState>,
 		goForward: (viewId: string) => ipcRenderer.invoke("browser:goForward", viewId) as Promise<BrowserNavState>,
 		reload: (viewId: string) => ipcRenderer.invoke("browser:reload", viewId) as Promise<BrowserNavState>,
 		stop: (viewId: string) => ipcRenderer.invoke("browser:stop", viewId) as Promise<BrowserNavState>,
+		getFindState: (viewId: string) =>
+			ipcRenderer.invoke("browser:find:get", viewId) as Promise<BrowserFindState>,
+		findInPage: (input: BrowserFindInput) =>
+			ipcRenderer.invoke("browser:find", input) as Promise<BrowserFindState>,
+		stopFindInPage: (input: BrowserFindStopInput) =>
+			ipcRenderer.invoke("browser:find:stop", input) as Promise<BrowserFindState>,
+		captureScreenshot: (viewId: string) => ipcRenderer.invoke("browser:captureScreenshot", viewId) as Promise<void>,
+		downloads: {
+			list: () => ipcRenderer.invoke("browser:downloads:list") as Promise<BrowserDownloadsState>,
+			action: (input: BrowserDownloadActionInput) =>
+				ipcRenderer.invoke("browser:downloads:action", input) as Promise<BrowserDownloadsState>,
+			clear: () => ipcRenderer.invoke("browser:downloads:clear") as Promise<BrowserDownloadsState>,
+			onChanged: (listener: (state: BrowserDownloadsState) => void) => {
+				const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserDownloadsState) => listener(state);
+				ipcRenderer.on("browser:downloadsChanged", wrapped);
+				return () => {
+					ipcRenderer.off("browser:downloadsChanged", wrapped);
+				};
+			},
+		},
 		getTabs: (viewId: string) => ipcRenderer.invoke("browser:getTabs", viewId) as Promise<BrowserTabsState>,
 		selectTab: (input: { viewId: string; tabId: string }) =>
 			ipcRenderer.invoke("browser:selectTab", input) as Promise<BrowserTabsState>,
@@ -389,6 +467,13 @@ const api = {
 				ipcRenderer.off("browser:focusLocation", wrapped);
 			};
 		},
+		onFindOpen: (listener: (state: BrowserFindState) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserFindState) => listener(state);
+			ipcRenderer.on("browser:findOpen", wrapped);
+			return () => {
+				ipcRenderer.off("browser:findOpen", wrapped);
+			};
+		},
 		onReopenClosedTab: (listener: (viewId: string) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, viewId: string) => listener(viewId);
 			ipcRenderer.on("browser:reopenClosedTab", wrapped);
@@ -396,16 +481,36 @@ const api = {
 				ipcRenderer.off("browser:reopenClosedTab", wrapped);
 			};
 		},
+		onClosePanel: (listener: (viewId: string) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, viewId: string) => listener(viewId);
+			ipcRenderer.on("browser:closePanel", wrapped);
+			return () => {
+				ipcRenderer.off("browser:closePanel", wrapped);
+			};
+		},
 		devtools: (input: BrowserDevToolsInput) =>
 			ipcRenderer.invoke("browser:devtools", input) as Promise<BrowserDevToolsState>,
 		destroy: (viewId: string) => ipcRenderer.send("browser:destroy", viewId),
 		setAnnotationMode: (input: BrowserAnnotationModeInput) =>
 			ipcRenderer.invoke("browser:annotation:setMode", input) as Promise<void>,
+		completeAnnotation: (input: BrowserAnnotationCompleteInput) =>
+			ipcRenderer.invoke("browser:annotation:complete", input) as Promise<void>,
+		discardAnnotations: (input: BrowserAnnotationDiscardInput) =>
+			ipcRenderer.invoke("browser:annotation:discard", input) as Promise<void>,
+		annotationAction: (input: BrowserAnnotationActionInput) =>
+			ipcRenderer.invoke("browser:annotation:action", input) as Promise<void>,
 		onNavState: (listener: (state: BrowserNavState) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserNavState) => listener(state);
 			ipcRenderer.on("browser:navState", wrapped);
 			return () => {
 				ipcRenderer.off("browser:navState", wrapped);
+			};
+		},
+		onFindState: (listener: (state: BrowserFindState) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserFindState) => listener(state);
+			ipcRenderer.on("browser:findState", wrapped);
+			return () => {
+				ipcRenderer.off("browser:findState", wrapped);
 			};
 		},
 		onPageFocus: (listener: (viewId: string) => void) => {
@@ -427,6 +532,13 @@ const api = {
 			ipcRenderer.on("browser:agentActivity", wrapped);
 			return () => {
 				ipcRenderer.off("browser:agentActivity", wrapped);
+			};
+		},
+		onRuntimeState: (listener: (state: BrowserRuntimeState) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, state: BrowserRuntimeState) => listener(state);
+			ipcRenderer.on("browser:runtimeState", wrapped);
+			return () => {
+				ipcRenderer.off("browser:runtimeState", wrapped);
 			};
 		},
 		onDevToolsState: (listener: (state: BrowserDevToolsState) => void) => {
@@ -466,6 +578,13 @@ const api = {
 				ipcRenderer.off("browser:annotation:canceled", wrapped);
 			};
 		},
+		onAnnotationState: (listener: (payload: BrowserAnnotationStatePayload) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, payload: BrowserAnnotationStatePayload) => listener(payload);
+			ipcRenderer.on("browser:annotation:state", wrapped);
+			return () => {
+				ipcRenderer.off("browser:annotation:state", wrapped);
+			};
+		},
 	},
 	browserProfiles: {
 		list: () => ipcRenderer.invoke("browserProfiles:list") as Promise<BrowserProfileListState>,
@@ -474,8 +593,10 @@ const api = {
 			ipcRenderer.invoke("browserProfiles:rename", input) as Promise<BrowserProfile>,
 		clear: (id: string) => ipcRenderer.invoke("browserProfiles:clear", { id }) as Promise<void>,
 		delete: (id: string) => ipcRenderer.invoke("browserProfiles:delete", { id }) as Promise<void>,
-		discoverImportSources: () =>
-			ipcRenderer.invoke("browserProfiles:import:discover") as Promise<BrowserImportDiscovery>,
+		discoverImportSources: (input?: BrowserImportDiscoveryRequest) =>
+			(input === undefined
+				? ipcRenderer.invoke("browserProfiles:import:discover")
+				: ipcRenderer.invoke("browserProfiles:import:discover", input)) as Promise<BrowserImportDiscovery>,
 		import: (input: BrowserImportRequest) =>
 			ipcRenderer.invoke("browserProfiles:import:start", input) as Promise<BrowserImportResult>,
 		onImportProgress: (listener: (progress: BrowserImportProgress) => void) => {
@@ -487,7 +608,7 @@ const api = {
 		},
 	},
 	notifications: {
-		show: (notification: { id: string; title: string; body?: string; type?: string }) =>
+		show: (notification: { id: string; title: string; body?: string; type?: string; watched?: boolean }) =>
 			ipcRenderer.invoke("notifications:show", notification) as Promise<void>,
 		setBadge: (count: number) => ipcRenderer.invoke("notifications:setBadge", count) as Promise<void>,
 		devBounce: () => ipcRenderer.invoke("notifications:devBounce") as Promise<void>,
@@ -498,6 +619,14 @@ const api = {
 				ipcRenderer.off("notifications:click", wrapped);
 			};
 		},
+		onPlaySound: (listener: () => void) => {
+			const wrapped = () => listener();
+			ipcRenderer.on("notifications:playSound", wrapped);
+			return () => {
+				ipcRenderer.off("notifications:playSound", wrapped);
+			};
+		},
+		reportSoundFailure: () => ipcRenderer.send("notifications:soundFailed"),
 	},
 	tray: {
 		setAttentionState: (state: TrayAttentionState) => ipcRenderer.send(TRAY_SET_ATTENTION_STATE_CHANNEL, state),
@@ -518,6 +647,8 @@ const api = {
 	updateSettings: {
 		get: () => ipcRenderer.invoke("updateSettings:get") as Promise<UpdateSettings>,
 		set: (settings: UpdateSettings) => ipcRenderer.invoke("updateSettings:set", settings) as Promise<void>,
+		setMacDifferentialUpdates: (enabled: boolean) =>
+			ipcRenderer.invoke("updateSettings:setMacDifferentialUpdates", enabled) as Promise<void>,
 	},
 	uiSettings: {
 		get: () => ipcRenderer.invoke("uiSettings:get") as Promise<UiSettings>,
@@ -534,7 +665,11 @@ const api = {
 		check: (options?: UpdateCheckOptions) => ipcRenderer.invoke("updates:check", options) as Promise<void>,
 		returnHome: (requestId?: string) => ipcRenderer.invoke("updates:returnHome", requestId) as Promise<void>,
 		download: (requestId?: string) => ipcRenderer.invoke("updates:download", requestId) as Promise<void>,
-		install: () => ipcRenderer.invoke("updates:install") as Promise<void>,
+		install: (confirmedVersion?: string) => ipcRenderer.invoke("updates:install", confirmedVersion) as Promise<UpdateInstallResult>,
+		// True only when this boot is a genuine post-update relaunch; lets the
+		// startup loader swap "Connecting" copy for "Updating / Restarting".
+		isPostUpdateRelaunch: () => ipcRenderer.invoke("updates:isPostUpdateRelaunch") as Promise<boolean>,
+		relaunch: () => ipcRenderer.invoke("updates:relaunch") as Promise<void>,
 		onStatus: (listener: (status: UpdateStatus) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
 			ipcRenderer.on("updates:status", wrapped);
@@ -556,10 +691,41 @@ const api = {
 		list: () => ipcRenderer.invoke("featureBuilds:list") as Promise<FeatureBuild[]>,
 		getActive: () => ipcRenderer.invoke("featureBuilds:getActive") as Promise<{ pr: number } | null>,
 	},
+	// Saved AO daemons, shared with the CLI's ~/.ao/remotes.json. Everything the
+	// renderer receives back is password-free (see main/remotes-ipc.ts); the
+	// plaintext password only travels renderer -> main on add or credential edit.
+	remotes: {
+		list: () => ipcRenderer.invoke("remotes:list") as Promise<RemoteHostView[]>,
+		importAccountHost: (accountId: string, input: { hostId: string; label: string; url: string; password: string }) =>
+			ipcRenderer.invoke("remotes:importAccountHost", accountId, input) as Promise<void>,
+		pruneAccountHosts: (accountId: string, hostIds: string[]) => ipcRenderer.invoke("remotes:pruneAccountHosts", accountId, hostIds) as Promise<void>,
+		issueAccountToken: (url: string) => ipcRenderer.invoke("remotes:issueAccountToken", url) as Promise<string>,
+		add: (input: { label: string; url: string; password: string }) =>
+			ipcRenderer.invoke("remotes:add", input) as Promise<RemoteHealth>,
+		// An edit carries only what changed: an omitted password keeps the saved
+		// one, so a rotated credential is fixed without the renderer ever holding
+		// the old one.
+		update: (url: string, changes: { label?: string; url?: string; password?: string }) =>
+			ipcRenderer.invoke("remotes:update", url, changes) as Promise<RemoteHealth>,
+		remove: (url: string) => ipcRenderer.invoke("remotes:remove", url) as Promise<void>,
+		connect: (url: string, hostId?: string) => ipcRenderer.invoke("remotes:connect", url, hostId) as Promise<ConnectedHostView>,
+		disconnect: (url: string) => ipcRenderer.invoke("remotes:disconnect", url) as Promise<void>,
+		previewUrl: (hostId: string, sessionId: string, sourceUrl: string) =>
+			ipcRenderer.invoke("remotes:previewUrl", hostId, sessionId, sourceUrl) as Promise<string>,
+		resolvePreviewUrl: (hostId: string, sessionId: string, viewedUrl: string) =>
+			ipcRenderer.invoke("remotes:resolvePreviewUrl", hostId, sessionId, viewedUrl) as Promise<string>,
+	},
 	cloud: {
 		getSession: () => ipcRenderer.invoke("cloud:getSession") as Promise<CloudAccount | null>,
 		signIn: () => ipcRenderer.invoke("cloud:signIn") as Promise<void>,
 		signOut: () => ipcRenderer.invoke("cloud:signOut") as Promise<void>,
+		cancelProviderAuth: () => ipcRenderer.invoke("cloud:cancelProviderAuth") as Promise<void>,
+		connectProviderAuth: (input: { baseUrl: string; provider: string; persistLocalClaudeToken?: boolean }) =>
+			ipcRenderer.invoke("cloud:connectProviderAuth", input) as Promise<
+				| string
+				| { secret: string; refreshToken?: string; expiresIn?: number; refreshTokenExpiresIn?: number }
+				| void
+			>,
 		// Dev-only local (email/password) sign-in against a loopback Docker CP.
 		// Whether the surface is offered is decided in main (unpackaged/dev +
 		// loopback); the renderer only mirrors it for UI visibility.

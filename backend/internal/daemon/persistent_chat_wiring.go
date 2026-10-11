@@ -10,26 +10,34 @@ import (
 
 type persistentChatSessionStore interface {
 	ListAllSessions(context.Context) ([]domain.SessionRecord, error)
+	ListRecoverableChatReviews(context.Context) ([]domain.Review, error)
 }
 
 // reconcilePersistentChatHosts removes hosts only when durable state proves
-// there is no live Codex Chat session to adopt. An unreadable session set is not
+// there is no live Chat session to adopt. An unreadable session set is not
 // evidence that any host is orphaned.
 func reconcilePersistentChatHosts(ctx context.Context, dataDir string, store persistentChatSessionStore) error {
 	records, err := store.ListAllSessions(ctx)
 	if err != nil {
 		return fmt.Errorf("list sessions for persistent chat hosts: %w", err)
 	}
-	return persistenthost.Reconcile(ctx, dataDir, persistentChatHostKeepSet(records))
+	reviews, err := store.ListRecoverableChatReviews(ctx)
+	if err != nil {
+		return fmt.Errorf("list reviews for persistent chat hosts: %w", err)
+	}
+	return persistenthost.Reconcile(ctx, dataDir, persistentChatHostKeepSet(records, reviews))
 }
 
-func persistentChatHostKeepSet(records []domain.SessionRecord) map[string]struct{} {
+func persistentChatHostKeepSet(records []domain.SessionRecord, reviews []domain.Review) map[string]struct{} {
 	keep := make(map[string]struct{})
 	for _, rec := range records {
-		if rec.IsTerminated || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat || rec.Harness != domain.HarnessCodex {
+		if rec.IsTerminated || rec.HibernatedAt != nil || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat {
 			continue
 		}
 		keep[string(rec.ID)] = struct{}{}
+	}
+	for _, review := range reviews {
+		keep["review-"+review.ID] = struct{}{}
 	}
 	return keep
 }

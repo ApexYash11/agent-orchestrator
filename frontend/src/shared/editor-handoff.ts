@@ -1,6 +1,7 @@
 export const EDITOR_IDS = [
 	"cursor",
 	"vscode",
+	"neovim",
 	"windsurf",
 	"zed",
 	"trae",
@@ -19,6 +20,7 @@ export const EDITOR_IDS = [
 	"rider",
 	"android-studio",
 	"fleet",
+	"antigravity",
 ] as const;
 
 export type EditorId = (typeof EDITOR_IDS)[number];
@@ -36,6 +38,8 @@ export type EditorHandoffState = {
 	preferredEditorId: EditorId;
 	workspaceAvailable: boolean;
 	unavailableReason?: string;
+	/** The daemon's error code, when it answered; lets the renderer tell "gone" from "couldn't check". */
+	unavailableCode?: string;
 };
 
 export type OpenSessionTargetInput = {

@@ -22,6 +22,7 @@ const POSTHOG_EVENT_NAME_ALIASES: Record<string, string> = {
 	"ao.renderer.loaded": "ao.v2.renderer.loaded",
 	"ao.renderer.api_error": "ao.v2.renderer.api_error",
 	"ao.renderer.daemon_failure": "ao.v2.renderer.daemon_failure",
+	"ao.renderer.session_management_summary": "ao.v2.renderer.session_management_summary",
 };
 
 let initPromise: Promise<boolean> | null = null;
@@ -350,7 +351,25 @@ function routeSurface(pathname: string): string {
 		return "project_board";
 	}
 	if (/^\/sessions\/[^/]+$/.test(pathname)) return "session_detail";
+	if (/^\/automations(?:\/|$)/.test(pathname)) return "automations";
 	return "other";
+}
+
+const AUTOMATION_SCHEDULE_PRESET_SET = new Set(["daily", "weekly", "custom"]);
+const AUTOMATION_PROMPT_LENGTH_BUCKET_SET = new Set(["xs", "s", "m", "l", "xl"]);
+
+/**
+ * Coarse size of an automation prompt, never the prompt itself. Measured in
+ * bytes because that is what the daemon's 4096 cap counts; counting UTF-16
+ * units instead would compress the bands for non-Latin prompts.
+ */
+export function automationPromptLengthBucket(prompt: string): string {
+	const length = new TextEncoder().encode(prompt).length;
+	if (length <= 80) return "xs";
+	if (length <= 240) return "s";
+	if (length <= 800) return "m";
+	if (length <= 2000) return "l";
+	return "xl";
 }
 
 async function sha256Hex(raw: string): Promise<string> {
@@ -479,6 +498,24 @@ export async function sanitizeRendererProperties(
 			if (projectIDHash) safe.project_id_hash = projectIDHash;
 			break;
 		}
+		case "ao.renderer.cloud_orchestrator_spawn_succeeded":
+		case "ao.renderer.cloud_orchestrator_spawn_failed": {
+			// Cloud orchestrator spawns are the adoption signal for the hosted
+			// offering's core loop; only a hashed project id rides along.
+			const cloudProjectIDHash = await hashedTelemetryID(properties?.project_id);
+			if (cloudProjectIDHash) safe.project_id_hash = cloudProjectIDHash;
+			break;
+		}
+		case "ao.renderer.cloud_workers_viewed":
+			// How many workers an orchestrator is coordinating when the human
+			// looks: the count alone answers "do people use one worker or many".
+			if (typeof properties?.worker_count === "number") safe.worker_count = properties.worker_count;
+			break;
+		case "ao.renderer.cloud_worker_opened":
+			// Whether the click-through happens before or after a PR exists
+			// separates "checking on a worker" from "reviewing its output".
+			if (typeof properties?.has_pr === "boolean") safe.has_pr = properties.has_pr;
+			break;
 		case "ao.renderer.orchestrator_spawn_requested":
 		case "ao.renderer.orchestrator_spawn_succeeded":
 		case "ao.renderer.orchestrator_spawn_failed": {
@@ -486,6 +523,23 @@ export async function sanitizeRendererProperties(
 			if (projectIDHash) safe.project_id_hash = projectIDHash;
 			if (typeof properties?.source === "string" && ORCHESTRATOR_SPAWN_SOURCE_SET.has(properties.source)) {
 				safe.source = properties.source;
+			}
+			break;
+		}
+		case "ao.renderer.automation_create_opened":
+			break;
+		case "ao.renderer.automation_create_requested":
+		case "ao.renderer.automation_create_succeeded":
+		case "ao.renderer.automation_create_failed": {
+			// Which kind of automation a prompt describes stays on the machine;
+			// only the schedule shape and a size band ride along.
+			const projectIDHash = await hashedTelemetryID(properties?.project_id);
+			if (projectIDHash) safe.project_id_hash = projectIDHash;
+			if (typeof properties?.schedule_preset === "string" && AUTOMATION_SCHEDULE_PRESET_SET.has(properties.schedule_preset)) {
+				safe.schedule_preset = properties.schedule_preset;
+			}
+			if (typeof properties?.prompt_length_bucket === "string" && AUTOMATION_PROMPT_LENGTH_BUCKET_SET.has(properties.prompt_length_bucket)) {
+				safe.prompt_length_bucket = properties.prompt_length_bucket;
 			}
 			break;
 		}
@@ -565,6 +619,16 @@ export async function sanitizeRendererProperties(
 			if (typeof properties?.error_category === "string") safe.error_category = properties.error_category;
 			if (properties?.phase === "check" || properties?.phase === "download") safe.phase = properties.phase;
 			if (properties?.trigger === "automatic" || properties?.trigger === "manual") safe.trigger = properties.trigger;
+			for (const key of ["differential_eligible", "fallback"] as const) {
+				if (typeof properties?.[key] === "boolean") safe[key] = properties[key];
+			}
+			if (properties?.transfer_mode === "differential" || properties?.transfer_mode === "full") {
+				safe.transfer_mode = properties.transfer_mode;
+			}
+			for (const key of ["transferred_bytes", "target_bytes"] as const) {
+				const value = properties?.[key];
+				if (typeof value === "number" && Number.isFinite(value) && value >= 0) safe[key] = value;
+			}
 			break;
 		case "ao.renderer.mobile_connect_opened":
 			// Whether the bridge was already on when the modal opened separates
@@ -603,6 +667,37 @@ export async function sanitizeRendererProperties(
 			if (typeof properties?.enabled === "boolean") safe.enabled = properties.enabled;
 			if (properties?.outcome === "succeeded" || properties?.outcome === "failed") safe.outcome = properties.outcome;
 			break;
+		case "ao.renderer.session_management_summary": {
+			const numericKeys = [
+				"measurement_schema_version",
+				"window_duration_seconds",
+				"orchestrator_active_seconds",
+				"worker_active_seconds",
+				"transition_orchestrator_to_worker_count",
+				"transition_orchestrator_same_count",
+				"transition_orchestrator_switch_count",
+				"transition_worker_to_orchestrator_count",
+				"transition_worker_same_count",
+				"transition_worker_switch_count",
+				"manual_worker_open_count",
+				"direct_worker_chat_steer_count",
+				"direct_worker_terminal_input_burst_count",
+				"direct_worker_lifecycle_action_count",
+				"pattern_orchestrator_worker_orchestrator_count",
+				"pattern_orchestrator_multiple_workers_count",
+			] as const;
+			for (const key of numericKeys) {
+				const value = properties?.[key];
+				if (typeof value === "number" && Number.isFinite(value) && value >= 0) safe[key] = value;
+			}
+			if (typeof properties?.window_id === "string" && /^[0-9a-f-]{36}$/i.test(properties.window_id)) {
+				safe.window_id = properties.window_id;
+			}
+			if (properties?.flush_reason === "interval" || properties?.flush_reason === "startup") {
+				safe.flush_reason = properties.flush_reason;
+			}
+			break;
+		}
 	}
 	return safe;
 }

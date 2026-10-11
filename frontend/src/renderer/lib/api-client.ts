@@ -80,7 +80,7 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/agents/codex/accounts/login-operations/{operationId}/verify",
 	"/api/v1/agents/codex/accounts/login-operations/{operationId}/cancel",
 	"/api/v1/agents/codex/account-switches",
-	"/api/v1/agents/codex/account-switches/{switchId}/recover",
+	"/api/v1/agents/codex/account-switches/{switchId}",
 	"/api/v1/agents/{agent}/models",
 	"/api/v1/agents/{agent}/models/refresh",
 	"/api/v1/agents/{agent}/probe",
@@ -97,7 +97,9 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/orchestrators",
 	"/api/v1/orchestrators/{id}",
 	"/api/v1/projects",
-	"/api/v1/projects/clone",
+"/api/v1/projects/clone",
+	"/api/v1/projects/clone/prepare",
+	"/api/v1/projects/clone/cleanup",
 	"/api/v1/projects/initialize",
 	"/api/v1/projects/{id}",
 	"/api/v1/projects/{id}/config",
@@ -117,6 +119,7 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/sessions/{sessionId}/preview",
 	"/api/v1/sessions/{sessionId}/preview/files/*",
 	"/api/v1/sessions/{sessionId}/preview/server",
+	"/api/v1/sessions/{sessionId}/renders/{renderId}/artifact",
 	"/api/v1/sessions/{sessionId}/resume-agent",
 	"/api/v1/sessions/{sessionId}/restore",
 	"/api/v1/sessions/{sessionId}/switch-agent",
@@ -324,6 +327,29 @@ export const apiClient = createClient<paths>({
 	fetch: runtimeFetch,
 });
 
+// Build each request against the daemon's current address, so runtimeFetch
+// passes it straight to fetch. Rebasing a request built against the
+// placeholder base has to buffer its body asynchronously, which held every
+// POST back behind whatever React rendered in the same click (a new terminal
+// waited ~20 ms for its own tab to render). runtimeFetch still rebases a
+// request built before the daemon's address changed.
+type RequestInit = { baseUrl?: string } | undefined;
+const withRuntimeBase = (init: RequestInit): RequestInit =>
+	runtimeApiBaseUrl && !init?.baseUrl ? { ...init, baseUrl: runtimeApiBaseUrl } : init;
+const HTTP_METHODS = ["GET", "PUT", "POST", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE"] as const;
+// The client's methods are generic over every path; this untyped view only
+// forwards their arguments, so callers keep the client's own signatures.
+const clientMethods = apiClient as unknown as Record<
+	(typeof HTTP_METHODS)[number],
+	(url: unknown, init?: RequestInit) => unknown
+> & { request: (method: unknown, url: unknown, init?: RequestInit) => unknown };
+for (const method of HTTP_METHODS) {
+	const send = clientMethods[method];
+	clientMethods[method] = (url, init) => send(url, withRuntimeBase(init));
+}
+const sendRequest = clientMethods.request;
+clientMethods.request = (method, url, init) => sendRequest(method, url, withRuntimeBase(init));
+
 /**
  * Human-readable message from an openapi-fetch `error` value. The daemon's
  * error body is `{ error, code, message, requestId }` (backend apierr) — a
@@ -336,6 +362,15 @@ export function apiErrorCode(error: unknown): string | undefined {
 		if (typeof body.code === "string" && body.code !== "") return body.code;
 	}
 	return undefined;
+}
+
+/** Structured recovery metadata from the daemon's stable error envelope. */
+export function apiErrorDetails(error: unknown): Record<string, unknown> | undefined {
+	if (typeof error !== "object" || error === null) return undefined;
+	const details = (error as { details?: unknown }).details;
+	return typeof details === "object" && details !== null && !Array.isArray(details)
+		? (details as Record<string, unknown>)
+		: undefined;
 }
 
 /** Correlation id from the daemon's stable error envelope. */
@@ -355,9 +390,8 @@ export function apiErrorMessage(error: unknown, fallback = "Request failed"): st
 		if (typeof body.error === "object" && body.error !== null) {
 			return apiErrorMessage(body.error, fallback);
 		}
-		const code = typeof body.code === "string" && body.code !== "" ? body.code : "";
 		if (typeof body.message === "string" && body.message !== "") {
-			return code && !body.message.includes(code) ? `${body.message} (${code})` : body.message;
+			return body.message;
 		}
 		if (typeof body.error === "string" && body.error !== "") return body.error;
 	}

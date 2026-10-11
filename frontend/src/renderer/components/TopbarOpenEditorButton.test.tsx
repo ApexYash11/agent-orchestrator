@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EditorHandoffState, OpenSessionTargetInput } from "../../shared/editor-handoff";
+import { appShortcutBus } from "../test/app-shortcut-bus";
 import { TopbarOpenEditorButton } from "./TopbarOpenEditorButton";
 import { TooltipProvider } from "./ui/tooltip";
 
@@ -31,12 +32,19 @@ function setState(state: EditorHandoffState) {
 	window.ao!.editorHandoff.open = openMock;
 }
 
-function renderButton() {
+function renderButton(
+	{ sessionCreatedAt, sessionTerminated }: { sessionCreatedAt?: string; sessionTerminated?: boolean } = {},
+) {
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 	return render(
 		<QueryClientProvider client={client}>
 			<TooltipProvider>
-				<TopbarOpenEditorButton sessionId="sess-1" projectId="proj-1" />
+				<TopbarOpenEditorButton
+					sessionId="sess-1"
+					projectId="proj-1"
+					sessionCreatedAt={sessionCreatedAt}
+					sessionTerminated={sessionTerminated}
+				/>
 			</TooltipProvider>
 		</QueryClientProvider>,
 	);
@@ -65,7 +73,9 @@ describe("TopbarOpenEditorButton", () => {
 
 		// the failure must trigger a refetch, not just show a message
 		await waitFor(() => expect(getState).toHaveBeenCalledTimes(2));
-		await waitFor(() => expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeDisabled());
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "Session workspace is not available" })).toBeDisabled(),
+		);
 	});
 
 	// Regression: an ipcMain rejection arrives wrapped as "Error invoking remote
@@ -129,7 +139,10 @@ describe("TopbarOpenEditorButton", () => {
 		expect(group).toHaveClass("data-[state=open]:bg-interactive-hover");
 	});
 
-	it("keeps the no-editor state visible and offers Finder and Terminal", async () => {
+	// No supported editor means the control is simply blocked: no long guidance
+	// string in the topbar or the menu, just a disabled button, with the native
+	// fallbacks still reachable from the options menu.
+	it("blocks the editor button without guidance copy and still offers Finder and Terminal", async () => {
 		setState({
 			targets: [
 				{ id: "file-manager", name: "Finder", kind: "file_manager" },
@@ -139,25 +152,176 @@ describe("TopbarOpenEditorButton", () => {
 			workspaceAvailable: true,
 		});
 		renderButton();
-		expect(await screen.findByRole("alert")).toHaveTextContent("No supported editor found");
-		expect(screen.getByRole("button", { name: "Choose editor" })).toBeDisabled();
+		expect(await screen.findByRole("button", { name: "No editor installed" })).toBeDisabled();
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Open workspace options" }));
 		expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual([
 			"Open in Finder",
 			"Open in Terminal",
 		]);
+		expect(screen.queryByRole("note")).not.toBeInTheDocument();
+		expect(document.body.textContent).not.toContain("No supported editor found");
 	});
 
-	it("shows a missing workspace and disables every launch action", async () => {
+	it("disables every launch action for a missing workspace and explains why only on the button", async () => {
 		setState({
 			...availableState,
 			workspaceAvailable: false,
 			unavailableReason: "Session workspace is not available.",
 		});
 		renderButton();
-		expect(await screen.findByRole("alert")).toHaveTextContent("Session workspace is not available.");
-		expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeDisabled();
+		expect(await screen.findByRole("button", { name: "Session workspace is not available." })).toBeDisabled();
 		expect(screen.getByRole("button", { name: "Open workspace options" })).toBeDisabled();
+		// A standing unavailable state must not take inline topbar space.
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
+	it("never renders a transient unavailable error while a fresh session becomes ready", async () => {
+		vi.useFakeTimers();
+		const renderedAlerts: string[] = [];
+		const alertObserver = new MutationObserver(() => {
+			for (const alert of document.querySelectorAll('[role="alert"]')) {
+				renderedAlerts.push(alert.textContent ?? "");
+			}
+		});
+		alertObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+		try {
+			const getState = vi
+				.fn()
+				.mockResolvedValueOnce({
+					...availableState,
+					workspaceAvailable: false,
+					unavailableReason: "Session workspace is not available.",
+				})
+				.mockResolvedValue(availableState);
+			window.ao!.editorHandoff.getState = getState;
+			renderButton({ sessionCreatedAt: new Date().toISOString() });
+
+			await act(async () => {});
+			expect(getState).toHaveBeenCalledTimes(1);
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "Preparing workspace…" })).toBeDisabled();
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(499);
+			});
+			expect(getState).toHaveBeenCalledTimes(1);
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "Preparing workspace…" })).toBeDisabled();
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1);
+			});
+			await act(async () => {
+				await vi.runOnlyPendingTimersAsync();
+			});
+			expect(getState).toHaveBeenCalledTimes(2);
+			expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeEnabled();
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(renderedAlerts).toEqual([]);
+		} finally {
+			alertObserver.disconnect();
+			vi.useRealTimers();
+		}
+	});
+
+	it("explains the unavailable workspace only after the fresh-session readiness timeout", async () => {
+		vi.useFakeTimers();
+		try {
+			const getState = vi.fn().mockResolvedValue({
+				...availableState,
+				workspaceAvailable: false,
+				unavailableReason: "Session workspace is not available.",
+			});
+			window.ao!.editorHandoff.getState = getState;
+			renderButton({ sessionCreatedAt: new Date().toISOString() });
+
+			await act(async () => {});
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "Preparing workspace…" })).toBeDisabled();
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_000);
+			});
+			await act(async () => {
+				await vi.runOnlyPendingTimersAsync();
+			});
+			expect(getState).toHaveBeenCalledTimes(11);
+			expect(screen.getByRole("button", { name: "Session workspace is not available." })).toBeDisabled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not call the workspace missing when the check itself failed, and checks again", async () => {
+		vi.useFakeTimers();
+		try {
+			const getState = vi
+				.fn()
+				.mockResolvedValueOnce({
+					...availableState,
+					workspaceAvailable: false,
+					unavailableReason: "Internal server error",
+					unavailableCode: "INTERNAL_ERROR",
+				})
+				.mockResolvedValue(availableState);
+			window.ao!.editorHandoff.getState = getState;
+			renderButton();
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(0);
+			});
+			expect(screen.getByRole("button", { name: "Checking workspace…" })).toBeDisabled();
+			expect(screen.queryByText(/Internal server error|not available/)).not.toBeInTheDocument();
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_000);
+			});
+			await act(async () => {
+				await vi.runOnlyPendingTimersAsync();
+			});
+			expect(getState).toHaveBeenCalledTimes(2);
+			expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeEnabled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("stops checking after three failed checks and shows the reason", async () => {
+		vi.useFakeTimers();
+		try {
+			const getState = vi.fn().mockResolvedValue({
+				...availableState,
+				workspaceAvailable: false,
+				unavailableReason: "AO daemon is not ready.",
+				unavailableCode: "SERVICE_UNAVAILABLE",
+			});
+			window.ao!.editorHandoff.getState = getState;
+			renderButton();
+
+			for (let i = 0; i < 6; i += 1) {
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(5_000);
+				});
+			}
+			expect(getState).toHaveBeenCalledTimes(3);
+			expect(screen.getByRole("button", { name: "AO daemon is not ready." })).toBeDisabled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not poll a terminated session whose workspace is gone", async () => {
+		const getState = vi.fn().mockResolvedValue({
+			...availableState,
+			workspaceAvailable: false,
+			unavailableReason: "Session workspace is not available.",
+		});
+		window.ao!.editorHandoff.getState = getState;
+		renderButton({ sessionCreatedAt: new Date().toISOString(), sessionTerminated: true });
+
+		expect(await screen.findByRole("button", { name: "Session workspace is not available." })).toBeDisabled();
+		expect(getState).toHaveBeenCalledTimes(1);
 	});
 
 	it("opens safe native fallbacks from the menu", async () => {
@@ -184,6 +348,46 @@ describe("TopbarOpenEditorButton", () => {
 		);
 		expect(vscode.querySelector("svg")?.style.color).toBe("rgb(31, 156, 240)");
 		expect(cursor.querySelector("svg")?.style.color).toBe("");
+	});
+
+	it("opens the preferred editor from the open-in-editor shortcut", async () => {
+		openMock.mockClear();
+		setState(availableState);
+		renderButton();
+		await screen.findByRole("button", { name: "Open in Cursor" });
+
+		act(() => appShortcutBus.emit({ id: "open-in-editor" }));
+
+		await waitFor(() => expect(openMock).toHaveBeenCalledWith({ sessionId: "sess-1" }));
+	});
+
+	it("falls back to the first available target when no editor is installed", async () => {
+		openMock.mockClear();
+		setState({
+			targets: [{ id: "file-manager", name: "Finder", kind: "file_manager" }],
+			preferredEditorId: "cursor",
+			workspaceAvailable: true,
+		});
+		renderButton();
+		await waitFor(() => expect(window.ao!.editorHandoff.getState).toHaveBeenCalled());
+		await screen.findByRole("button", { name: "No editor installed" });
+
+		act(() => appShortcutBus.emit({ id: "open-in-editor" }));
+
+		await waitFor(() =>
+			expect(openMock).toHaveBeenCalledWith({ sessionId: "sess-1", targetId: "file-manager" }),
+		);
+	});
+
+	it("ignores the open-in-editor shortcut while the workspace is unavailable", async () => {
+		openMock.mockClear();
+		setState({ ...availableState, workspaceAvailable: false, unavailableReason: "Workspace removed" });
+		renderButton();
+		await screen.findByRole("button", { name: "Workspace removed" });
+
+		act(() => appShortcutBus.emit({ id: "open-in-editor" }));
+
+		expect(openMock).not.toHaveBeenCalled();
 	});
 
 	it("surfaces an Electron launch failure", async () => {
