@@ -64,6 +64,7 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 		Configure:        configure,
 		SessionMode:      sessionMode,
 		SessionOptions:   sessionOptions,
+		SessionPreamble:  sessionPreamble,
 		PermissionPolicy: permissionPolicy,
 	}, log)
 }
@@ -78,8 +79,8 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 // Standing instructions are NOT passed here: `cmd acp` accepts no system-prompt
 // flag (v1.79.x rejects `--append-system-prompt` with "unknown option", which
 // kills the provider before the host publishes host.json and surfaces as a
-// missing-descriptor startup failure). They ride the workspace SessionStart
-// hook's additionalContext instead; see the commandcode agent plugin.
+// missing-descriptor startup failure). They ride the first prompt instead; see
+// sessionPreamble.
 func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
 	args := []string{
 		"acp",
@@ -94,6 +95,44 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 		args = append(args, "--permission-mode", mode)
 	}
 	return args, nil, nil
+}
+
+// standingInstructionsURI identifies AO's standing context in the provider's
+// own prompt transcript, so a session can be told apart from user context.
+const standingInstructionsURI = "ao://agent-orchestrator/standing-instructions"
+
+// sessionPreamble delivers AO's standing instructions as an embedded resource
+// on the first prompt of the session.
+//
+// The workspace SessionStart hook is not a delivery channel for Chat. In
+// Command Code v1.79.0 that hook is fired only by the TUI lifecycle
+// (`fireSessionStartHooks` has exactly one caller, in the interactive
+// component); the ACP path in `bindAgentSession`/`createClientDrivenSession`
+// never calls it, so installing `.commandcode/settings.json` changes nothing
+// for a Chat session. `session/new` is equally blind: its handler reads only
+// `cwd` and `mcpServers`, ignoring `_meta`.
+//
+// An embedded resource is the one channel this agent does execute. Its
+// `promptPart` maps a `resource` block to `<context uri=...>`, which is folded
+// into the first turn's input, and session/new advertises
+// `promptCapabilities.embeddedContext`. AO therefore leads the first prompt
+// with the standing instructions. AO re-arms this on session/load, because
+// standing context is process input rather than transcript history.
+func sessionPreamble(cfg acpdriver.LaunchConfig) []acpsdk.ContentBlock {
+	standing := strings.TrimSpace(cfg.SystemPrompt)
+	if standing == "" {
+		return nil
+	}
+	mime := "text/markdown"
+	return []acpsdk.ContentBlock{
+		acpsdk.ResourceBlock(acpsdk.EmbeddedResourceResource{
+			TextResourceContents: &acpsdk.TextResourceContents{
+				Uri:      standingInstructionsURI,
+				Text:     standing,
+				MimeType: &mime,
+			},
+		}),
+	}
 }
 
 // sessionMode maps AO's approval vocabulary onto Command Code's advertised mode

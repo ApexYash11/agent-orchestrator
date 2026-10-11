@@ -1626,6 +1626,149 @@ func TestACPDriverReappliesLaunchContextWhenResuming(t *testing.T) {
 	}
 }
 
+// standingInstructions is the fixed preamble text used by the preamble tests.
+const standingInstructions = "AO standing instructions for this session"
+
+// runOneTurn sends a single text turn and returns the prompt the provider saw.
+// The caller must already have drained the controller.ready event emitted at
+// session setup.
+func runOneTurn(t *testing.T, agent *fakeAgent, conv ports.ChatConversation, text string) []acpsdk.ContentBlock {
+	t.Helper()
+	ref, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{
+		Text: text, ClientMessageID: "ao-client-message-preamble",
+	})
+	if err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if err := conv.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
+		t.Fatalf("StartDeferredTurn: %v", err)
+	}
+	for {
+		if event := nextEvent(t, conv.Events()); event.Kind == ports.ChatEventTurnCompleted {
+			break
+		}
+	}
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	return append([]acpsdk.ContentBlock(nil), agent.promptParams.Prompt...)
+}
+
+// preambleText reads AO's standing instructions back out of a native prompt the
+// way the agent does: the resource block is what reaches the model.
+func preambleText(prompt []acpsdk.ContentBlock) string {
+	if len(prompt) == 0 || prompt[0].Resource == nil {
+		return ""
+	}
+	contents := prompt[0].Resource.Resource.TextResourceContents
+	if contents == nil {
+		return ""
+	}
+	return contents.Text
+}
+
+// TestACPDriverDeliversSessionPreambleOnStartAndResume covers the channel AO
+// uses for agents that accept no system-prompt launch flag and ignore
+// session/new _meta: an embedded resource leading the first prompt. Standing
+// context is process input rather than transcript history, so a resumed session
+// must receive the recomputed instructions again.
+func TestACPDriverDeliversSessionPreambleOnStartAndResume(t *testing.T) {
+	newDriver := func(agent *fakeAgent) *Driver {
+		driver := New(Config{
+			Harness:      domain.HarnessCommandCode,
+			Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+			Probe:        func(context.Context) error { return nil },
+			Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+			SessionPreamble: func(cfg LaunchConfig) []acpsdk.ContentBlock {
+				return []acpsdk.ContentBlock{acpsdk.ResourceBlock(acpsdk.EmbeddedResourceResource{
+					TextResourceContents: &acpsdk.TextResourceContents{
+						Uri:  "ao://agent-orchestrator/standing-instructions",
+						Text: cfg.SystemPrompt,
+					},
+				})}
+			},
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		driver.useTestProcess(fakeSpawn(agent))
+		return driver
+	}
+
+	t.Run("start", func(t *testing.T) {
+		agent := &fakeAgent{promptNoPermission: true}
+		conv, err := newDriver(agent).Start(context.Background(), ports.ChatStartConfig{
+			WorkspacePath: t.TempDir(), SystemPrompt: standingInstructions,
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer conv.Close()
+		_ = nextEvent(t, conv.Events()) // controller.ready
+		prompt := runOneTurn(t, agent, conv, "do the task")
+		if got := preambleText(prompt); got != standingInstructions {
+			t.Fatalf("first prompt standing context = %q, want %q (prompt %#v)", got, standingInstructions, prompt)
+		}
+		if len(prompt) < 2 || prompt[1].Text == nil || prompt[1].Text.Text != "do the task" {
+			t.Fatalf("standing context did not lead the user text: %#v", prompt)
+		}
+	})
+
+	t.Run("resume", func(t *testing.T) {
+		agent := &fakeAgent{promptNoPermission: true}
+		conv, err := newDriver(agent).Resume(context.Background(), ports.ChatResumeConfig{
+			SessionID:              "worker-1",
+			ProviderConversationID: "provider-session-1",
+			WorkspacePath:          t.TempDir(),
+			SystemPrompt:           standingInstructions,
+		})
+		if err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		defer conv.Close()
+		_ = nextEvent(t, conv.Events()) // controller.ready
+		prompt := runOneTurn(t, agent, conv, "continue the task")
+		if got := preambleText(prompt); got != standingInstructions {
+			t.Fatalf("resumed first prompt standing context = %q, want %q (prompt %#v)", got, standingInstructions, prompt)
+		}
+	})
+}
+
+// Standing context is process input, so it is delivered once per session rather
+// than repeated on every turn, which would grow the transcript and re-state the
+// same rules mid-conversation.
+func TestACPDriverDeliversSessionPreambleOncePerSession(t *testing.T) {
+	agent := &fakeAgent{promptNoPermission: true}
+	driver := New(Config{
+		Harness:      domain.HarnessCommandCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		SessionPreamble: func(cfg LaunchConfig) []acpsdk.ContentBlock {
+			return []acpsdk.ContentBlock{acpsdk.ResourceBlock(acpsdk.EmbeddedResourceResource{
+				TextResourceContents: &acpsdk.TextResourceContents{
+					Uri: "ao://agent-orchestrator/standing-instructions", Text: cfg.SystemPrompt,
+				},
+			})}
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{
+		WorkspacePath: t.TempDir(), SystemPrompt: standingInstructions,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conv.Close()
+	_ = nextEvent(t, conv.Events()) // controller.ready
+	if got := preambleText(runOneTurn(t, agent, conv, "first")); got != standingInstructions {
+		t.Fatalf("first prompt standing context = %q", got)
+	}
+	agent.mu.Lock()
+	agent.promptParams = acpsdk.PromptRequest{}
+	agent.mu.Unlock()
+	if got := preambleText(runOneTurn(t, agent, conv, "second")); got != "" {
+		t.Fatalf("second prompt repeated standing context %q; want it delivered once per session", got)
+	}
+}
+
 func TestACPDriverRefreshesHistoryWithAnotherSessionLoad(t *testing.T) {
 	userOneID := "11111111-1111-4111-8111-111111111111"
 	answerOneID := "22222222-2222-4222-8222-222222222222"

@@ -130,6 +130,11 @@ type conversation struct {
 	onAuthRejected        func()
 	promptResponseFailure func(acpsdk.PromptResponse) error
 	hibernationCheck      func(context.Context, *acpsdk.ClientSideConnection, acpsdk.SessionId) (bool, error)
+	// preamble is standing context attached to the first prompt only. It is the
+	// delivery channel for agents that accept no system-prompt launch flag and
+	// ignore session/new _meta but do execute prompt content blocks.
+	preamble      []acpsdk.ContentBlock
+	preambleSpent bool
 
 	contextTokens     int64
 	contextWindow     int64
@@ -321,6 +326,28 @@ func (c *conversation) setReportedProviderConversationID(sessionID string) {
 	c.mu.Unlock()
 }
 
+// setSessionPreamble arms standing context for the next prompt. Any earlier
+// preamble is dropped: the newest launch context is the one that should reach
+// the provider, which is how a recomputed system prompt replaces the original.
+func (c *conversation) setSessionPreamble(blocks []acpsdk.ContentBlock) {
+	c.mu.Lock()
+	c.preamble = blocks
+	c.preambleSpent = len(blocks) == 0
+	c.mu.Unlock()
+}
+
+// takeSessionPreamble returns the standing context once, so it is delivered on
+// session/new and again on session/load without repeating on later turns.
+func (c *conversation) takeSessionPreamble() []acpsdk.ContentBlock {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.preambleSpent || len(c.preamble) == 0 {
+		return nil
+	}
+	c.preambleSpent = true
+	return append([]acpsdk.ContentBlock(nil), c.preamble...)
+}
+
 func (c *conversation) Capabilities() ports.ChatCapabilities {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -392,6 +419,11 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	prompt, err := c.promptContent(msg)
 	if err != nil {
 		return ports.ChatTurnRef{}, err
+	}
+	// Standing context leads the first prompt so the provider reads it as
+	// context rather than as part of what the user asked.
+	if preamble := c.takeSessionPreamble(); len(preamble) > 0 {
+		prompt = append(preamble, prompt...)
 	}
 	c.mu.Lock()
 	busy := c.closed || c.prepared != nil || c.activeTurn != ""
