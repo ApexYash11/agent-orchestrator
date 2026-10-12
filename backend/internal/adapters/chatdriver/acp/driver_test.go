@@ -1666,6 +1666,26 @@ func preambleText(prompt []acpsdk.ContentBlock) string {
 	return contents.Text
 }
 
+// preambleConfig is the binding shape under test: an agent with no
+// system-prompt launch flag that ignores session/new _meta and receives AO's
+// standing context only as an embedded resource on the first prompt.
+func preambleConfig() Config {
+	return Config{
+		Harness:      domain.HarnessCommandCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		SessionPreamble: func(cfg LaunchConfig) []acpsdk.ContentBlock {
+			return []acpsdk.ContentBlock{acpsdk.ResourceBlock(acpsdk.EmbeddedResourceResource{
+				TextResourceContents: &acpsdk.TextResourceContents{
+					Uri:  "ao://agent-orchestrator/standing-instructions",
+					Text: cfg.SystemPrompt,
+				},
+			})}
+		},
+	}
+}
+
 // TestACPDriverDeliversSessionPreambleOnStartAndResume covers the channel AO
 // uses for agents that accept no system-prompt launch flag and ignore
 // session/new _meta: an embedded resource leading the first prompt. Standing
@@ -1673,20 +1693,7 @@ func preambleText(prompt []acpsdk.ContentBlock) string {
 // must receive the recomputed instructions again.
 func TestACPDriverDeliversSessionPreambleOnStartAndResume(t *testing.T) {
 	newDriver := func(agent *fakeAgent) *Driver {
-		driver := New(Config{
-			Harness:      domain.HarnessCommandCode,
-			Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
-			Probe:        func(context.Context) error { return nil },
-			Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
-			SessionPreamble: func(cfg LaunchConfig) []acpsdk.ContentBlock {
-				return []acpsdk.ContentBlock{acpsdk.ResourceBlock(acpsdk.EmbeddedResourceResource{
-					TextResourceContents: &acpsdk.TextResourceContents{
-						Uri:  "ao://agent-orchestrator/standing-instructions",
-						Text: cfg.SystemPrompt,
-					},
-				})}
-			},
-		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		driver := New(preambleConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 		driver.useTestProcess(fakeSpawn(agent))
 		return driver
 	}
@@ -1735,19 +1742,7 @@ func TestACPDriverDeliversSessionPreambleOnStartAndResume(t *testing.T) {
 // same rules mid-conversation.
 func TestACPDriverDeliversSessionPreambleOncePerSession(t *testing.T) {
 	agent := &fakeAgent{promptNoPermission: true}
-	driver := New(Config{
-		Harness:      domain.HarnessCommandCode,
-		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
-		Probe:        func(context.Context) error { return nil },
-		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
-		SessionPreamble: func(cfg LaunchConfig) []acpsdk.ContentBlock {
-			return []acpsdk.ContentBlock{acpsdk.ResourceBlock(acpsdk.EmbeddedResourceResource{
-				TextResourceContents: &acpsdk.TextResourceContents{
-					Uri: "ao://agent-orchestrator/standing-instructions", Text: cfg.SystemPrompt,
-				},
-			})}
-		},
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver := New(preambleConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	driver.useTestProcess(fakeSpawn(agent))
 
 	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{
@@ -1767,6 +1762,91 @@ func TestACPDriverDeliversSessionPreambleOncePerSession(t *testing.T) {
 	if got := preambleText(runOneTurn(t, agent, conv, "second")); got != "" {
 		t.Fatalf("second prompt repeated standing context %q; want it delivered once per session", got)
 	}
+}
+
+// A first turn that never reaches the provider must not spend the standing
+// context. Both paths here fail in SendTurn, after the prompt is built but
+// before any session/prompt is sent: spending the preamble in SendTurn would
+// silently drop AO's instructions from the session's first real turn, which is
+// the failure these cases exist to prevent.
+func TestACPDriverPreservesSessionPreambleWhenFirstTurnNeverStarts(t *testing.T) {
+	newConversation := func(t *testing.T, agent *fakeAgent) ports.ChatConversation {
+		t.Helper()
+		driver := New(preambleConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		driver.useTestProcess(fakeSpawn(agent))
+		conv, err := driver.Start(context.Background(), ports.ChatStartConfig{
+			WorkspacePath: t.TempDir(), SystemPrompt: standingInstructions,
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		t.Cleanup(func() { conv.Close() })
+		_ = nextEvent(t, conv.Events()) // controller.ready
+		return conv
+	}
+
+	t.Run("rejected first-turn settings", func(t *testing.T) {
+		agent := &fakeAgent{promptNoPermission: true}
+		// Reject the first turn's settings, which fails SendTurn before the
+		// prompt is ever sent to the provider. Session setup is unaffected.
+		reject := false
+		driverConfig := preambleConfig()
+		driverConfig.ValidateTurnSettings = func(_ ports.PermissionMode, settings ports.ChatTurnSettings) error {
+			if reject && settings.Model == "rejected-model" {
+				return errors.New("settings rejected")
+			}
+			return nil
+		}
+		driver := New(driverConfig, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		driver.useTestProcess(fakeSpawn(agent))
+		conv, err := driver.Start(context.Background(), ports.ChatStartConfig{
+			WorkspacePath: t.TempDir(), SystemPrompt: standingInstructions,
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer conv.Close()
+		_ = nextEvent(t, conv.Events()) // controller.ready
+
+		reject = true
+		if _, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{
+			Text:     "do the task",
+			Settings: ports.ChatTurnSettings{Model: "rejected-model"},
+		}); err == nil {
+			t.Fatal("SendTurn with rejected settings succeeded; want an error")
+		}
+		if agent.promptParams.Prompt != nil {
+			t.Fatal("a turn whose settings were rejected still reached the provider")
+		}
+
+		// The retried turn must carry the standing context AO never delivered.
+		reject = false
+		if got := preambleText(runOneTurn(t, agent, conv, "retry the task")); got != standingInstructions {
+			t.Fatalf("retry standing context = %q, want %q; a rejected turn must not spend it", got, standingInstructions)
+		}
+	})
+
+	t.Run("discarded prepared turn", func(t *testing.T) {
+		agent := &fakeAgent{promptNoPermission: true}
+		conv := newConversation(t, agent)
+
+		// A prepared turn the controller drops before starting, as it does when
+		// durable binding fails.
+		ref, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{
+			Text: "abandoned task", ClientMessageID: "ao-client-message-discarded",
+		})
+		if err != nil {
+			t.Fatalf("SendTurn: %v", err)
+		}
+		conv.(ports.ChatDeferredTurnStarter).DiscardDeferredTurn(ref.ProviderTurnID)
+		if agent.promptParams.Prompt != nil {
+			t.Fatal("a discarded turn still reached the provider")
+		}
+
+		if got := preambleText(runOneTurn(t, agent, conv, "the real task")); got != standingInstructions {
+			t.Fatalf("next prompt standing context = %q, want %q; a discarded turn must not spend it", got, standingInstructions)
+		}
+	})
 }
 
 func TestACPDriverRefreshesHistoryWithAnotherSessionLoad(t *testing.T) {

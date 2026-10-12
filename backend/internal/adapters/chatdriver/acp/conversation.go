@@ -130,9 +130,11 @@ type conversation struct {
 	onAuthRejected        func()
 	promptResponseFailure func(acpsdk.PromptResponse) error
 	hibernationCheck      func(context.Context, *acpsdk.ClientSideConnection, acpsdk.SessionId) (bool, error)
-	// preamble is standing context attached to the first prompt only. It is the
-	// delivery channel for agents that accept no system-prompt launch flag and
-	// ignore session/new _meta but do execute prompt content blocks.
+	// preamble is standing context attached to the first prompt that actually
+	// reaches the provider. It is the delivery channel for agents that accept no
+	// system-prompt launch flag and ignore session/new _meta but do execute
+	// prompt content blocks. It is consumed in StartDeferredTurn, not SendTurn,
+	// so a rejected or discarded turn leaves it armed for the next one.
 	preamble      []acpsdk.ContentBlock
 	preambleSpent bool
 
@@ -326,26 +328,16 @@ func (c *conversation) setReportedProviderConversationID(sessionID string) {
 	c.mu.Unlock()
 }
 
-// setSessionPreamble arms standing context for the next prompt. Any earlier
-// preamble is dropped: the newest launch context is the one that should reach
-// the provider, which is how a recomputed system prompt replaces the original.
+// setSessionPreamble arms standing context for the next prompt that actually
+// reaches the provider. Any earlier preamble is dropped: the newest launch
+// context is the one that should be delivered, which is how a recomputed system
+// prompt replaces the original. It is consumed in StartDeferredTurn so a turn
+// that never starts leaves it armed.
 func (c *conversation) setSessionPreamble(blocks []acpsdk.ContentBlock) {
 	c.mu.Lock()
 	c.preamble = blocks
 	c.preambleSpent = len(blocks) == 0
 	c.mu.Unlock()
-}
-
-// takeSessionPreamble returns the standing context once, so it is delivered on
-// session/new and again on session/load without repeating on later turns.
-func (c *conversation) takeSessionPreamble() []acpsdk.ContentBlock {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.preambleSpent || len(c.preamble) == 0 {
-		return nil
-	}
-	c.preambleSpent = true
-	return append([]acpsdk.ContentBlock(nil), c.preamble...)
 }
 
 func (c *conversation) Capabilities() ports.ChatCapabilities {
@@ -419,11 +411,6 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	prompt, err := c.promptContent(msg)
 	if err != nil {
 		return ports.ChatTurnRef{}, err
-	}
-	// Standing context leads the first prompt so the provider reads it as
-	// context rather than as part of what the user asked.
-	if preamble := c.takeSessionPreamble(); len(preamble) > 0 {
-		prompt = append(preamble, prompt...)
 	}
 	c.mu.Lock()
 	busy := c.closed || c.prepared != nil || c.activeTurn != ""
@@ -588,6 +575,17 @@ func (c *conversation) StartDeferredTurn(providerTurnID string) error {
 	}
 	turn := *c.prepared
 	c.prepared = nil
+	// Standing context leads the first prompt so the provider reads it as
+	// context rather than as part of what the user asked. It is consumed here,
+	// not in SendTurn, because this is the first point at which a prompt is
+	// guaranteed to reach the provider: settings validation, a busy conversation
+	// and a discarded prepared turn all fail in SendTurn, and spending the
+	// preamble on any of them would silently drop AO's instructions from the
+	// session's first real turn.
+	if !c.preambleSpent && len(c.preamble) > 0 {
+		turn.prompt = append(append([]acpsdk.ContentBlock(nil), c.preamble...), turn.prompt...)
+		c.preambleSpent = true
+	}
 	c.activeTurn = turn.id
 	c.settlingTurn = ""
 	turnCtx, cancel := context.WithCancel(context.Background())
