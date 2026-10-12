@@ -40,9 +40,9 @@ const (
 	HelloRejectedType     = "helloRejected"
 	helloTimeout          = 5 * time.Second
 	runtimeReconnectGrace = 2 * time.Second
-	// helloRejectTimeout bounds the best-effort rejection write so a runtime
-	// that stopped reading cannot hold the connection open.
-	helloRejectTimeout   = time.Second
+	// helloFrameTimeout bounds the best-effort handshake frames so a runtime that
+	// stopped reading cannot hold the connection open.
+	helloFrameTimeout    = time.Second
 	maxRuntimeFrameBytes = 8 << 20
 )
 
@@ -266,6 +266,18 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 
+	// Acknowledge before publishing the connection. The swap below wakes any
+	// pending Execute, and that command must never overtake the acknowledgement:
+	// the desktop app treats itself as connected only once the ack arrives, so a
+	// command arriving first would run against a link it still considers down.
+	// The write is bounded so a runtime that stopped reading cannot stall the
+	// registration; the connection is dropped instead.
+	if err := writeHelloFrame(conn, wireMessage{Type: HelloAckType, Version: ProtocolVersion}); err != nil {
+		b.log.Warn("browser runtime hello ack failed", "err", err)
+		_ = conn.Close()
+		return
+	}
+
 	b.mu.Lock()
 	old := b.conn
 	b.conn = conn
@@ -283,13 +295,6 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 		<-ctx.Done()
 		_ = conn.Close()
 	}()
-
-	// Acknowledge only after the runtime is registered, so the desktop app stops
-	// treating the link as authenticated on a bare TCP connect.
-	if err := b.write(ctx, conn, wireMessage{Type: HelloAckType, Version: ProtocolVersion}); err != nil {
-		b.disconnect(conn, fmt.Errorf("write browser runtime hello ack: %w", err))
-		return
-	}
 
 	for scanner.Scan() {
 		var msg wireMessage
@@ -326,13 +331,22 @@ func (b *Broker) helloRejectionReason(scanner *bufio.Scanner, hello *wireMessage
 // desktop app can log one actionable error instead of an anonymous connect/close
 // loop. A runtime that ignores the frame is closed regardless.
 func rejectHello(conn net.Conn, reason string) {
-	frame, err := json.Marshal(wireMessage{Type: HelloRejectedType, Reason: reason})
+	_ = writeHelloFrame(conn, wireMessage{Type: HelloRejectedType, Reason: reason})
+}
+
+// writeHelloFrame writes one bounded handshake frame. It bypasses the shared
+// write gate on purpose: a freshly accepted connection is not reachable from any
+// other writer yet, so there is nothing to serialize against, and a runtime must
+// not be dropped because an unrelated command write is holding the gate.
+func writeHelloFrame(conn net.Conn, msg wireMessage) error {
+	frame, err := json.Marshal(msg)
 	if err != nil {
-		return
+		return err
 	}
 	frame = append(frame, '\n')
-	_ = conn.SetWriteDeadline(time.Now().Add(helloRejectTimeout))
-	_, _ = conn.Write(frame)
+	_ = conn.SetWriteDeadline(time.Now().Add(helloFrameTimeout))
+	_, err = conn.Write(frame)
+	return err
 }
 
 func (b *Broker) write(ctx context.Context, conn net.Conn, msg wireMessage) error {

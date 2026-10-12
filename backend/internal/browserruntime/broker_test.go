@@ -140,10 +140,22 @@ func TestBrokerExecuteWaitsForRuntimeReconnect(t *testing.T) {
 	if err := enc.Encode(wireMessage{Type: "hello", Version: ProtocolVersion}); err != nil {
 		t.Fatal(err)
 	}
+	// The broker acknowledges the handshake and dispatches the pending command.
+	// The ack is written before the connection is published, but this test must
+	// not depend on that ordering to find the command.
 	var command wireMessage
-	if err := dec.Decode(&command); err != nil {
-		t.Fatal(err)
+	for command.Type == "" {
+		var frame wireMessage
+		_ = conn.SetReadDeadline(time.Now().Add(browserRuntimeTestTimeout()))
+		if err := dec.Decode(&frame); err != nil {
+			t.Fatalf("decode frame: %v", err)
+		}
+		if frame.Type == HelloAckType {
+			continue
+		}
+		command = frame
 	}
+	_ = conn.SetReadDeadline(time.Time{})
 	if command.Type != "command" || command.Action != "snapshot" {
 		t.Fatalf("command = %#v", command)
 	}
