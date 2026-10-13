@@ -65,24 +65,69 @@ export type BrowserRuntimeRecoveryDecision =
 	| { action: "replace"; reason: string };
 
 /**
+ * The daemon closed the link without accepting the hello. A current broker
+ * explains itself with helloRejected; a daemon predating that frame just hangs
+ * up, and both mean the same thing to us.
+ */
+export const HANDSHAKE_CLOSED_BEFORE_ACCEPT = "closed-before-accept";
+
+/**
+ * Refusals a retry cannot repair. A daemon that rejects this app's token, or
+ * drops the link before accepting it, would refuse identically forever, so the
+ * daemon itself has to be retired. Anything else (a version skew, a daemon that
+ * never answered) may resolve without killing a healthy daemon.
+ */
+const UNRECOVERABLE_HANDSHAKE_REASONS: ReadonlySet<string> = new Set([
+	"invalid-token",
+	HANDSHAKE_CLOSED_BEFORE_ACCEPT,
+]);
+
+/**
  * A daemon the app merely adopted holds the runtime token from whoever started
- * it, so a refusal cannot be retried away: it means this daemon can never drive
- * our browser panel for the rest of the launch. Retiring it and spawning our own
- * is the only recovery, and it is limited to that unrecoverable case.
+ * it, so an unrecoverable refusal cannot be retried away: it means this daemon
+ * can never drive our browser panel for the rest of the launch. Retiring it and
+ * spawning our own is the only recovery, and it is limited to that case.
  *
  * Waits when the app spawned the daemon itself (our token was handed to it, so a
  * refusal means something is wrong that a restart would not fix), when the
- * refusal is not a token mismatch (a version skew resolves on the next launch,
- * not by killing a healthy daemon), and after one attempt per launch so a daemon
- * that keeps refusing cannot be replaced in a loop.
+ * refusal is recoverable, and after one attempt per launch so a daemon that keeps
+ * refusing cannot be replaced in a loop.
  */
 export function browserRuntimeRecoveryDecision(input: {
 	rejectedReason: string | null;
 	spawnedHere: boolean;
 	attempted: boolean;
 }): BrowserRuntimeRecoveryDecision {
-	if (input.rejectedReason !== "invalid-token") return { action: "wait" };
+	if (input.rejectedReason === null) return { action: "wait" };
+	if (!UNRECOVERABLE_HANDSHAKE_REASONS.has(input.rejectedReason)) return { action: "wait" };
 	if (input.spawnedHere) return { action: "wait" };
 	if (input.attempted) return { action: "wait" };
-	return { action: "replace", reason: input.rejectedReason ?? "invalid-token" };
+	return { action: "replace", reason: input.rejectedReason };
+}
+
+/**
+ * Whether the startup path must retire an existing daemon instead of attaching.
+ *
+ * `forceRequested` is sticky by design: the renderer's first daemon.getStatus()
+ * can attach while boot is still awaiting the login-shell environment, so a
+ * forced replacement requested during that window must be honored by the startup
+ * already in flight rather than dropped by the memoized promise.
+ */
+export function shouldReplaceDaemonForStartup(input: {
+	ownership: BrowserDaemonOwnershipDecision;
+	forceRequested: boolean;
+}): boolean {
+	return input.forceRequested || input.ownership.action === "replace";
+}
+
+/**
+ * The persistence mode to hand the replacement. A forced replacement adopts no
+ * lifetime guidance from the daemon it retires (it may not even have one), so it
+ * keeps the daemon alive exactly like a forced keep-alive launch.
+ */
+export function keepAliveForReplacement(input: {
+	ownership: BrowserDaemonOwnershipDecision;
+	forceRequested: boolean;
+}): boolean {
+	return input.forceRequested ? true : input.ownership.action === "replace" && input.ownership.keepAlive;
 }

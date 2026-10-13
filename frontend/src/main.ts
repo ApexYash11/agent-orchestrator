@@ -115,7 +115,13 @@ import {
 	resolveDaemonFromPort,
 	resolveDaemonFromRunFile,
 } from "./shared/daemon-attach";
-import { browserDaemonOwnershipDecision, browserRuntimeRecoveryDecision, shouldReplacePortHolder } from "./shared/daemon-takeover";
+import {
+	browserDaemonOwnershipDecision,
+	browserRuntimeRecoveryDecision,
+	keepAliveForReplacement,
+	shouldReplaceDaemonForStartup,
+	shouldReplacePortHolder,
+} from "./shared/daemon-takeover";
 import {
 	buildDaemonEnv,
 	devDaemonAllowedOrigins,
@@ -357,6 +363,9 @@ let browserRuntimeLink: BrowserRuntimeLinkHandle | null = null;
 let browserRuntimeLinkIdentity: BrowserRuntimeIdentity | null = null;
 // One adopted-daemon replacement per launch; see handleBrowserRuntimeRejection.
 let browserRuntimeRecoveryAttempted = false;
+// Set when a recovery asks for a replacement and cleared once we own the daemon,
+// so an ordinary later startup is not forced to retire it. See startDaemon.
+let forceReplaceAdoptedRequested = false;
 let keybindingOverrides: KeybindingOverrides = {};
 let keybindingRecordingActive = false;
 let closeShellTerminalShortcutEnabled = false;
@@ -1685,11 +1694,19 @@ async function refreshDaemonStatus(): Promise<DaemonStatus> {
 }
 
 async function startDaemon(options: { forceReplaceAdopted?: boolean } = {}): Promise<DaemonStatus> {
+	// Sticky, not a parameter of the in-flight call: the renderer's first
+	// daemon.getStatus() can attach while boot is still awaiting the shell
+	// environment, so a forced replacement requested in that window must be
+	// honored by the startup already running instead of being dropped by the
+	// memoized promise. startDaemonInner reads it at each attach decision.
+	if (options.forceReplaceAdopted) {
+		forceReplaceAdoptedRequested = true;
+	}
 	if (daemonStartPromise) {
 		return daemonStartPromise;
 	}
 	const startEpoch = daemonStartEpoch;
-	const promise = startDaemonInner(startEpoch, options.forceReplaceAdopted === true).finally(() => {
+	const promise = startDaemonInner(startEpoch).finally(() => {
 		if (daemonStartPromise === promise) {
 			daemonStartPromise = null;
 		}
@@ -1726,7 +1743,7 @@ function daemonLaunchEnv(): NodeJS.ProcessEnv {
 	return process.env;
 }
 
-async function startDaemonInner(startEpoch: number, forceReplaceAdopted = false): Promise<DaemonStatus> {
+async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	if (daemonProcess) {
 		return daemonStatus;
 	}
@@ -1765,10 +1782,13 @@ async function startDaemonInner(startEpoch: number, forceReplaceAdopted = false)
 	}
 	if (existing) {
 		const ownership = browserDaemonOwnershipDecision(appRunId, existing);
-		if (ownership.action === "replace" || forceReplaceAdopted) {
+		if (shouldReplaceDaemonForStartup({ ownership, forceRequested: forceReplaceAdoptedRequested })) {
 			try {
 				await gracefullyReplaceDaemonForBrowser(existing.status);
-				replacementKeepAlive = ownership.action === "replace" ? ownership.keepAlive : true;
+				replacementKeepAlive = keepAliveForReplacement({
+					ownership,
+					forceRequested: forceReplaceAdoptedRequested,
+				});
 			} catch (err) {
 				setDaemonStatus({
 					state: "error",
@@ -1829,10 +1849,13 @@ async function startDaemonInner(startEpoch: number, forceReplaceAdopted = false)
 			owner: portAttachOwner,
 			appRunId: portAttachAppRunId,
 		});
-		if (ownership.action === "replace" || forceReplaceAdopted) {
+		if (shouldReplaceDaemonForStartup({ ownership, forceRequested: forceReplaceAdoptedRequested })) {
 			try {
 				await gracefullyReplaceDaemonForBrowser(directDaemon);
-				replacementKeepAlive = ownership.action === "replace" ? ownership.keepAlive : true;
+				replacementKeepAlive = keepAliveForReplacement({
+					ownership,
+					forceRequested: forceReplaceAdoptedRequested,
+				});
 			} catch (err) {
 				setDaemonStatus({
 					state: "error",
@@ -1967,6 +1990,10 @@ async function startDaemonInner(startEpoch: number, forceReplaceAdopted = false)
 	// child so the parent does not wait on it. Port discovery then relies on the
 	// running.json handshake (the log pipe scan is skipped).
 	const keep = replacementKeepAlive ?? keepDaemonAlive(process.env);
+	// We are about to own the daemon and hand it this launch's runtime token, so
+	// any forced replacement has been honored and must not leak into a later
+	// startup in this process.
+	forceReplaceAdoptedRequested = false;
 	let keepDaemonLogFd: number | undefined;
 	let stdio: "pipe" | "ignore" | ["pipe", number | "ignore", number | "ignore"] = "pipe";
 	if (keep) {

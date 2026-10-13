@@ -5,6 +5,9 @@ import { DAEMON_SERVICE_NAME, type DaemonProbe } from "./daemon-attach";
 import {
 	browserDaemonOwnershipDecision,
 	browserRuntimeRecoveryDecision,
+	HANDSHAKE_CLOSED_BEFORE_ACCEPT,
+	keepAliveForReplacement,
+	shouldReplaceDaemonForStartup,
 	shouldReplacePortHolder,
 } from "./daemon-takeover";
 
@@ -60,6 +63,16 @@ describe("browserRuntimeRecoveryDecision", () => {
 		).toEqual({ action: "replace", reason: "invalid-token" });
 	});
 
+	it("retires an adopted daemon that hangs up before accepting the hello", () => {
+		expect(
+			browserRuntimeRecoveryDecision({
+				rejectedReason: HANDSHAKE_CLOSED_BEFORE_ACCEPT,
+				spawnedHere: false,
+				attempted: false,
+			}),
+		).toEqual({ action: "replace", reason: HANDSHAKE_CLOSED_BEFORE_ACCEPT });
+	});
+
 	it("waits while the daemon this app spawned is still ours to fix", () => {
 		expect(
 			browserRuntimeRecoveryDecision({ rejectedReason: "invalid-token", spawnedHere: true, attempted: false }),
@@ -79,5 +92,37 @@ describe("browserRuntimeRecoveryDecision", () => {
 		expect(
 			browserRuntimeRecoveryDecision({ rejectedReason: "invalid-token", spawnedHere: false, attempted: true }),
 		).toEqual({ action: "wait" });
+	});
+});
+
+describe("startup replacement", () => {
+	it("honors a forced replacement of an adopted daemon", () => {
+		expect(
+			shouldReplaceDaemonForStartup({
+				ownership: { action: "attach" },
+				forceRequested: true,
+			}),
+		).toBe(true);
+	});
+
+	it("replaces only on an ownership mismatch when nothing forced it", () => {
+		expect(
+			shouldReplaceDaemonForStartup({ ownership: { action: "attach" }, forceRequested: false }),
+		).toBe(false);
+		expect(
+			shouldReplaceDaemonForStartup({ ownership: { action: "replace", keepAlive: false }, forceRequested: false }),
+		).toBe(true);
+	});
+
+	it("keeps a forced replacement's own daemon alive", () => {
+		// The retired daemon may not have a lifetime tag at all, so a forced
+		// replacement must not adopt its guidance.
+		expect(keepAliveForReplacement({ ownership: { action: "attach" }, forceRequested: true })).toBe(true);
+		expect(keepAliveForReplacement({ ownership: { action: "replace", keepAlive: false }, forceRequested: false })).toBe(
+			false,
+		);
+		expect(keepAliveForReplacement({ ownership: { action: "replace", keepAlive: true }, forceRequested: false })).toBe(
+			true,
+		);
 	});
 });

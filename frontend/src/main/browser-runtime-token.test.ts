@@ -1,10 +1,50 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	linkSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { browserRuntimeKeyPath, resolveBrowserRuntimeToken } from "./browser-runtime-token";
+import { browserRuntimeKeyPath, resolveBrowserRuntimeToken, type BrowserRuntimeKeyFs } from "./browser-runtime-token";
 
 const dirs: string[] = [];
+
+const nodeIo: BrowserRuntimeKeyFs = {
+	chmodSync: (target, mode) => chmodSync(target, mode),
+	linkSync: (target, destination) => linkSync(target, destination),
+	mkdirSync: (target, options) => mkdirSync(target, options),
+	readFileSync: (target, encoding) => readFileSync(target, encoding),
+	renameSync: (oldPath, newPath) => renameSync(oldPath, newPath),
+	rmSync: (target, options) => rmSync(target, options),
+	writeFileSync: (target, data, options) => writeFileSync(target, data, options),
+};
+
+/**
+ * The real filesystem, with a hook that runs once, immediately after this launch
+ * writes its candidate key and before the key path is published — the exact
+ * window in which another launch can observe the key path. Node builtins cannot
+ * be module-mocked in this setup, so the injection seam is the filesystem.
+ */
+function ioWithKeyWriteHook(onCandidateWritten: () => void): BrowserRuntimeKeyFs {
+	let fired = false;
+	return {
+		...nodeIo,
+		writeFileSync: (target, data, options) => {
+			nodeIo.writeFileSync(target, data, options);
+			if (fired) return;
+			fired = true;
+			onCandidateWritten();
+		},
+	};
+}
 
 function tempDataDir(): string {
 	const dir = mkdtempSync(path.join(os.tmpdir(), "ao-runtime-token-"));
@@ -41,15 +81,41 @@ describe("resolveBrowserRuntimeToken", () => {
 		}
 	});
 
-	it("reuses the key a concurrent launch already created", () => {
+	// The reported interleave: a second launch observes the key path while this
+	// launch is still creating it, and the two ends up disagreeing about the key.
+	it("stays consistent when a competing launch observes the key mid-creation", () => {
 		const dataDir = tempDataDir();
-		const first = resolveBrowserRuntimeToken(dataDir);
-		const key = readFileSync(browserRuntimeKeyPath(dataDir), "utf8");
+		let competitor = "";
+		const io = ioWithKeyWriteHook(() => {
+			// Model the reader's view of the key path in that window, then let a
+			// second launch resolve against it.
+			writeFileSync(browserRuntimeKeyPath(dataDir), "partia", { mode: 0o600 });
+			competitor = resolveBrowserRuntimeToken(dataDir);
+		});
+		const creator = resolveBrowserRuntimeToken(dataDir, io);
 
-		// Simulate losing the exclusive-create race: the key is present, so no
-		// second launch may overwrite it with a token the daemon does not know.
-		expect(resolveBrowserRuntimeToken(dataDir)).toBe(first);
-		expect(readFileSync(browserRuntimeKeyPath(dataDir), "utf8")).toBe(key);
+		expect(competitor).not.toBe("");
+		// The creator must adopt whatever ended up on disk, not its own candidate.
+		expect(creator).toBe(competitor);
+		expect(resolveBrowserRuntimeToken(dataDir)).toBe(creator);
+		expect(readFileSync(browserRuntimeKeyPath(dataDir), "utf8").trim()).toMatch(/^[A-Za-z0-9_-]{43}$/);
+	});
+
+	it("keeps two launches consistent when the key path already exists", () => {
+		const dataDir = tempDataDir();
+		resolveBrowserRuntimeToken(dataDir);
+		const keyBefore = readFileSync(browserRuntimeKeyPath(dataDir), "utf8");
+
+		const competitor = resolveBrowserRuntimeToken(dataDir, ioWithKeyWriteHook(() => undefined));
+		expect(competitor).toBe(resolveBrowserRuntimeToken(dataDir));
+		expect(readFileSync(browserRuntimeKeyPath(dataDir), "utf8")).toBe(keyBefore);
+	});
+
+	it("leaves no temporary files behind when a competitor wins", () => {
+		const dataDir = tempDataDir();
+		resolveBrowserRuntimeToken(dataDir, ioWithKeyWriteHook(() => resolveBrowserRuntimeToken(dataDir)));
+
+		expect(readdirSync(dataDir).filter((entry) => entry.startsWith("browser-runtime.key."))).toEqual([]);
 	});
 
 	it("replaces a corrupt key instead of propagating it", () => {

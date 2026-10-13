@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./browser-runtime-link";
 import { resolveBrowserRuntimeToken } from "./browser-runtime-token";
+import { HANDSHAKE_CLOSED_BEFORE_ACCEPT } from "../shared/daemon-takeover";
 
 const handles: BrowserRuntimeLinkHandle[] = [];
 const servers: net.Server[] = [];
@@ -449,6 +450,56 @@ describe("browser runtime link", () => {
 	// the token from the previous launch, so a per-launch token could never
 	// authenticate again and the browser panel stayed dead for the whole app
 	// lifetime. The token is derived from the data dir, so it must survive.
+	// A daemon predating helloRejected explains a refusal by hanging up. That is
+	// the adoption path for a surviving daemon from before this change: it holds
+	// a token we cannot derive, so without reporting the silent close the app
+	// would retry forever and never recover.
+	it("reports a daemon that hangs up before accepting the hello", async () => {
+		let attempts = 0;
+		const rejected: string[] = [];
+		const server = net.createServer((socket) => {
+			attempts += 1;
+			socket.on("data", () => socket.destroy());
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address() as net.AddressInfo;
+		const handle = connectBrowserRuntime(
+			{ host: address.address, port: address.port },
+			{ execute: async () => ({}), onHandshakeRejected: (reason) => rejected.push(reason) },
+		);
+		handles.push(handle);
+
+		await vi.waitFor(() => expect(rejected).toContain(HANDSHAKE_CLOSED_BEFORE_ACCEPT));
+		expect(handle.connected).toBe(false);
+		expect(rejected.every((reason) => reason === HANDSHAKE_CLOSED_BEFORE_ACCEPT)).toBe(true);
+		// Backing off still applies to an unexplained hang-up.
+		await new Promise((resolve) => setTimeout(resolve, 1_500));
+		expect(attempts).toBeLessThanOrEqual(2);
+	});
+
+	it("does not report a refusal for a link that had already connected", async () => {
+		const rejected: string[] = [];
+		const server = net.createServer((socket) => {
+			socket.on("data", () => acknowledgeHello(socket, { type: "hello" }));
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address() as net.AddressInfo;
+		const handle = connectBrowserRuntime(
+			{ host: address.address, port: address.port },
+			{ execute: async () => ({}), onHandshakeRejected: (reason) => rejected.push(reason) },
+		);
+		handles.push(handle);
+		await vi.waitFor(() => expect(handle.connected).toBe(true));
+
+		// A runtime that later disconnects is not a handshake refusal; startup
+		// recovery must not retire the daemon for an ordinary drop.
+		handle.dispose();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(rejected).toEqual([]);
+	});
+
 	it("authenticates a restarted app against a daemon that survived it", async () => {
 		const dataDir = mkdtempSync(path.join(os.tmpdir(), "ao-runtime-restart-"));
 		// Stands in for the broker: authenticate against the token the daemon was

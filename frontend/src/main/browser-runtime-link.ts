@@ -1,5 +1,6 @@
 import net from "node:net";
 import { StringDecoder } from "node:string_decoder";
+import { HANDSHAKE_CLOSED_BEFORE_ACCEPT } from "../shared/daemon-takeover";
 
 const PROTOCOL_VERSION = 2;
 const BACKOFF_INIT_MS = 200;
@@ -65,6 +66,9 @@ export function connectBrowserRuntime(
 	let connectionEpoch = 0;
 	let acceptHandshake: (() => void) | null = null;
 	let lastRejectionReason: string | null = null;
+	// Connection epoch that already reported a refusal, so a daemon that explains
+	// itself with helloRejected is not also counted as an unexplained hang-up.
+	let rejectedEpoch = -1;
 	const commandChains = new Map<string, Promise<void>>();
 	const commandControllers = new Map<string, AbortController>();
 	const activeCommands = new Map<
@@ -133,6 +137,7 @@ export function connectBrowserRuntime(
 	 */
 	const noteHandshakeRejection = (reason: string) => {
 		backoff = BACKOFF_MAX_MS;
+		rejectedEpoch = connectionEpoch;
 		options.onHandshakeRejected?.(reason);
 		if (reason === lastRejectionReason) return;
 		lastRejectionReason = reason;
@@ -297,6 +302,7 @@ export function connectBrowserRuntime(
 		const next = typeof address === "string" ? net.connect(address) : net.connect(address);
 		socket = next;
 		let accepted = false;
+		let opened = false;
 		// A TCP connect only proves the socket opened. The daemon authenticates
 		// the hello, so the link — and the retry backoff — stay unclaimed until
 		// the daemon accepts it.
@@ -307,6 +313,7 @@ export function connectBrowserRuntime(
 			setConnected(true);
 			backoff = BACKOFF_INIT_MS;
 			lastRejectionReason = null;
+			rejectedEpoch = -1;
 			log("browser-runtime-link: connected");
 		};
 		acceptHandshake = accept;
@@ -315,6 +322,7 @@ export function connectBrowserRuntime(
 				next.destroy();
 				return;
 			}
+			opened = true;
 			void send({ type: "hello", version: PROTOCOL_VERSION, token: options.token }, next, epoch)
 				.then(() => {
 					if (disposed || accepted || socket !== next || connectionEpoch !== epoch) return;
@@ -332,6 +340,13 @@ export function connectBrowserRuntime(
 			if (connectionTornDown || socket !== next || connectionEpoch !== epoch) return;
 			connectionTornDown = true;
 			if (acceptHandshake === accept) acceptHandshake = null;
+			// A daemon that hangs up on a hello it will never accept explains
+			// itself with helloRejected; one predating that frame just closes.
+			// Both mean this daemon cannot drive our browser panel, and neither is
+			// fixable by retrying, so report it the same way — once per connection.
+			if (opened && !accepted && !disposed && rejectedEpoch !== epoch) {
+				noteHandshakeRejection(HANDSHAKE_CLOSED_BEFORE_ACCEPT);
+			}
 			setConnected(false);
 			cancelConnectionCommands();
 			socket = null;
