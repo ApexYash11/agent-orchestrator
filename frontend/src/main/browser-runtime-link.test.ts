@@ -1,6 +1,11 @@
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./browser-runtime-link";
+import { resolveBrowserRuntimeToken } from "./browser-runtime-token";
 
 const handles: BrowserRuntimeLinkHandle[] = [];
 const servers: net.Server[] = [];
@@ -386,6 +391,7 @@ describe("browser runtime link", () => {
 	it("backs off instead of hot-looping when the daemon rejects the handshake", async () => {
 		let attempts = 0;
 		const logs: string[] = [];
+		const rejected: string[] = [];
 		const server = net.createServer((socket) => {
 			attempts += 1;
 			socket.on("data", (chunk) => {
@@ -402,7 +408,11 @@ describe("browser runtime link", () => {
 		const address = server.address() as net.AddressInfo;
 		const handle = connectBrowserRuntime(
 			{ host: address.address, port: address.port },
-			{ execute: async () => ({}), log: (message) => logs.push(message) },
+			{
+				execute: async () => ({}),
+				log: (message) => logs.push(message),
+				onHandshakeRejected: (reason) => rejected.push(reason),
+			},
 		);
 		handles.push(handle);
 
@@ -415,6 +425,10 @@ describe("browser runtime link", () => {
 		expect(handle.connected).toBe(false);
 		expect(logs).toContain("browser-runtime-link: daemon rejected the runtime handshake: invalid-token");
 		expect(logs.filter((line) => line === "browser-runtime-link: connected")).toEqual([]);
+		// The reason reaches the caller on every refusal so startup recovery can
+		// react even when the log line is suppressed as a repeat.
+		expect(rejected).not.toEqual([]);
+		expect(new Set(rejected)).toEqual(new Set(["invalid-token"]));
 	});
 
 	it("authenticates a link held open by a daemon that predates the hello ack", async () => {
@@ -428,5 +442,72 @@ describe("browser runtime link", () => {
 		handles.push(handle);
 
 		await vi.waitFor(() => expect(handle.connected).toBe(true), { timeout: 5_000 });
+	});
+
+	// The reproduced restart path: a kept-alive daemon outlives the Electron
+	// process that spawned it, and the next launch adopts it. That daemon holds
+	// the token from the previous launch, so a per-launch token could never
+	// authenticate again and the browser panel stayed dead for the whole app
+	// lifetime. The token is derived from the data dir, so it must survive.
+	it("authenticates a restarted app against a daemon that survived it", async () => {
+		const dataDir = mkdtempSync(path.join(os.tmpdir(), "ao-runtime-restart-"));
+		// Stands in for the broker: authenticate against the token the daemon was
+		// handed at spawn and hold the connection open across the "restart".
+		const daemonToken = resolveBrowserRuntimeToken(dataDir);
+		const rejections: string[] = [];
+		const server = net.createServer((socket) => {
+			let inbound = "";
+			socket.on("data", (chunk) => {
+				inbound += chunk.toString("utf8");
+				for (;;) {
+					const newline = inbound.indexOf("\n");
+					if (newline < 0) return;
+					const message = JSON.parse(inbound.slice(0, newline)) as { type?: string; token?: string };
+					inbound = inbound.slice(newline + 1);
+					if (message.type !== "hello") continue;
+					if (message.token !== daemonToken) {
+						rejections.push(String(message.token));
+						socket.end(`${JSON.stringify({ type: "helloRejected", reason: "invalid-token" })}\n`);
+						continue;
+					}
+					socket.write(HELLO_ACK);
+				}
+			});
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address() as net.AddressInfo;
+
+		const firstLaunch = connectBrowserRuntime(
+			{ host: address.address, port: address.port },
+			{ execute: async () => ({}), token: resolveBrowserRuntimeToken(dataDir) },
+		);
+		handles.push(firstLaunch);
+		await vi.waitFor(() => expect(firstLaunch.connected).toBe(true));
+
+		// The app quits; the daemon (and the token it holds) survives.
+		firstLaunch.dispose();
+		handles.splice(handles.indexOf(firstLaunch), 1);
+
+		// A fresh launch derives its token from the same data dir and adopts it.
+		const secondLaunch = connectBrowserRuntime(
+			{ host: address.address, port: address.port },
+			{ execute: async () => ({}), token: resolveBrowserRuntimeToken(dataDir) },
+		);
+		handles.push(secondLaunch);
+
+		await vi.waitFor(() => expect(secondLaunch.connected).toBe(true));
+		expect(rejections).toEqual([]);
+
+		// A launch on a different data dir still cannot claim this daemon.
+		const foreignLaunch = connectBrowserRuntime(
+			{ host: address.address, port: address.port },
+			{ execute: async () => ({}), token: randomBytes(32).toString("base64url") },
+		);
+		handles.push(foreignLaunch);
+		await vi.waitFor(() => expect(rejections).toHaveLength(1));
+		expect(foreignLaunch.connected).toBe(false);
+
+		rmSync(dataDir, { recursive: true, force: true });
 	});
 });

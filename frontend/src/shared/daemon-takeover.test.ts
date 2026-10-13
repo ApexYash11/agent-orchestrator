@@ -2,7 +2,11 @@
 //   cd frontend && npx vitest run src/shared/daemon-takeover.test.ts
 import { describe, expect, it } from "vitest";
 import { DAEMON_SERVICE_NAME, type DaemonProbe } from "./daemon-attach";
-import { browserDaemonOwnershipDecision, shouldReplacePortHolder } from "./daemon-takeover";
+import {
+	browserDaemonOwnershipDecision,
+	browserRuntimeRecoveryDecision,
+	shouldReplacePortHolder,
+} from "./daemon-takeover";
 
 // A minimal valid DaemonProbe (non-null means the AO daemon answered /healthz).
 const healthyProbe: DaemonProbe = {
@@ -46,5 +50,34 @@ describe("browserDaemonOwnershipDecision", () => {
 			keepAlive: true,
 		});
 		expect(browserDaemonOwnershipDecision("run-2", {})).toEqual({ action: "replace", keepAlive: true });
+	});
+});
+
+describe("browserRuntimeRecoveryDecision", () => {
+	it("retires an adopted daemon that refuses this app's token", () => {
+		expect(
+			browserRuntimeRecoveryDecision({ rejectedReason: "invalid-token", spawnedHere: false, attempted: false }),
+		).toEqual({ action: "replace", reason: "invalid-token" });
+	});
+
+	it("waits while the daemon this app spawned is still ours to fix", () => {
+		expect(
+			browserRuntimeRecoveryDecision({ rejectedReason: "invalid-token", spawnedHere: true, attempted: false }),
+		).toEqual({ action: "wait" });
+	});
+
+	it("waits for refusal reasons a restart would not fix", () => {
+		expect(
+			browserRuntimeRecoveryDecision({ rejectedReason: "unsupported-version", spawnedHere: false, attempted: false }),
+		).toEqual({ action: "wait" });
+		expect(browserRuntimeRecoveryDecision({ rejectedReason: null, spawnedHere: false, attempted: false })).toEqual({
+			action: "wait",
+		});
+	});
+
+	it("replaces at most once per launch", () => {
+		expect(
+			browserRuntimeRecoveryDecision({ rejectedReason: "invalid-token", spawnedHere: false, attempted: true }),
+		).toEqual({ action: "wait" });
 	});
 });

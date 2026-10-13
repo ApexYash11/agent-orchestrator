@@ -46,6 +46,7 @@ type BrowserRuntimeLinkOptions = {
 	token?: string;
 	log?: (message: string) => void;
 	onStateChange?: (connected: boolean) => void;
+	onHandshakeRejected?: (reason: string) => void;
 };
 
 export function connectBrowserRuntime(
@@ -132,6 +133,7 @@ export function connectBrowserRuntime(
 	 */
 	const noteHandshakeRejection = (reason: string) => {
 		backoff = BACKOFF_MAX_MS;
+		options.onHandshakeRejected?.(reason);
 		if (reason === lastRejectionReason) return;
 		lastRejectionReason = reason;
 		log(`browser-runtime-link: daemon rejected the runtime handshake: ${reason}`);

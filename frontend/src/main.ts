@@ -115,7 +115,7 @@ import {
 	resolveDaemonFromPort,
 	resolveDaemonFromRunFile,
 } from "./shared/daemon-attach";
-import { browserDaemonOwnershipDecision, shouldReplacePortHolder } from "./shared/daemon-takeover";
+import { browserDaemonOwnershipDecision, browserRuntimeRecoveryDecision, shouldReplacePortHolder } from "./shared/daemon-takeover";
 import {
 	buildDaemonEnv,
 	devDaemonAllowedOrigins,
@@ -167,6 +167,7 @@ import { AgentBrowserRuntime } from "./main/agent-browser-runtime";
 import { sameBrowserRuntimeIdentity, type BrowserRuntimeIdentity } from "./main/browser-runtime-identity";
 import { connectSupervisor, type SupervisorLinkHandle } from "./main/supervisor-link";
 import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./main/browser-runtime-link";
+import { resolveBrowserRuntimeToken } from "./main/browser-runtime-token";
 import { checkRender, measureRender } from "./main/render-check";
 import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
 import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
@@ -354,6 +355,8 @@ const desktopQuit = createDesktopQuitController({
 });
 let browserRuntimeLink: BrowserRuntimeLinkHandle | null = null;
 let browserRuntimeLinkIdentity: BrowserRuntimeIdentity | null = null;
+// One adopted-daemon replacement per launch; see handleBrowserRuntimeRejection.
+let browserRuntimeRecoveryAttempted = false;
 let keybindingOverrides: KeybindingOverrides = {};
 let keybindingRecordingActive = false;
 let closeShellTerminalShortcutEnabled = false;
@@ -1324,7 +1327,22 @@ function ensureShellEnv(): Promise<void> {
 // (including supervisor restarts) reports the same run. An explicit
 // AO_APP_RUN_ID in the environment wins, which lets a test or a wrapper pin it.
 const appRunId = process.env.AO_APP_RUN_ID ?? `apprun-${randomUUID()}`;
-const browserRuntimeToken = randomBytes(32).toString("base64url");
+// The browser runtime token identifies this app to the daemon's runtime broker.
+// It is derived from an owner-only key in the data dir so it survives an app
+// restart: a daemon kept alive by AO_KEEP_DAEMON (or adopted under a pinned
+// AO_APP_RUN_ID) outlives the launch that spawned it, and a per-launch token left
+// that daemon permanently unable to authenticate this app. Falls back to a
+// per-launch token when the key cannot be persisted, which restores the old
+// behavior — the daemon is replaced instead of adopted — rather than failing to
+// start.
+const browserRuntimeToken = (() => {
+	try {
+		return resolveBrowserRuntimeToken(desktopDataDir);
+	} catch (error) {
+		console.warn(`AO: browser runtime key unavailable (${String(error)}); using a per-launch token`);
+		return randomBytes(32).toString("base64url");
+	}
+})();
 let stagedBundledTmuxBinary: string | null = null;
 
 async function ensureBundledTmuxStaged(): Promise<void> {
@@ -1374,7 +1392,9 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 		AO_APP_RUN_ID: appRunId,
 		// The browser runtime token is handed over through the child's private
 		// stdin pipe below. Never put it in the daemon environment, where a
-		// same-UID worker could inspect the parent process.
+		// same-UID worker could inspect the parent process, and never in argv.
+		// It is derived from an owner-only key in the data dir so an app restart
+		// can still authenticate a kept-alive daemon it adopts.
 		AO_BROWSER_RUNTIME_TOKEN: "",
 		AO_BROWSER_RUNTIME_TOKEN_STDIN: "1",
 		// Under AppImage, APPIMAGE is the stable outer .AppImage file path (the
@@ -1549,8 +1569,33 @@ function establishBrowserRuntimeLink(): void {
 		},
 		log: (message) => console.log(`AO: ${message}`),
 		onStateChange: publishBrowserRuntimeState,
+		onHandshakeRejected: handleBrowserRuntimeRejection,
 	});
 	browserRuntimeLinkIdentity = identity;
+}
+
+/**
+ * A daemon we only adopted holds the runtime token of the launch that started it,
+ * so an `invalid-token` refusal is permanent for this launch: retrying cannot
+ * help, and the browser panel stays unusable. Retire that daemon and start our
+ * own, which is handed the current token. Bounded to one attempt per launch by
+ * browserRuntimeRecoveryDecision.
+ */
+function handleBrowserRuntimeRejection(reason: string): void {
+	const decision = browserRuntimeRecoveryDecision({
+		rejectedReason: reason,
+		spawnedHere: daemonProcess !== null,
+		attempted: browserRuntimeRecoveryAttempted,
+	});
+	if (decision.action === "wait") return;
+	browserRuntimeRecoveryAttempted = true;
+	console.warn(`AO: replacing an adopted daemon that refused this app's browser runtime (${decision.reason})`);
+	disposeBrowserRuntimeLink();
+	setDaemonStatus({
+		state: "starting",
+		message: "Restarting the AO daemon to restore the browser runtime.",
+	});
+	void startDaemon({ forceReplaceAdopted: true });
 }
 
 function establishSupervisorLink(): void {
@@ -1639,12 +1684,12 @@ async function refreshDaemonStatus(): Promise<DaemonStatus> {
 	return daemonStatus;
 }
 
-async function startDaemon(): Promise<DaemonStatus> {
+async function startDaemon(options: { forceReplaceAdopted?: boolean } = {}): Promise<DaemonStatus> {
 	if (daemonStartPromise) {
 		return daemonStartPromise;
 	}
 	const startEpoch = daemonStartEpoch;
-	const promise = startDaemonInner(startEpoch).finally(() => {
+	const promise = startDaemonInner(startEpoch, options.forceReplaceAdopted === true).finally(() => {
 		if (daemonStartPromise === promise) {
 			daemonStartPromise = null;
 		}
@@ -1681,7 +1726,7 @@ function daemonLaunchEnv(): NodeJS.ProcessEnv {
 	return process.env;
 }
 
-async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
+async function startDaemonInner(startEpoch: number, forceReplaceAdopted = false): Promise<DaemonStatus> {
 	if (daemonProcess) {
 		return daemonStatus;
 	}
@@ -1720,10 +1765,10 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	}
 	if (existing) {
 		const ownership = browserDaemonOwnershipDecision(appRunId, existing);
-		if (ownership.action === "replace") {
+		if (ownership.action === "replace" || forceReplaceAdopted) {
 			try {
 				await gracefullyReplaceDaemonForBrowser(existing.status);
-				replacementKeepAlive = ownership.keepAlive;
+				replacementKeepAlive = ownership.action === "replace" ? ownership.keepAlive : true;
 			} catch (err) {
 				setDaemonStatus({
 					state: "error",
@@ -1784,10 +1829,10 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 			owner: portAttachOwner,
 			appRunId: portAttachAppRunId,
 		});
-		if (ownership.action === "replace") {
+		if (ownership.action === "replace" || forceReplaceAdopted) {
 			try {
 				await gracefullyReplaceDaemonForBrowser(directDaemon);
-				replacementKeepAlive = ownership.keepAlive;
+				replacementKeepAlive = ownership.action === "replace" ? ownership.keepAlive : true;
 			} catch (err) {
 				setDaemonStatus({
 					state: "error",

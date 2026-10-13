@@ -42,11 +42,15 @@ export type BrowserDaemonOwnershipDecision =
 	| { action: "replace"; keepAlive: boolean };
 
 /**
- * A daemon can authenticate to only the Electron launch that handed it the
- * memory-only browser runtime token. Reuse within that launch is safe. Across
- * launches we replace it gracefully, preserving the original persistence mode:
- * app-owned daemons remain app-owned; persistent/headless daemons remain alive
- * after the window closes.
+ * A daemon belongs to the Electron launch that reported its app run id: reuse
+ * within that launch is safe, and across launches we replace it gracefully,
+ * preserving the original persistence mode (app-owned daemons remain app-owned;
+ * persistent/headless daemons remain alive after the window closes).
+ *
+ * This is a daemon ownership/lifecycle decision, not an authentication one. The
+ * browser runtime token is derived from the data dir and survives an app restart
+ * (see browser-runtime-token.ts), so a kept-alive daemon still accepts this app
+ * after a relaunch; replacing it no longer exists to repair a token mismatch.
  */
 export function browserDaemonOwnershipDecision(
 	currentAppRunId: string,
@@ -54,4 +58,31 @@ export function browserDaemonOwnershipDecision(
 ): BrowserDaemonOwnershipDecision {
 	if (existing.appRunId === currentAppRunId) return { action: "attach" };
 	return { action: "replace", keepAlive: existing.owner !== "app" };
+}
+
+export type BrowserRuntimeRecoveryDecision =
+	| { action: "wait" }
+	| { action: "replace"; reason: string };
+
+/**
+ * A daemon the app merely adopted holds the runtime token from whoever started
+ * it, so a refusal cannot be retried away: it means this daemon can never drive
+ * our browser panel for the rest of the launch. Retiring it and spawning our own
+ * is the only recovery, and it is limited to that unrecoverable case.
+ *
+ * Waits when the app spawned the daemon itself (our token was handed to it, so a
+ * refusal means something is wrong that a restart would not fix), when the
+ * refusal is not a token mismatch (a version skew resolves on the next launch,
+ * not by killing a healthy daemon), and after one attempt per launch so a daemon
+ * that keeps refusing cannot be replaced in a loop.
+ */
+export function browserRuntimeRecoveryDecision(input: {
+	rejectedReason: string | null;
+	spawnedHere: boolean;
+	attempted: boolean;
+}): BrowserRuntimeRecoveryDecision {
+	if (input.rejectedReason !== "invalid-token") return { action: "wait" };
+	if (input.spawnedHere) return { action: "wait" };
+	if (input.attempted) return { action: "wait" };
+	return { action: "replace", reason: input.rejectedReason ?? "invalid-token" };
 }
