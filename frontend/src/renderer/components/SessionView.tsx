@@ -1294,14 +1294,18 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 	// serving, so an artifact preview the user opened stays visible; every other
 	// preview of a terminated session is a stale DB fact and is still torn down.
 	const browserTerminated = terminated && !(isArtifactPreviewUrl(previewUrl) && !hostId);
-	const browserView = useBrowserView({
+const browserView = useBrowserView({
 		sessionId: uiSessionId,
 		origin: hostId ? { hostId, sessionId, proxyBase: remoteBase ?? "" } : undefined,
 		active: browserSlotVisible,
 		poppedOut: browserPoppedOut,
-		terminated: browserTerminated,
+		terminated,
 		previewUrl,
 		previewRevision,
+		// Only BrowserPanelView reads browserRuntimeConnected, and it has its own
+		// hook instance for it. Subscribing here would make every runtime link
+		// transition re-render the whole session view for a field it never reads.
+		subscribeRuntimeState: false,
 	});
 	const browserAnnotationQueue = useBrowserAnnotationQueue({
 		sessionId: session?.id,
