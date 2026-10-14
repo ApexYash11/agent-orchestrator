@@ -4522,6 +4522,46 @@ func TestRestore_RefreshesModelFromSessionMetadata(t *testing.T) {
 	}
 }
 
+// TestRestore_RefreshesEffortFromSessionMetadata is the effort sibling of the
+// ChatUI ↔ TUI persistence bug above: a per-spawn or ChatUI-selected reasoning
+// effort recorded on the session's durable metadata must reach the harness
+// restore command for every effort-capable harness, not silently revert to the
+// project default for everyone except Claude Code.
+func TestRestore_RefreshesEffortFromSessionMetadata(t *testing.T) {
+	st := newFakeStore()
+	// The project default would otherwise win; the session's own persisted
+	// effort must take precedence for the rebuild.
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{
+		AgentConfig: domain.AgentConfig{Model: "project-default-model", Effort: "low"},
+	}}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Harness: domain.HarnessCodex, IsTerminated: true,
+		Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath:  "/ws/mer-1",
+			Branch:         "b",
+			AgentSessionID: "codex-native-1",
+			Effort:         "high",
+		},
+	}
+	agent := &recordingAgent{}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	m := New(Deps{Runtime: &fakeRuntime{}, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: lookPath})
+
+	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	// The persisted effort, not the project default, reaches the harness restore cmd.
+	if agent.lastConfig.Effort != "high" {
+		t.Fatalf("restore config effort = %q, want the session's persisted effort high", agent.lastConfig.Effort)
+	}
+	// History is preserved: the restore resumed the existing native conversation
+	// rather than spawning a new session.
+	if !reflect.DeepEqual(agent.lastRestore.Session.Metadata[ports.MetadataKeyAgentSessionID], "codex-native-1") {
+		t.Fatalf("resume identity = %q, want codex-native-1 (conversation must be preserved)", agent.lastRestore.Session.Metadata[ports.MetadataKeyAgentSessionID])
+	}
+}
+
 // TestPersistChatModel is the regression for the ChatUI-side half of #4893. The
 // manager must record a model the user picked in ChatUI onto the session's
 // durable metadata before the next prompt routes, and a model-only write must
@@ -7411,6 +7451,45 @@ func TestSpawn_RejectsExplicitEffortForUnsupportedHarnessBeforeSessionRow(t *tes
 	}
 	if rt.created != 0 {
 		t.Fatal("runtime must not be created for an unsupported harness effort")
+	}
+}
+
+// TestSpawn_TUICodexEffortIsResolvedAndPersisted asserts a TUI codex spawn
+// with an explicit effort override resolves and validates it against the model
+// catalog and persists the resolved selection durably, so a later rebuild can
+// keep the choice instead of reverting to the project default.
+func TestSpawn_TUICodexEffortIsResolvedAndPersisted(t *testing.T) {
+	m, st, rt, _ := newManager()
+	agent := &recordingAgent{}
+	m.agents = singleAgent{agent: agent}
+	m.SetModelCatalog(tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "gpt-5.6-sol", IsDefault: true, Efforts: []string{"low", "medium", "high"}},
+	}}})
+
+	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID:      "mer",
+		Kind:           domain.KindWorker,
+		Harness:        domain.HarnessCodex,
+		RequestedMode:  domain.SessionModeTUI,
+		Prompt:         "do the work",
+		AgentConfig:    ports.AgentConfig{Effort: "high"},
+		EffortOverride: true,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if rt.created != 1 {
+		t.Fatalf("runtime creates = %d, want 1", rt.created)
+	}
+	if agent.lastConfig.Effort != "high" {
+		t.Fatalf("launch effort = %q, want high", agent.lastConfig.Effort)
+	}
+	stored, ok := st.sessions[rec.ID]
+	if !ok {
+		t.Fatal("spawned session row missing")
+	}
+	if stored.Metadata.Effort != "high" {
+		t.Fatalf("persisted effort = %q, want high (explicit override must be durable for a TUI rebuild)", stored.Metadata.Effort)
 	}
 }
 

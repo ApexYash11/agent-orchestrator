@@ -426,25 +426,30 @@ func TestResolveAgentConfigRejectsExplicitEffortForUnsupportedHarness(t *testing
 		{ID: "gemini-2.5-pro", IsDefault: true, Efforts: []string{"low", "high"}},
 	}}}}
 	for _, harness := range []domain.AgentHarness{domain.HarnessDroid, domain.HarnessAider, domain.HarnessAmp} {
-		// Explicit per-spawn effort must fail loudly instead of being silently
-		// discarded: the caller asked for something the harness cannot honor.
+		// A flagged explicit effort override must fail loudly instead of being
+		// silently discarded: the caller asked for something the harness cannot
+		// honor.
 		_, err := m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
-			ProjectID: "p", Kind: domain.KindWorker, Harness: harness,
-			AgentConfig: ports.AgentConfig{Model: "gemini-2.5-pro", Effort: "high"},
-		}, domain.ProjectConfig{})
-		if !errors.Is(err, ports.ErrUnsupportedEffort) {
-			t.Fatalf("harness %q error = %v, want ErrUnsupportedEffort", harness, err)
-		}
-		if !strings.Contains(err.Error(), "only supported for codex and claude-code") {
-			t.Fatalf("harness %q error = %v, want support hint", harness, err)
-		}
-		// Same when the override arrives as an explicit task override.
-		_, err = m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
 			ProjectID: "p", Kind: domain.KindWorker, Harness: harness,
 			AgentConfig: ports.AgentConfig{Model: "gemini-2.5-pro", Effort: "high"}, EffortOverride: true,
 		}, domain.ProjectConfig{})
 		if !errors.Is(err, ports.ErrUnsupportedEffort) {
 			t.Fatalf("harness %q override error = %v, want ErrUnsupportedEffort", harness, err)
+		}
+		if !strings.Contains(err.Error(), "only supported for codex, claude-code, and command-code") {
+			t.Fatalf("harness %q error = %v, want support hint", harness, err)
+		}
+		// Unflagged request-carried effort still clears silently, matching the
+		// long-standing contract for harnesses without effort support.
+		resolved, err := m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
+			ProjectID: "p", Kind: domain.KindWorker, Harness: harness,
+			AgentConfig: ports.AgentConfig{Model: "gemini-2.5-pro", Effort: "high"},
+		}, domain.ProjectConfig{})
+		if err != nil {
+			t.Fatalf("harness %q unflagged error = %v, want silent clear", harness, err)
+		}
+		if resolved.Effort != "" {
+			t.Fatalf("harness %q unflagged effort = %q, want cleared", harness, resolved.Effort)
 		}
 	}
 

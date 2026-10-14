@@ -1141,19 +1141,34 @@ func TestSpawnEffortFlagWiring(t *testing.T) {
 	}
 }
 
-// TestSpawnEffortFlagRejectsUnsupportedHarness asserts `ao spawn --effort`
-// fails loudly for harnesses that cannot honor it instead of silently
-// discarding the override.
-func TestSpawnEffortFlagRejectsUnsupportedHarness(t *testing.T) {
-	for _, agent := range []string{"gemini", "aider", "amp"} {
-		t.Run(agent, func(t *testing.T) {
-			_, _, err := executeCLI(t, Deps{}, "spawn", "--standalone", "--agent", agent, "--name", "Worker", "--effort", "high")
-			if err == nil || ExitCode(err) != 2 {
-				t.Fatalf("err=%v exit=%d, want usage error", err, ExitCode(err))
-			}
-			if !strings.Contains(err.Error(), "--effort is only supported for codex and claude-code agents") {
-				t.Fatalf("err=%v, want --effort support hint", err)
-			}
-		})
+// TestSpawnEffortSurfacesDaemonUnsupportedEffort asserts `ao spawn --effort`
+// on a harness that cannot honor it fails with the daemon's UNSUPPORTED_EFFORT
+// envelope instead of a CLI-side harness allowlist: the daemon owns which
+// harnesses support effort, so the list cannot drift in the thin client.
+func TestSpawnEffortSurfacesDaemonUnsupportedEffort(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+			_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"demo","name":"Demo","path":"/repo/demo"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure":
+			_, _ = io.WriteString(w, authorizedAgentsJSON("gemini"))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"invalid","code":"UNSUPPORTED_EFFORT","message":"effort is only supported for codex, claude-code, and command-code agents","requestId":"req-1"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--project", "demo", "--agent", "gemini", "--name", "Worker", "--effort", "high")
+	if err == nil || ExitCode(err) != 1 {
+		t.Fatalf("err=%v exit=%d, want daemon error exit 1", err, ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "UNSUPPORTED_EFFORT") || !strings.Contains(err.Error(), "effort is only supported") {
+		t.Fatalf("err=%v, want daemon UNSUPPORTED_EFFORT envelope", err)
 	}
 }
