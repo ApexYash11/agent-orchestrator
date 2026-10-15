@@ -77,10 +77,40 @@ this coverage partial because Command Code does not expose a permission-request
 hook, so it cannot reliably distinguish an approval prompt from other in-turn
 work.
 
-On `SessionStart`, the same hook returns Command Code's supported
-`additionalContext` response with AO's standing instructions. The prompt stays
-in AO-owned storage under `~/.ao` and AO does not modify the project's
-`AGENTS.md` or `.commandcode/AGENTS.md`.
+On `SessionStart`, the hook does not carry AO's standing instructions; see
+[Standing Instructions](#standing-instructions) below.
+
+## Standing Instructions
+
+Command Code accepts no system-prompt launch flag, and the alternatives AO tried
+are all unavailable to Chat: `cmd acp` builds no mod host, so neither a mod's
+`appendSystemPrompt` nor any shell hook reaches it (hooks are themselves a mod),
+and `session/new` ignores `_meta`. Memory is the one surface Command Code reads in
+both modes, and its own documentation places memory in the **system prompt**
+rather than the conversation, so AO's instructions survive compaction.
+
+Each session therefore gets its own Command Code home under
+`~/.ao/prompts/<session-id>/home/.commandcode/`, containing `AGENTS.md` with the
+session's standing instructions. AO points `HOME` and `USERPROFILE` at that
+directory for the session's process.
+
+Two consequences follow from Command Code's tier rules:
+
+- The **user** tier is used because it is additive. A repository's own
+  `AGENTS.md` still loads alongside AO's; the project tier would silently shadow
+  it, because only the first existing project-tier file is read.
+- Each session has its own home, so concurrent sessions never share a memory file
+  and each carries its own role (orchestrator or worker).
+
+The session home mirrors the user's `auth.json`, `config.json` and
+`providers.json` so the session can authenticate; Command Code has no
+environment variable for its OAuth token, so the token is copied rather than
+referenced. All AO-owned state stays under `~/.ao`, and nothing is written to the
+project's `AGENTS.md` or `.commandcode/AGENTS.md`.
+
+Because a session whose memory is empty would run with no AO role at all, a
+Command Code session fails to start rather than launching without its standing
+instructions.
 
 ## Chat Mode
 

@@ -28,6 +28,7 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/commandcode"
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/nativeacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -64,7 +65,6 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 		Configure:        configure,
 		SessionMode:      sessionMode,
 		SessionOptions:   sessionOptions,
-		SessionPreamble:  sessionPreamble,
 		PermissionPolicy: permissionPolicy,
 	}, log)
 }
@@ -76,12 +76,16 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 // the same reasoning in kimchiacp. `cmd acp` accepts the same global flags as
 // the TUI, so this is one vocabulary, not two.
 //
-// Standing instructions are NOT passed here: `cmd acp` accepts no system-prompt
-// flag (v1.79.x rejects `--append-system-prompt` with "unknown option", which
-// kills the provider before the host publishes host.json and surfaces as a
-// missing-descriptor startup failure). They ride the first prompt instead; see
-// sessionPreamble.
+// Standing instructions are NOT passed as a flag: `cmd acp` accepts none
+// (v1.79.x rejects `--append-system-prompt` with "unknown option", which kills
+// the provider before the host publishes host.json and surfaces as a
+// missing-descriptor startup failure). They are delivered as the session's memory
+// instead â€” see prepareSessionHome below.
 func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
+	env, err := prepareSessionHome(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
 	args := []string{
 		"acp",
 		"--skip-onboarding",
@@ -94,45 +98,29 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 	if mode := permissionMode(cfg.Permissions); mode != "" {
 		args = append(args, "--permission-mode", mode)
 	}
-	return args, nil, nil
+	return args, env, nil
 }
 
-// standingInstructionsURI identifies AO's standing context in the provider's
-// own prompt transcript, so a session can be told apart from user context.
-const standingInstructionsURI = "ao://agent-orchestrator/standing-instructions"
-
-// sessionPreamble delivers AO's standing instructions as an embedded resource
-// on the first prompt of the session.
+// prepareSessionHome builds the per-session Command Code home and returns the
+// environment that points `cmd acp` at it.
 //
-// The workspace SessionStart hook is not a delivery channel for Chat. In
-// Command Code v1.79.0 that hook is fired only by the TUI lifecycle
-// (`fireSessionStartHooks` has exactly one caller, in the interactive
-// component); the ACP path in `bindAgentSession`/`createClientDrivenSession`
-// never calls it, so installing `.commandcode/settings.json` changes nothing
-// for a Chat session. `session/new` is equally blind: its handler reads only
-// `cwd` and `mcpServers`, ignoring `_meta`.
+// This is how Chat receives AO's standing instructions. `cmd acp` builds no mod
+// host, so `appendSystemPrompt` is unreachable there, and shell hooks are
+// themselves a mod, so `SessionStart`, `PreToolUse` and `PostToolUse` never fire
+// either (verified against v1.79.2 and v1.82.3). Memory is the one surface
+// Command Code reads in both modes, and its own documentation places memory in
+// the system prompt rather than the conversation, so the instructions survive
+// compaction.
 //
-// An embedded resource is the one channel this agent does execute. Its
-// `promptPart` maps a `resource` block to `<context uri=...>`, which is folded
-// into the first turn's input, and session/new advertises
-// `promptCapabilities.embeddedContext`. AO therefore leads the first prompt
-// with the standing instructions. AO re-arms this on session/load, because
-// standing context is process input rather than transcript history.
-func sessionPreamble(cfg acpdriver.LaunchConfig) []acpsdk.ContentBlock {
-	standing := strings.TrimSpace(cfg.SystemPrompt)
-	if standing == "" {
-		return nil
+// The user tier is used rather than the project tier because it is additive: a
+// repository's own AGENTS.md still loads alongside AO's, instead of silently
+// shadowing it.
+func prepareSessionHome(cfg acpdriver.LaunchConfig) (map[string]string, error) {
+	home, err := commandcode.PrepareSessionHome(cfg.DataDir, cfg.SessionID, cfg.SystemPrompt)
+	if err != nil {
+		return nil, err
 	}
-	mime := "text/markdown"
-	return []acpsdk.ContentBlock{
-		acpsdk.ResourceBlock(acpsdk.EmbeddedResourceResource{
-			TextResourceContents: &acpsdk.TextResourceContents{
-				Uri:      standingInstructionsURI,
-				Text:     standing,
-				MimeType: &mime,
-			},
-		}),
-	}
+	return commandcode.SessionHomeEnv(home), nil
 }
 
 // sessionMode maps AO's approval vocabulary onto Command Code's advertised mode
