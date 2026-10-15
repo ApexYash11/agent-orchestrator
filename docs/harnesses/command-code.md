@@ -83,11 +83,16 @@ On `SessionStart`, the hook does not carry AO's standing instructions; see
 ## Standing Instructions
 
 Command Code accepts no system-prompt launch flag, and the alternatives AO tried
-are all unavailable to Chat: `cmd acp` builds no mod host, so neither a mod's
-`appendSystemPrompt` nor any shell hook reaches it (hooks are themselves a mod),
-and `session/new` ignores `_meta`. Memory is the one surface Command Code reads in
-both modes, and its own documentation places memory in the **system prompt**
-rather than the conversation, so AO's instructions survive compaction.
+are unavailable to Chat: `cmd acp` builds no mod host, so a mod's
+`appendSystemPrompt` never runs; `session/new` ignores `_meta`; and `SessionStart`
+is the one hook the ACP path never fires. The other three hooks do run under ACP,
+but their `additionalContext` arrives as tool-result material that only appears
+once a tool runs, and Command Code's own model discounts it rather than treating
+it as a standing instruction.
+
+Memory is the one surface Command Code reads in both modes, and its own
+documentation places memory in the **system prompt** rather than the
+conversation, so AO's instructions survive compaction.
 
 Each session therefore gets its own Command Code home under
 `~/.ao/prompts/<session-id>/home/.commandcode/`, containing `AGENTS.md` with the

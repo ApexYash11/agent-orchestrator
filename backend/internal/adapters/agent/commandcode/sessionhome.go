@@ -11,10 +11,19 @@ import (
 
 // Command Code accepts no system-prompt launch flag, and neither the ACP path's
 // `_meta` nor its mod loader is a usable channel: `cmd acp` accepts `--mod`,
-// ignores it, and starts normally, so no hook fires on that path either (shell
-// hooks are themselves a mod). The only documented surface Command Code reads in
-// every mode is its memory tier, which its own documentation places in the system
-// prompt rather than the conversation:
+// ignores it, and starts normally.
+//
+// The shell hooks do run under ACP, but they cannot carry standing instructions
+// either. SessionStart is the one hook the ACP path never fires, and the other
+// three reach the model as tool-result context: a PreToolUse `additionalContext`
+// arrives wrapped in a `<hook_context>` tag, only once a tool runs, and Command
+// Code's own model discounts it — asked to repeat a token delivered that way, it
+// answered that the note was "injected content from tool output, not a note I
+// was ever given". A role prompt needs to be authoritative, not advice attached
+// to a tool result.
+//
+// Memory is the one surface Command Code reads in every mode, and its own
+// documentation places it in the system prompt rather than the conversation:
 //
 //	Memory is part of the system prompt, not the conversation.
 //	  - It's re-read every request.

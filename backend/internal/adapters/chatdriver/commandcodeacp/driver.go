@@ -105,12 +105,16 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 // environment that points `cmd acp` at it.
 //
 // This is how Chat receives AO's standing instructions. `cmd acp` builds no mod
-// host, so `appendSystemPrompt` is unreachable there, and shell hooks are
-// themselves a mod, so `SessionStart`, `PreToolUse` and `PostToolUse` never fire
-// either (verified against v1.79.2 and v1.82.3). Memory is the one surface
-// Command Code reads in both modes, and its own documentation places memory in
-// the system prompt rather than the conversation, so the instructions survive
-// compaction.
+// host, so `appendSystemPrompt` is unreachable there, and SessionStart is the one
+// hook the ACP path never fires. The other three do run, but their
+// `additionalContext` lands as tool-result context — a PreToolUse note arrives
+// wrapped in `<hook_context>`, only once a tool runs, and Command Code's own model
+// discounts it as injected rather than authoritative. A role prompt has to be the
+// system prompt.
+//
+// Memory is the one surface Command Code reads in both modes, and its own
+// documentation places memory in the system prompt rather than the conversation,
+// so the instructions survive compaction.
 //
 // The user tier is used rather than the project tier because it is additive: a
 // repository's own AGENTS.md still loads alongside AO's, instead of silently
