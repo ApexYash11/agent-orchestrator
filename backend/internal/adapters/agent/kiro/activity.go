@@ -69,9 +69,11 @@ func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bo
 
 	for i := len(recent) - 1; i >= 0; i-- {
 		line := strings.ToLower(recent[i])
-		if kiroClassicPromptAnswered(line) {
-			// A decision was already made here; anything older is history,
-			// never a live dialog — stop instead of matching stale UI.
+		if kiroClassicPromptAt(line) && !kiroClassicPromptLive(recent, i) {
+			// The choice was already echoed (on the prompt line or a later
+			// answer line): the decision was made, so anything older is
+			// history, never a live dialog — stop instead of matching
+			// stale UI.
 			return "", false
 		}
 		if kiroApprovalAt(recent, i) {
@@ -114,8 +116,8 @@ const kiroMaxOptionLen = 48
 //     a full approve+deny pair around a real header counts.
 func kiroApprovalAt(lines []string, idx int) bool {
 	line := strings.ToLower(lines[idx])
-	if strings.Contains(line, "[y/n/t]") || strings.Contains(line, "y/n") {
-		return !kiroClassicPromptAnswered(line)
+	if kiroClassicPromptAt(line) {
+		return kiroClassicPromptLive(lines, idx)
 	}
 	if !kiroApprovalHeader(line) {
 		return false
@@ -174,14 +176,64 @@ func kiroApproveOption(line string) bool {
 }
 
 // kiroDenyOption reports whether a line is a short deny-side dialog control
-// (a standalone "No", a deny option, or an [n] key hint). A bare "no" prefix
-// inside a longer sentence never counts.
+// (a standalone "No" with an optional key hint like "No (Tab to edit)", a
+// deny option, or an [n] key hint). A bare "no" prefix inside a longer
+// sentence never counts.
 func kiroDenyOption(line string) bool {
 	text := kiroOptionText(line)
 	if text == "" || len(text) > kiroMaxOptionLen {
 		return false
 	}
-	return strings.Contains(text, "[n]") || strings.Contains(text, "deny") || text == "no"
+	if strings.Contains(text, "[n]") || strings.Contains(text, "deny") {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(text, "no"); ok {
+		rest = strings.TrimSpace(rest)
+		return rest == "" || (strings.HasPrefix(rest, "(") && strings.HasSuffix(rest, ")"))
+	}
+	return false
+}
+
+// kiroClassicPromptAt reports whether a line carries the classic `[y/n/t]`
+// approval prompt marker.
+func kiroClassicPromptAt(line string) bool {
+	return strings.Contains(line, "[y/n/t]") || strings.Contains(line, "y/n")
+}
+
+// kiroClassicPromptLive reports whether the classic prompt at idx is still
+// awaiting an answer: no echoed choice on the marker line itself and none on
+// the following lines. The classic prompt prints newlines before reading the
+// answer, so the choice often lands on its own later line ("[ao] > y").
+func kiroClassicPromptLive(lines []string, idx int) bool {
+	if kiroClassicPromptAnswered(strings.ToLower(lines[idx])) {
+		return false
+	}
+	end := idx + 4
+	if end > len(lines) {
+		end = len(lines)
+	}
+	for _, later := range lines[idx+1 : end] {
+		if kiroAnswerEcho(strings.ToLower(later)) {
+			return false
+		}
+	}
+	return true
+}
+
+// kiroAnswerEcho reports whether a line is a bare y/n/t answer echo: short,
+// with prompt chrome stripped, exactly one choice letter remains. Guards the
+// lookahead so prose never reads as an answer.
+func kiroAnswerEcho(line string) bool {
+	text := strings.TrimSpace(line)
+	if text == "" || len(text) > 12 {
+		return false
+	}
+	fields := strings.Fields(text)
+	last := strings.Trim(fields[len(fields)-1], ":.,;!?")
+	if last != "y" && last != "n" && last != "t" {
+		return false
+	}
+	return len(fields) == 1 || strings.Contains(text, ">")
 }
 
 // kiroClassicPromptAnswered reports whether a classic `[y/n/t]` prompt line
