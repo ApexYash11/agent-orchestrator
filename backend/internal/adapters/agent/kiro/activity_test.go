@@ -46,6 +46,52 @@ func TestDetectTerminalActivityRejectsTrustFlagText(t *testing.T) {
 	}
 }
 
+func TestDetectTerminalActivityRejectsNonPrompts(t *testing.T) {
+	// Neither line carries approval controls: the first is a status line,
+	// the second a trust-state note. Neither may read as waiting.
+	for _, output := range []string{
+		"No approval is required.\n",
+		"shell not trusted\n",
+	} {
+		if got, ok := (&Plugin{}).DetectTerminalActivity(output); ok {
+			t.Fatalf("DetectTerminalActivity(%q) = (%q, true), want no signal", output, got)
+		}
+	}
+}
+
+func TestDetectTerminalActivitySkipsAnsweredPrompt(t *testing.T) {
+	// The echoed answer proves the decision was already made: an answered
+	// prompt alone must not re-arm waiting_input.
+	output := "Allow this action? Use 't' to trust (always allow) this tool for the session. [y/n/t]: y\n"
+	if got, ok := (&Plugin{}).DetectTerminalActivity(output); ok {
+		t.Fatalf("DetectTerminalActivity(answered) = (%q, true), want no signal", got)
+	}
+}
+
+func TestDetectTerminalActivityFinishedTurnStaysIdle(t *testing.T) {
+	// A finished turn keeps its idle composer even though scrollback retains
+	// the answered prompt and an older approval bar: nothing below the
+	// answered decision may flip the session back to waiting_input.
+	output := "shell requires approval\n❯ Yes, single permission\n  Trust, always allow in this session\n  No\n" +
+		"Allow this action? Use 't' to trust (always allow) this tool for the session. [y/n/t]: y\n" +
+		"✓ Tool ran successfully\n" +
+		"ask a question or describe a task\n"
+	got, ok := (&Plugin{}).DetectTerminalActivity(output)
+	if got != domain.ActivityIdle || !ok {
+		t.Fatalf("DetectTerminalActivity(finished turn) = (%q, %v), want (%q, true)", got, ok, domain.ActivityIdle)
+	}
+}
+
+func TestDetectTerminalActivityAnsweredPromptShadowsOlderBar(t *testing.T) {
+	// Without an idle marker, an answered prompt still proves the older bar
+	// is history: the scan stops instead of matching stale UI.
+	output := "shell requires approval\n❯ Yes, single permission\n  Trust, always allow in this session\n  No\n" +
+		"Allow this action? Use 't' to trust (always allow) this tool for the session. [y/n/t]: n\n"
+	if got, ok := (&Plugin{}).DetectTerminalActivity(output); ok {
+		t.Fatalf("DetectTerminalActivity(answered over old bar) = (%q, true), want no signal", got)
+	}
+}
+
 func TestDetectTerminalActivityApprovalNewestMarkerWins(t *testing.T) {
 	approval := "shell requires approval\n❯ Yes, single permission\n  Trust, always allow in this session\n  No\n"
 	idle := "ask a question or describe a task\n"

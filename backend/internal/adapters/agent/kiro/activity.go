@@ -44,17 +44,18 @@ func (p *Plugin) ContinuouslyDetectTerminalActivity() bool { return true }
 // Kiro's TUI. The newest marker wins so retained transcript text cannot
 // override the live approval bar or generation indicator.
 //
-//   - Approval: TUI notification/snack bar above the input with Yes / Trust /
-//     No options ("requires approval", "yes, single permission", "trust,
-//     always allow", classic "allow this action? [y/n/t]"). Kiro fires no
-//     hook while the dialog is on screen, so the terminal is the only
-//     observation path for a genuinely pending decision.
+//   - Approval: TUI approval bar above the input (Yes / Trust / No options)
+//     or the classic `[y/n/t]` prompt. Kiro fires no hook while the dialog is
+//     on screen, so the terminal is the only observation path for a genuinely
+//     pending decision.
 //   - Active: busy/generation indicator (esc to interrupt/cancel).
 //   - Idle: empty composer placeholder ("ask a question or describe a task").
 //
-// The approval check requires both sides of the dialog affordance (an approve
-// marker and a deny marker within a small window), not a lone "trust" or
-// "approval" word, so transcript mentions never match.
+// Approval requires actual dialog controls (see kiroApprovalAt), not bare
+// "trust"/"approval"/"no" words, so status lines like "No approval is
+// required." or "shell not trusted" never match. An answered classic prompt
+// (the choice echoed after `[y/n/t]:`) proves the decision was already made,
+// so scanning stops there instead of matching older retained UI.
 func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bool) {
 	lines := kiroTerminalLines(output)
 	if len(lines) == 0 {
@@ -68,6 +69,11 @@ func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bo
 
 	for i := len(recent) - 1; i >= 0; i-- {
 		line := strings.ToLower(recent[i])
+		if kiroClassicPromptAnswered(line) {
+			// A decision was already made here; anything older is history,
+			// never a live dialog — stop instead of matching stale UI.
+			return "", false
+		}
 		if kiroApprovalAt(recent, i) {
 			return domain.ActivityWaitingInput, true
 		}
@@ -81,26 +87,37 @@ func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bo
 	return "", false
 }
 
+// kiroApprovalHeaders are decision-announcing phrases. Bare "approval" or
+// "trust" alone never counts: status lines like "No approval is required."
+// or "shell not trusted" carry no dialog.
+var kiroApprovalHeaders = []string{
+	"requires approval",
+	"awaiting approval",
+	"approval required",
+	"needs approval",
+	"approve tool call",
+	"allow this action",
+}
+
+// kiroMaxOptionLen bounds dialog option labels. Real options are short
+// ("Yes, single permission", "Trust, always allow in this session", "No");
+// transcript prose never qualifies.
+const kiroMaxOptionLen = 48
+
 // kiroApprovalAt reports whether the line at idx is part of a live approval
-// dialog: an approval header/prompt anchored with both an approve affordance
-// and a deny affordance nearby.
+// dialog. Two shapes count:
+//
+//   - Classic: a line carrying the `[y/n/t]` prompt marker (answered prompts
+//     are excluded by the caller).
+//   - TUI bar: an approval header line plus an approve option and a deny
+//     option on nearby lines. Options must be short control labels, so only
+//     a full approve+deny pair around a real header counts.
 func kiroApprovalAt(lines []string, idx int) bool {
 	line := strings.ToLower(lines[idx])
-	header := strings.Contains(line, "requires approval") ||
-		strings.Contains(line, "awaiting approval") ||
-		strings.Contains(line, "allow this action") ||
-		strings.Contains(line, "approve tool call") ||
-		strings.Contains(line, "yes, single permission") ||
-		strings.Contains(line, "notification bar") ||
-		strings.Contains(line, "snack bar")
-	anchor := header ||
-		strings.Contains(line, "[y/n/t]") ||
-		strings.Contains(line, "[y]") ||
-		strings.Contains(line, "[n]") ||
-		strings.Contains(line, "approv") ||
-		strings.Contains(line, "trust") ||
-		strings.Contains(line, "deny")
-	if !anchor {
+	if strings.Contains(line, "[y/n/t]") || strings.Contains(line, "y/n") {
+		return !kiroClassicPromptAnswered(line)
+	}
+	if !kiroApprovalHeader(line) {
 		return false
 	}
 	lo := idx - 3
@@ -113,22 +130,71 @@ func kiroApprovalAt(lines []string, idx int) bool {
 	}
 	var approve, deny bool
 	for i := lo; i <= hi; i++ {
+		if i == idx {
+			continue
+		}
 		nearby := strings.ToLower(lines[i])
-		if strings.Contains(nearby, "approv") || strings.Contains(nearby, "allow this action") ||
-			strings.Contains(nearby, "yes") || strings.Contains(nearby, "trust") ||
-			strings.Contains(nearby, "[y]") || strings.Contains(nearby, "y/n") {
+		if kiroApproveOption(nearby) {
 			approve = true
 		}
-		if strings.Contains(nearby, "deny") || strings.Contains(nearby, " no") ||
-			strings.HasPrefix(strings.TrimSpace(nearby), "no") ||
-			strings.Contains(nearby, "[n]") || strings.Contains(nearby, "y/n") {
+		if kiroDenyOption(nearby) {
 			deny = true
 		}
 	}
-	// Only a full approve+deny pair counts: a bare "trust" line without a
-	// decision pair (e.g. "--trust-all-tools" help text) must not read as a
-	// live dialog.
 	return approve && deny
+}
+
+// kiroApprovalHeader reports whether a line announces a pending approval
+// decision (as opposed to merely mentioning approval or trust).
+func kiroApprovalHeader(line string) bool {
+	for _, header := range kiroApprovalHeaders {
+		if strings.Contains(line, header) {
+			return true
+		}
+	}
+	return false
+}
+
+// kiroOptionText strips selection/box-drawing markers from a dialog option
+// line so short labels like "❯ Yes, single permission" compare cleanly.
+func kiroOptionText(line string) string {
+	return strings.Trim(strings.TrimSpace(line), "❯›>•-*│┃ ")
+}
+
+// kiroApproveOption reports whether a line is a short approve-side dialog
+// control (yes/approve/allow/trust option or [y] key hint).
+func kiroApproveOption(line string) bool {
+	text := kiroOptionText(line)
+	if text == "" || len(text) > kiroMaxOptionLen {
+		return false
+	}
+	return strings.Contains(text, "[y]") || strings.Contains(text, "yes") ||
+		strings.Contains(text, "approv") || strings.Contains(text, "allow") ||
+		strings.Contains(text, "trust")
+}
+
+// kiroDenyOption reports whether a line is a short deny-side dialog control
+// (a standalone "No", a deny option, or an [n] key hint). A bare "no" prefix
+// inside a longer sentence never counts.
+func kiroDenyOption(line string) bool {
+	text := kiroOptionText(line)
+	if text == "" || len(text) > kiroMaxOptionLen {
+		return false
+	}
+	return strings.Contains(text, "[n]") || strings.Contains(text, "deny") || text == "no"
+}
+
+// kiroClassicPromptAnswered reports whether a classic `[y/n/t]` prompt line
+// already echoes the user's answer ("[y/n/t]: y"). The decision is made, so
+// the prompt is history, not a live dialog.
+func kiroClassicPromptAnswered(line string) bool {
+	if idx := strings.Index(line, "[y/n/t]"); idx >= 0 {
+		return strings.Trim(line[idx+len("[y/n/t]"):], ":.- \t") != ""
+	}
+	if idx := strings.Index(line, "y/n"); idx >= 0 {
+		return strings.Trim(line[idx+len("y/n"):], ":.- \t") != ""
+	}
+	return false
 }
 
 func kiroTerminalLines(output string) []string {
