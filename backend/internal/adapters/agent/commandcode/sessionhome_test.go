@@ -294,6 +294,7 @@ func TestSessionProcessEnvPreservesRealDeveloperTooling(t *testing.T) {
 	t.Setenv("HOME", userHome)
 	t.Setenv("USERPROFILE", userHome)
 	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 
 	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"), nil)
 	if env["GIT_CONFIG_GLOBAL"] != filepath.Join(userHome, ".gitconfig") {
@@ -316,6 +317,7 @@ func TestSessionProcessEnvOmitsMissingTooling(t *testing.T) {
 	t.Setenv("HOME", userHome)
 	t.Setenv("USERPROFILE", userHome)
 	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 
 	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"), nil)
 	if _, ok := env["GIT_CONFIG_GLOBAL"]; ok {
