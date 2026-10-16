@@ -89,6 +89,7 @@ func SessionPreamble(cfg acpdriver.LaunchConfig) []acpsdk.ContentBlock {
 			"<ao_standing_instructions>\n" + standing + "\n</ao_standing_instructions>",
 	)}
 }
+
 // deepseekEffort resolves one AO effort value to a Harness level, passing an
 // already-native or unknown value through untouched.
 func deepseekEffort(effort string) string {
