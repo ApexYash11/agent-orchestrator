@@ -120,11 +120,14 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 // repository's own AGENTS.md still loads alongside AO's, instead of silently
 // shadowing it.
 func prepareSessionHome(cfg acpdriver.LaunchConfig) (map[string]string, error) {
-	home, err := commandcode.PrepareSessionHome(cfg.DataDir, cfg.SessionID, cfg.SystemPrompt)
-	if err != nil {
+	if _, err := commandcode.PrepareSessionHome(cfg.DataDir, cfg.SessionID, cfg.SystemPrompt); err != nil {
 		return nil, err
 	}
-	return commandcode.SessionHomeEnv(home), nil
+	// A Chat session created before per-session homes existed keeps its native
+	// transcript under the real home; session/load on the fresh process needs it
+	// in the isolated catalog.
+	commandcode.MigrateNativeHistory(cfg.DataDir, cfg.SessionID, cfg.ProviderConversationID)
+	return commandcode.SessionProcessEnv(cfg.DataDir, cfg.SessionID), nil
 }
 
 // sessionMode maps AO's approval vocabulary onto Command Code's advertised mode

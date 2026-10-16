@@ -193,7 +193,7 @@ func TestConfigurePointsTheSessionAtItsOwnHome(t *testing.T) {
 	if home == "" || env["USERPROFILE"] != home {
 		t.Fatalf("env = %#v, want HOME and USERPROFILE to agree", env)
 	}
-	if want := filepath.Join(dataDir, "prompts", "mer-home-1", "home"); home != want {
+	if want := filepath.Join(dataDir, "harnesses", "command-code", "mer-home-1"); home != want {
 		t.Fatalf("HOME = %q, want %q", home, want)
 	}
 	memory, err := os.ReadFile(filepath.Join(home, ".commandcode", "AGENTS.md"))

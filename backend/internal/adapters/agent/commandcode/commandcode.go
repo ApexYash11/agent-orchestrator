@@ -162,9 +162,13 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 
 	// A restored session reloads its memory from the same per-session home a fresh
 	// launch would use, so the standing instructions are present without a restart.
+	// Sessions created before per-session homes existed keep their transcripts
+	// under the real home; migrate the captured conversation so --resume can find
+	// it from the isolated home.
 	if _, err := PrepareSessionHome(cfg.DataDir, domain.SessionID(cfg.Session.ID), cfg.SystemPrompt); err != nil {
 		return nil, false, err
 	}
+	MigrateNativeHistory(cfg.DataDir, domain.SessionID(cfg.Session.ID), agentSessionID)
 
 	cmd = make([]string, 0, 8)
 	cmd = append(cmd, binary, "--skip-onboarding", "--no-auto-update", "--trust")
@@ -193,12 +197,24 @@ var _ ports.AgentRuntimeLaunchEnv = (*Plugin)(nil)
 
 // AugmentRuntimeLaunchEnv points the Command Code process at the per-session home
 // that GetLaunchCommand prepared. This is the terminal half of the delivery; the
-// Chat binding sets the same two keys from its own launch config, because
+// Chat binding sets the same keys from its own launch config, because
 // nativeacp's AugmentRuntimeEnv hook carries no session id.
 func (p *Plugin) AugmentRuntimeLaunchEnv(env map[string]string, dataDir string, sessionID domain.SessionID, _ string) {
-	for key, value := range SessionHomeEnv(SessionHomeDir(dataDir, sessionID)) {
+	for key, value := range SessionProcessEnv(dataDir, sessionID) {
 		env[key] = value
 	}
+}
+
+// CleanupWorkspace removes the session home on final workspace teardown. It must
+// not run on spawn or restore failures: the home holds the native conversation,
+// and wiping it there would destroy the history a retry needs. Terminated
+// sessions that can still be restored keep their home, mirroring the retained
+// prompts directory.
+func (p *Plugin) CleanupWorkspace(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return CleanupSessionHome(cfg.DataDir, domain.SessionID(cfg.SessionID))
 }
 
 func (p *Plugin) binary(ctx context.Context) (string, error) {

@@ -95,9 +95,11 @@ documentation places memory in the **system prompt** rather than the
 conversation, so AO's instructions survive compaction.
 
 Each session therefore gets its own Command Code home under
-`~/.ao/prompts/<session-id>/home/.commandcode/`, containing `AGENTS.md` with the
-session's standing instructions. AO points `HOME` and `USERPROFILE` at that
-directory for the session's process.
+`~/.ao/harnesses/command-code/<session-id>/.commandcode/`, containing `AGENTS.md`
+with the session's standing instructions. The home lives outside the disposable
+`prompts/<session-id>` directory on purpose: a failed restore wipes that whole
+tree, and the wipe must never take the native conversation with it. AO points
+`HOME` and `USERPROFILE` at that directory for the session's process.
 
 Two consequences follow from Command Code's tier rules:
 
@@ -107,11 +109,24 @@ Two consequences follow from Command Code's tier rules:
 - Each session has its own home, so concurrent sessions never share a memory file
   and each carries its own role (orchestrator or worker).
 
-The session home mirrors the user's `auth.json`, `config.json` and
-`providers.json` so the session can authenticate; Command Code has no
-environment variable for its OAuth token, so the token is copied rather than
-referenced. All AO-owned state stays under `~/.ao`, and nothing is written to the
-project's `AGENTS.md` or `.commandcode/AGENTS.md`.
+The session home mirrors the user's `auth.json`, `config.json`, `providers.json`,
+`settings.json` and `mcp.json` so the session keeps its login, preferences,
+permission rules, hooks and MCP servers; Command Code has no environment variable
+for its OAuth token, so the token is copied at `0600` rather than referenced.
+All AO-owned state stays under `~/.ao`, and nothing is written to the project's
+`AGENTS.md` or `.commandcode/AGENTS.md`.
+
+The redirected `HOME` is inherited by the agent's shell children, so the real
+developer's tooling is repointed rather than copied: `GIT_CONFIG_GLOBAL` aims git
+at the real `~/.gitconfig` and `GH_CONFIG_DIR` at the real gh config, each only
+when it exists. No secrets move for either.
+
+Sessions created before per-session homes existed keep their native transcript
+under the real home. Restoring one copies that conversation's own files into the
+isolated home first, so `--resume` and `session/load` keep working after the
+upgrade; files the session already has are never overwritten. The home is removed
+only on final workspace teardown, never on spawn or restore failures, so a failed
+restore cannot destroy the history its retry needs.
 
 Because a session whose memory is empty would run with no AO role at all, a
 Command Code session fails to start rather than launching without its standing

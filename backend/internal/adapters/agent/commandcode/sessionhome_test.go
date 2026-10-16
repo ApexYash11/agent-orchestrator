@@ -1,6 +1,7 @@
 package commandcode
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // The user tier is used instead of the project tier precisely because it is
@@ -19,7 +21,7 @@ func TestPrepareSessionHomeWritesStandingInstructionsToTheUserTier(t *testing.T)
 	if err != nil {
 		t.Fatalf("PrepareSessionHome: %v", err)
 	}
-	if want := filepath.Join(dataDir, "prompts", "mer-1", "home"); home != want {
+	if want := filepath.Join(dataDir, "harnesses", "command-code", "mer-1"); home != want {
 		t.Fatalf("home = %q, want %q", home, want)
 	}
 	memory := filepath.Join(home, ".commandcode", "AGENTS.md")
@@ -90,7 +92,7 @@ func TestPrepareSessionHomeSkipsEmptyInstructions(t *testing.T) {
 		if home != "" {
 			t.Fatalf("PrepareSessionHome(%q) = %q, want no home", prompt, home)
 		}
-		if _, err := os.Stat(filepath.Join(dataDir, "prompts", "mer-empty")); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(dataDir, "harnesses", "command-code", "mer-empty")); !os.IsNotExist(err) {
 			t.Fatalf("PrepareSessionHome(%q) created storage", prompt)
 		}
 	}
@@ -142,7 +144,7 @@ func TestAugmentRuntimeLaunchEnvPointsAtTheSessionHome(t *testing.T) {
 	dataDir := t.TempDir()
 	env := map[string]string{}
 	(&Plugin{}).AugmentRuntimeLaunchEnv(env, dataDir, domain.SessionID("mer-1"), "launch-1")
-	want := filepath.Join(dataDir, "prompts", "mer-1", "home")
+	want := filepath.Join(dataDir, "harnesses", "command-code", "mer-1")
 	if env["HOME"] != want || env["USERPROFILE"] != want {
 		t.Fatalf("env = %#v, want HOME and USERPROFILE = %q", env, want)
 	}
@@ -159,5 +161,186 @@ func TestSessionHomeDirNeedsBothInputs(t *testing.T) {
 	}
 	if got := SessionHomeEnv(""); got != nil {
 		t.Fatalf("SessionHomeEnv(\"\") = %v, want nil", got)
+	}
+}
+
+// The home must live outside the disposable prompts/<id> directory: a failed
+// restore wipes that whole tree through cleanupSystemPromptDir, and the wipe
+// must never take the native conversation with it.
+func TestSessionHomeSurvivesOutsideThePromptsDirectory(t *testing.T) {
+	home := SessionHomeDir(filepath.Join("data"), domain.SessionID("mer-1"))
+	if strings.Contains(filepath.ToSlash(home), "prompts/") {
+		t.Fatalf("home = %q, want a location cleanupSystemPromptDir never touches", home)
+	}
+}
+
+// settings.json and mcp.json are separate supported inputs from config.json —
+// user deny rules, hooks and MCP servers — so they must ride along into the
+// session home rather than silently disappearing behind the redirect.
+func TestPrepareSessionHomeMirrorsUserSettingsAndMCP(t *testing.T) {
+	dataDir := t.TempDir()
+	source := t.TempDir()
+	profile := filepath.Join(source, ".commandcode")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"settings.json": `{"permissions":{"deny":["Bash(rm -rf:*)"]}}`,
+		"mcp.json":      `{"mcpServers":{"tools":{"command":"tools"}}}`,
+	} {
+		if err := os.WriteFile(filepath.Join(profile, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", source)
+	t.Setenv("USERPROFILE", source)
+
+	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
+	if err != nil {
+		t.Fatalf("PrepareSessionHome: %v", err)
+	}
+	for name, want := range map[string]string{
+		"settings.json": "rm -rf",
+		"mcp.json":      "mcpServers",
+	} {
+		contents, err := os.ReadFile(filepath.Join(home, ".commandcode", name))
+		if err != nil {
+			t.Fatalf("read mirrored %s: %v", name, err)
+		}
+		if !strings.Contains(string(contents), want) {
+			t.Fatalf("mirrored %s = %q, want %q", name, contents, want)
+		}
+	}
+}
+
+// Sessions created before per-session homes existed keep their native transcript
+// under the real home's project catalog. Restoring one must bring that
+// conversation into the isolated home first, or --resume searches an empty
+// catalog. Only this conversation's own files move; the rest of the catalog is
+// untouched, and an existing destination is never overwritten.
+func TestMigrateNativeHistoryBringsTheCapturedConversationHome(t *testing.T) {
+	dataDir := t.TempDir()
+	source := t.TempDir()
+	slug := filepath.Join(source, ".commandcode", "projects", "c-users-work")
+	if err := os.MkdirAll(slug, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"native-1.jsonl", "native-1.meta.json", "other.jsonl"} {
+		if err := os.WriteFile(filepath.Join(slug, name), []byte("contents of "+name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", source)
+	t.Setenv("USERPROFILE", source)
+
+	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
+	if err != nil {
+		t.Fatalf("PrepareSessionHome: %v", err)
+	}
+	MigrateNativeHistory(dataDir, domain.SessionID("mer-1"), "native-1")
+	for _, name := range []string{"native-1.jsonl", "native-1.meta.json"} {
+		contents, err := os.ReadFile(filepath.Join(home, ".commandcode", "projects", "c-users-work", name))
+		if err != nil {
+			t.Fatalf("migrated %s missing: %v", name, err)
+		}
+		if string(contents) != "contents of "+name {
+			t.Fatalf("migrated %s = %q", name, contents)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".commandcode", "projects", "c-users-work", "other.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("migration carried an unrelated conversation")
+	}
+
+	// A second restore must not clobber the session's own newer copy.
+	migrated := filepath.Join(home, ".commandcode", "projects", "c-users-work", "native-1.jsonl")
+	if err := os.WriteFile(migrated, []byte("session's own newer copy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	MigrateNativeHistory(dataDir, domain.SessionID("mer-1"), "native-1")
+	contents, err := os.ReadFile(migrated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "session's own newer copy" {
+		t.Fatalf("restore overwrote the session copy: %q", contents)
+	}
+}
+
+// With no captured native id there is nothing to migrate, and the restore must
+// proceed as a fresh start rather than fail.
+func TestMigrateNativeHistoryWithoutAnIdentityIsANoOp(t *testing.T) {
+	dataDir := t.TempDir()
+	MigrateNativeHistory(dataDir, domain.SessionID("mer-1"), "")
+	MigrateNativeHistory(dataDir, domain.SessionID("mer-1"), "   ")
+	if _, err := os.Stat(filepath.Join(dataDir, "harnesses")); !os.IsNotExist(err) {
+		t.Fatal("migration created storage with nothing to migrate")
+	}
+}
+
+// The redirected HOME is inherited by the agent's shell children, so the real
+// developer tooling has to be reachable without copying secrets: git through
+// its documented global-config pointer, gh through its config directory. Each
+// is set only when its target exists.
+func TestSessionProcessEnvPreservesRealDeveloperTooling(t *testing.T) {
+	dataDir := t.TempDir()
+	real := t.TempDir()
+	if err := os.WriteFile(filepath.Join(real, ".gitconfig"), []byte("[user]\n\tname = dev\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(real, ".config", "gh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", real)
+	t.Setenv("USERPROFILE", real)
+	t.Setenv("APPDATA", t.TempDir())
+
+	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"))
+	if env["GIT_CONFIG_GLOBAL"] != filepath.Join(real, ".gitconfig") {
+		t.Fatalf("GIT_CONFIG_GLOBAL = %q, want the real .gitconfig", env["GIT_CONFIG_GLOBAL"])
+	}
+	if env["GH_CONFIG_DIR"] != filepath.Join(real, ".config", "gh") {
+		t.Fatalf("GH_CONFIG_DIR = %q, want the real gh config", env["GH_CONFIG_DIR"])
+	}
+	want := filepath.Join(dataDir, "harnesses", "command-code", "mer-1")
+	if env["HOME"] != want || env["USERPROFILE"] != want {
+		t.Fatalf("env HOME = %q / USERPROFILE = %q, want %q", env["HOME"], env["USERPROFILE"], want)
+	}
+}
+
+// A machine without either tool configured gets neither variable, rather than
+// pointers at paths that do not exist.
+func TestSessionProcessEnvOmitsMissingTooling(t *testing.T) {
+	dataDir := t.TempDir()
+	real := t.TempDir()
+	t.Setenv("HOME", real)
+	t.Setenv("USERPROFILE", real)
+	t.Setenv("APPDATA", t.TempDir())
+
+	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"))
+	if _, ok := env["GIT_CONFIG_GLOBAL"]; ok {
+		t.Fatalf("GIT_CONFIG_GLOBAL = %q with no real .gitconfig", env["GIT_CONFIG_GLOBAL"])
+	}
+	if _, ok := env["GH_CONFIG_DIR"]; ok {
+		t.Fatalf("GH_CONFIG_DIR = %q with no real gh config", env["GH_CONFIG_DIR"])
+	}
+}
+
+// Final workspace teardown removes the session home. It runs only there —
+// never on spawn or restore failures, where the home still holds the native
+// history a retry needs.
+func TestCleanupWorkspaceRemovesTheSessionHome(t *testing.T) {
+	dataDir := t.TempDir()
+	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
+	if err != nil {
+		t.Fatalf("PrepareSessionHome: %v", err)
+	}
+	if err := (&Plugin{}).CleanupWorkspace(context.Background(), ports.WorkspaceHookConfig{
+		DataDir:   dataDir,
+		SessionID: "mer-1",
+	}); err != nil {
+		t.Fatalf("CleanupWorkspace: %v", err)
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Fatalf("session home %q survived teardown", home)
 	}
 }
