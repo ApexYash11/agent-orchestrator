@@ -144,14 +144,14 @@ func TestPermissionPolicyAnswersOnceForAutoAndEdits(t *testing.T) {
 }
 
 func TestSessionPreambleCarriesStandingInstructions(t *testing.T) {
-	blocks := sessionPreamble(acpdriver.LaunchConfig{SystemPrompt: "follow AO rules"})
+	blocks := SessionPreamble(acpdriver.LaunchConfig{SystemPrompt: "follow AO rules"})
 	if len(blocks) != 1 {
 		t.Fatalf("blocks = %#v, want one text block", blocks)
 	}
 }
 
 func TestSessionPreambleOmitWhenEmpty(t *testing.T) {
-	if got := sessionPreamble(acpdriver.LaunchConfig{}); got != nil {
+	if got := SessionPreamble(acpdriver.LaunchConfig{}); got != nil {
 		t.Fatalf("blocks = %#v, want nil", got)
 	}
 }

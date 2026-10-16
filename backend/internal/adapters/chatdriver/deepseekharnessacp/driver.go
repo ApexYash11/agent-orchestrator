@@ -28,7 +28,7 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 		Harness:              domain.HarnessDeepSeek,
 		Configure:            configure,
 		SessionOptions:       sessionOptions,
-		SessionPreamble:      sessionPreamble,
+		SessionPreamble:      SessionPreamble,
 		PermissionPolicy:     permissionPolicy,
 		ValidateTurnSettings: validateTurnSettings,
 	}, log)
@@ -73,13 +73,13 @@ func sessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOption {
 	return options
 }
 
-// sessionPreamble delivers AO's standing instructions as a text block ahead of
+// SessionPreamble delivers AO's standing instructions as a text block ahead of
 // the first prompt. DeepSeek Harness accepts no system-prompt launch flag and
 // its session/new handler reads only the working directory, so plain text on
 // the first turn is the channel it follows — the same shape as agyacp. An
 // embedded resource is avoided: Antigravity-class agents treated the resource
 // URI as something to look up rather than as instructions in testing.
-func sessionPreamble(cfg acpdriver.LaunchConfig) []acpsdk.ContentBlock {
+func SessionPreamble(cfg acpdriver.LaunchConfig) []acpsdk.ContentBlock {
 	standing := strings.TrimSpace(cfg.SystemPrompt)
 	if standing == "" {
 		return nil
