@@ -283,22 +283,22 @@ func TestMigrateNativeHistoryWithoutAnIdentityIsANoOp(t *testing.T) {
 // is set only when its target exists.
 func TestSessionProcessEnvPreservesRealDeveloperTooling(t *testing.T) {
 	dataDir := t.TempDir()
-	real := t.TempDir()
-	if err := os.WriteFile(filepath.Join(real, ".gitconfig"), []byte("[user]\n\tname = dev\n"), 0o600); err != nil {
+	userHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(userHome, ".gitconfig"), []byte("[user]\n\tname = dev\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(real, ".config", "gh"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(userHome, ".config", "gh"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", real)
-	t.Setenv("USERPROFILE", real)
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	t.Setenv("APPDATA", t.TempDir())
 
 	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"))
-	if env["GIT_CONFIG_GLOBAL"] != filepath.Join(real, ".gitconfig") {
+	if env["GIT_CONFIG_GLOBAL"] != filepath.Join(userHome, ".gitconfig") {
 		t.Fatalf("GIT_CONFIG_GLOBAL = %q, want the real .gitconfig", env["GIT_CONFIG_GLOBAL"])
 	}
-	if env["GH_CONFIG_DIR"] != filepath.Join(real, ".config", "gh") {
+	if env["GH_CONFIG_DIR"] != filepath.Join(userHome, ".config", "gh") {
 		t.Fatalf("GH_CONFIG_DIR = %q, want the real gh config", env["GH_CONFIG_DIR"])
 	}
 	want := filepath.Join(dataDir, "harnesses", "command-code", "mer-1")
@@ -311,9 +311,9 @@ func TestSessionProcessEnvPreservesRealDeveloperTooling(t *testing.T) {
 // pointers at paths that do not exist.
 func TestSessionProcessEnvOmitsMissingTooling(t *testing.T) {
 	dataDir := t.TempDir()
-	real := t.TempDir()
-	t.Setenv("HOME", real)
-	t.Setenv("USERPROFILE", real)
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	t.Setenv("APPDATA", t.TempDir())
 
 	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"))
