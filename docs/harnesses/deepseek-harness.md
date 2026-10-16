@@ -29,6 +29,9 @@ sent — `none`/`minimal`/`off` become `off`, `low` stays `low`, `medium`/`high`
 become `high`, and `xhigh`/`max` become `max` — so an effort configured for
 another harness does not fail a Harness session.
 
+AO standing instructions ride the first turn as a text block, re-armed on
+resume, because `session/new` reads only the working directory.
+
 ## Terminal UI
 
 AO runs one headless task per terminal session:
@@ -81,6 +84,8 @@ surface is normally not the case, so terminal resume falls back to a fresh run.
 - The model catalog is read from a session, and a session needs a working
   directory. Project-free discovery uses a private AO-owned directory under the
   configured data root so the catalog remains available before a project exists.
-- AO standing instructions have no Harness surface in terminal mode. The headless
-  profile takes no system-prompt flag and has no hook file, so AO does not pass
-  the prompt file as a task argument that would be executed as work.
+- AO standing instructions reach the headless profile by prepending them to the
+  positional task with an `<ao_standing_instructions>` delimiter: the profile
+  takes no system-prompt flag and has no hook file, so the task is the only
+  channel that reaches the model. Chat delivers the same instructions as a text
+  block on the first turn.
