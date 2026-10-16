@@ -1,7 +1,7 @@
 package commandcode
 
 import (
-	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // The user tier is used instead of the project tier precisely because it is
@@ -164,9 +163,11 @@ func TestSessionHomeDirNeedsBothInputs(t *testing.T) {
 	}
 }
 
-// The home must live outside the disposable prompts/<id> directory: a failed
-// restore wipes that whole tree through cleanupSystemPromptDir, and the wipe
-// must never take the native conversation with it.
+// The session home follows prompts/ retention: it is never removed on spawn or
+// restore failures, and no workspace-cleanup hook deletes it, because every
+// one of those paths can precede a retry that needs the native history. Only
+// the disposable prompts/<id> tree is wiped there, and the home deliberately
+// lives outside it.
 func TestSessionHomeSurvivesOutsideThePromptsDirectory(t *testing.T) {
 	home := SessionHomeDir(filepath.Join("data"), domain.SessionID("mer-1"))
 	if strings.Contains(filepath.ToSlash(home), "prompts/") {
@@ -294,7 +295,7 @@ func TestSessionProcessEnvPreservesRealDeveloperTooling(t *testing.T) {
 	t.Setenv("USERPROFILE", userHome)
 	t.Setenv("APPDATA", t.TempDir())
 
-	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"))
+	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"), nil)
 	if env["GIT_CONFIG_GLOBAL"] != filepath.Join(userHome, ".gitconfig") {
 		t.Fatalf("GIT_CONFIG_GLOBAL = %q, want the real .gitconfig", env["GIT_CONFIG_GLOBAL"])
 	}
@@ -316,7 +317,7 @@ func TestSessionProcessEnvOmitsMissingTooling(t *testing.T) {
 	t.Setenv("USERPROFILE", userHome)
 	t.Setenv("APPDATA", t.TempDir())
 
-	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"))
+	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"), nil)
 	if _, ok := env["GIT_CONFIG_GLOBAL"]; ok {
 		t.Fatalf("GIT_CONFIG_GLOBAL = %q with no real .gitconfig", env["GIT_CONFIG_GLOBAL"])
 	}
@@ -365,22 +366,123 @@ func TestPrepareSessionHomeLinksRealSSHDirectory(t *testing.T) {
 	}
 }
 
-// Final workspace teardown removes the session home. It runs only there --
-// never on spawn or restore failures, where the home still holds the native
-// history a retry needs.
-func TestCleanupWorkspaceRemovesTheSessionHome(t *testing.T) {
+// Explicitly configured values always win over the passthrough: a caller that
+// already set GH_CONFIG_DIR keeps its account, including through different
+// key casing on Windows.
+func TestSessionProcessEnvRespectsExplicitConfiguration(t *testing.T) {
 	dataDir := t.TempDir()
+	userHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(userHome, ".config", "gh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
+	t.Setenv("APPDATA", t.TempDir())
+
+	base := map[string]string{"GH_CONFIG_DIR": "/work/gh-profile", "git_config_global": "/work/gitconfig"}
+	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"), base)
+	// The overlay omits keys the caller already defined, so merging it over the
+	// base can never overwrite an explicit value -- in either key case.
+	if _, ok := env["GH_CONFIG_DIR"]; ok {
+		t.Fatalf("GH_CONFIG_DIR emitted despite explicit configuration")
+	}
+	if _, ok := env["GIT_CONFIG_GLOBAL"]; ok {
+		t.Fatalf("GIT_CONFIG_GLOBAL emitted despite explicit configuration")
+	}
+}
+
+// Native lookup order wins over defaults: with $XDG_CONFIG_HOME set, git and gh
+// already prefer their XDG locations, so pointing at ~/.gitconfig or
+// ~/.config/gh would actively downgrade those users. Nothing is filled in.
+func TestSessionProcessEnvDefersToNativeXDGLayout(t *testing.T) {
+	dataDir := t.TempDir()
+	userHome := t.TempDir()
+	xdg := t.TempDir()
+	if err := os.WriteFile(filepath.Join(userHome, ".gitconfig"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(userHome, ".config", "gh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("APPDATA", t.TempDir())
+	defer t.Setenv("XDG_CONFIG_HOME", "")
+
+	env := SessionProcessEnv(dataDir, domain.SessionID("mer-1"), nil)
+	if _, ok := env["GIT_CONFIG_GLOBAL"]; ok {
+		t.Fatalf("GIT_CONFIG_GLOBAL = %q, want native XDG lookup left alone", env["GIT_CONFIG_GLOBAL"])
+	}
+	if _, ok := env["GH_CONFIG_DIR"]; ok {
+		t.Fatalf("GH_CONFIG_DIR = %q, want native XDG lookup left alone", env["GH_CONFIG_DIR"])
+	}
+	want := filepath.Join(dataDir, "harnesses", "command-code", "mer-1")
+	if env["HOME"] != want || env["USERPROFILE"] != want {
+		t.Fatalf("home keys must still point at the session home")
+	}
+}
+
+// Home-relative asset paths in mirrored settings must keep working: a skill
+// entry or hook command that says ~/... means the real home, and inside the
+// isolated home that directory does not exist.
+func TestPrepareSessionHomeRebasesSettingsHomeReferences(t *testing.T) {
+	dataDir := t.TempDir()
+	source := t.TempDir()
+	profile := filepath.Join(source, ".commandcode")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings := `{"skills": ["~/.commandcode/custom-skills", "/opt/shared"], "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$HOME/.commandcode/hooks/guard.sh\""}]}]}, "permissions": {"deny": ["Bash(rm -rf ~/*)"]}}`
+	if err := os.WriteFile(filepath.Join(profile, "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", source)
+	t.Setenv("USERPROFILE", source)
+
 	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
 	if err != nil {
 		t.Fatalf("PrepareSessionHome: %v", err)
 	}
-	if err := (&Plugin{}).CleanupWorkspace(context.Background(), ports.WorkspaceHookConfig{
-		DataDir:   dataDir,
-		SessionID: "mer-1",
-	}); err != nil {
-		t.Fatalf("CleanupWorkspace: %v", err)
+	contents, err := os.ReadFile(filepath.Join(home, ".commandcode", "settings.json"))
+	if err != nil {
+		t.Fatalf("read mirrored settings: %v", err)
 	}
-	if _, err := os.Stat(home); !os.IsNotExist(err) {
-		t.Fatalf("session home %q survived teardown", home)
+	// Compare parsed values: JSON encoding doubles Windows backslashes, so
+	// raw text matching would never agree with filepath.Join.
+	var mirrored struct {
+		Skills []string `json:"skills"`
+		Hooks  map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+		Permissions struct {
+			Deny []string `json:"deny"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(contents, &mirrored); err != nil {
+		t.Fatalf("parse mirrored settings: %v\n%s", err, contents)
+	}
+	if len(mirrored.Skills) != 2 ||
+		mirrored.Skills[0] != filepath.Join(source, ".commandcode", "custom-skills") ||
+		mirrored.Skills[1] != "/opt/shared" {
+		t.Fatalf("skills = %q, want rebased home path plus untouched absolute path", mirrored.Skills)
+	}
+	var command string
+	for _, groups := range mirrored.Hooks {
+		for _, entry := range groups {
+			for _, handler := range entry.Hooks {
+				command = handler.Command
+			}
+		}
+	}
+	// Windows accepts mixed separators, and the rebased prefix keeps the OS-native
+	// real-home spelling, so compare separator-blind.
+	if filepath.ToSlash(command) != "bash \""+filepath.ToSlash(filepath.Join(source, ".commandcode", "hooks", "guard.sh"))+"\"" {
+		t.Fatalf("hook command = %q, want rebased to the real home", command)
+	}
+	if len(mirrored.Permissions.Deny) != 1 || mirrored.Permissions.Deny[0] != "Bash(rm -rf ~/*)" {
+		t.Fatalf("deny = %q, want the pattern untouched", mirrored.Permissions.Deny)
 	}
 }

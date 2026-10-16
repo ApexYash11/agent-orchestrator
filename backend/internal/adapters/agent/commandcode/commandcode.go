@@ -200,21 +200,9 @@ var _ ports.AgentRuntimeLaunchEnv = (*Plugin)(nil)
 // Chat binding sets the same keys from its own launch config, because
 // nativeacp's AugmentRuntimeEnv hook carries no session id.
 func (p *Plugin) AugmentRuntimeLaunchEnv(env map[string]string, dataDir string, sessionID domain.SessionID, _ string) {
-	for key, value := range SessionProcessEnv(dataDir, sessionID) {
+	for key, value := range SessionProcessEnv(dataDir, sessionID, env) {
 		env[key] = value
 	}
-}
-
-// CleanupWorkspace removes the session home on final workspace teardown. It must
-// not run on spawn or restore failures: the home holds the native conversation,
-// and wiping it there would destroy the history a retry needs. Terminated
-// sessions that can still be restored keep their home, mirroring the retained
-// prompts directory.
-func (p *Plugin) CleanupWorkspace(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return CleanupSessionHome(cfg.DataDir, domain.SessionID(cfg.SessionID))
 }
 
 func (p *Plugin) binary(ctx context.Context) (string, error) {

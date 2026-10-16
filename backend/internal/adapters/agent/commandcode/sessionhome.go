@@ -1,6 +1,7 @@
 package commandcode
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -189,7 +190,15 @@ func SessionHomeEnv(home string) map[string]string {
 // lose its login. GIT_CONFIG_GLOBAL repoints git's global config lookup at the
 // real file without copying it; GH_CONFIG_DIR does the same for gh. Each is set
 // only when its target exists, so users without either are unaffected.
-func SessionProcessEnv(dataDir string, sessionID domain.SessionID) map[string]string {
+//
+// Values the caller already supplied always win: an explicit GH_CONFIG_DIR or
+// GIT_CONFIG_GLOBAL in base (daemon or project environment) is never
+// overwritten, and neither is a native lookup the tool would otherwise perform.
+// In particular git prefers $XDG_CONFIG_HOME/git/config over ~/.gitconfig and
+// gh prefers $XDG_CONFIG_HOME/gh, so when XDG is in play there is nothing to
+// fill in. Comparison is case-insensitive because Windows folds environment
+// keys.
+func SessionProcessEnv(dataDir string, sessionID domain.SessionID, base map[string]string) map[string]string {
 	env := SessionHomeEnv(SessionHomeDir(dataDir, sessionID))
 	if env == nil {
 		return nil
@@ -198,18 +207,35 @@ func SessionProcessEnv(dataDir string, sessionID domain.SessionID) map[string]st
 	if err != nil || strings.TrimSpace(realHome) == "" {
 		return env
 	}
-	if gitconfig := filepath.Join(realHome, ".gitconfig"); isRegularFile(gitconfig) {
-		env["GIT_CONFIG_GLOBAL"] = gitconfig
+	xdgSet := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")) != ""
+	// Without an XDG layer, git falls back to ~/.gitconfig.
+	if !hasEnvKey(base, "GIT_CONFIG_GLOBAL") && !xdgSet {
+		if gitconfig := filepath.Join(realHome, ".gitconfig"); isRegularFile(gitconfig) {
+			env["GIT_CONFIG_GLOBAL"] = gitconfig
+		}
 	}
-	if dir := ghConfigDir(realHome); dir != "" {
-		env["GH_CONFIG_DIR"] = dir
+	if !hasEnvKey(base, "GH_CONFIG_DIR") && !xdgSet {
+		if dir := ghConfigDir(realHome); dir != "" {
+			env["GH_CONFIG_DIR"] = dir
+		}
 	}
 	return env
 }
 
-// ghConfigDir locates the user's gh configuration without moving it. gh reads
-// %APPDATA%\GitHub CLI on Windows and ~/.config/gh elsewhere; whichever exists
-// wins so an explicitly relocated config keeps working.
+// hasEnvKey reports whether an environment map already defines a key,
+// case-insensitively so Windows key folding cannot duplicate it.
+func hasEnvKey(env map[string]string, key string) bool {
+	for existing := range env {
+		if strings.EqualFold(existing, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// ghConfigDir locates the user's gh configuration without moving it: the
+// platform default (%APPDATA%\GitHub CLI on Windows, ~/.config/gh elsewhere),
+// used only when no XDG layer exists. Callers check XDG first.
 func ghConfigDir(realHome string) string {
 	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
 		if dir := filepath.Join(appData, "GitHub CLI"); isDirectory(dir) {
@@ -259,25 +285,111 @@ func mirrorProfileFiles(source, destination string) {
 		if err != nil {
 			continue
 		}
+		if name == "settings.json" {
+			contents = rebaseSettingsHomeRefs(contents, filepath.Dir(source))
+		}
 		_ = writePrivateFile(filepath.Join(destination, name), contents)
 	}
 }
 
-// CleanupSessionHome removes the per-session home. It runs only on final
-// workspace teardown through CleanupWorkspace, never on restore or spawn
-// failures: the home holds the native conversation history, and wiping it on a
-// failed restore would destroy exactly the conversation a retry needs to resume.
-// Terminated sessions that can still be restored keep their home, mirroring how
-// the prompts directory is retained for restorable sessions.
-func CleanupSessionHome(dataDir string, sessionID domain.SessionID) error {
-	home := SessionHomeDir(dataDir, sessionID)
-	if home == "" {
-		return nil
+// rebaseSettingsHomeRefs rewrites home-relative asset paths in a mirrored
+// settings.json to absolute real-home paths.
+//
+// Copying the JSON alone leaves home-relative references broken: a skill entry
+// like "~/.commandcode/custom-skills" or a hook running
+// `bash "$HOME/.commandcode/hooks/guard.sh"` would resolve inside the isolated
+// home, where neither exists, so configured skills disappear and user hooks
+// cannot execute. Command Code explicitly expands `~/` in configured skill
+// paths, so these references unambiguously mean the real home. Rewriting
+// happens on AO's copy only; the user's file is never touched.
+//
+// Only `~/` and `$HOME` prefixes are rewritten, and only inside the `skills`
+// list and hook `command` strings -- permission rule patterns and other free
+// text keep their literal form. Anything that fails to parse as JSON is
+// returned unchanged rather than dropping the user's settings.
+func rebaseSettingsHomeRefs(contents []byte, realHome string) []byte {
+	realHome = strings.TrimSpace(realHome)
+	if realHome == "" {
+		return contents
 	}
-	if err := os.RemoveAll(home); err != nil {
-		return fmt.Errorf("command-code: remove session home: %w", err)
+	var settings map[string]any
+	if err := json.Unmarshal(contents, &settings); err != nil {
+		return contents
 	}
-	return nil
+	changed := false
+	if skills, ok := settings["skills"].([]any); ok {
+		for i, skill := range skills {
+			if path, ok := skill.(string); ok {
+				if rebased, ok := rebaseHomeRef(path, realHome); ok {
+					skills[i] = rebased
+					changed = true
+				}
+			}
+		}
+	}
+	if hooks, ok := settings["hooks"].(map[string]any); ok {
+		for _, groups := range hooks {
+			entries, ok := groups.([]any)
+			if !ok {
+				continue
+			}
+			for _, entry := range entries {
+				entryMap, ok := entry.(map[string]any)
+				if !ok {
+					continue
+				}
+				handlers, ok := entryMap["hooks"].([]any)
+				if !ok {
+					continue
+				}
+				for _, handler := range handlers {
+					handlerMap, ok := handler.(map[string]any)
+					if !ok {
+						continue
+					}
+					command, ok := handlerMap["command"].(string)
+					if !ok || command == "" {
+						continue
+					}
+					rebased := strings.ReplaceAll(command, "$HOME", realHome)
+					for strings.Contains(rebased, "~/") {
+						rebased = strings.Replace(rebased, "~/", realHome+"/", 1)
+					}
+					if rebased != command {
+						handlerMap["command"] = rebased
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	if !changed {
+		return contents
+	}
+	encoded, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return contents
+	}
+	return encoded
+}
+
+// rebaseHomeRef resolves a single configured path against the real home,
+// reporting whether it changed. Absolute paths and non-home references pass
+// through untouched.
+func rebaseHomeRef(path, realHome string) (string, bool) {
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(realHome, strings.TrimPrefix(path, "~/")), true
+	}
+	if path == "~" {
+		return realHome, true
+	}
+	if strings.HasPrefix(path, "$HOME/") {
+		return filepath.Join(realHome, strings.TrimPrefix(path, "$HOME/")), true
+	}
+	if path == "$HOME" {
+		return realHome, true
+	}
+	return path, false
 }
 
 // writePrivateFile writes contents atomically with owner-only permissions, so a

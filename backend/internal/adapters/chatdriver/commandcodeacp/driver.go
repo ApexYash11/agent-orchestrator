@@ -127,7 +127,7 @@ func prepareSessionHome(cfg acpdriver.LaunchConfig) (map[string]string, error) {
 	// transcript under the real home; session/load on the fresh process needs it
 	// in the isolated catalog.
 	commandcode.MigrateNativeHistory(cfg.DataDir, cfg.SessionID, cfg.ProviderConversationID)
-	return commandcode.SessionProcessEnv(cfg.DataDir, cfg.SessionID), nil
+	return commandcode.SessionProcessEnv(cfg.DataDir, cfg.SessionID, cfg.Env), nil
 }
 
 // sessionMode maps AO's approval vocabulary onto Command Code's advertised mode

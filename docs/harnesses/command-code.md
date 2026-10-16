@@ -113,23 +113,30 @@ The session home mirrors the user's `auth.json`, `config.json`, `providers.json`
 `settings.json` and `mcp.json` so the session keeps its login, preferences,
 permission rules, hooks and MCP servers; Command Code has no environment variable
 for its OAuth token, so the token is copied at `0600` rather than referenced.
-All AO-owned state stays under `~/.ao`, and nothing is written to the project's
-`AGENTS.md` or `.commandcode/AGENTS.md`.
+`~/`-relative skill paths and `$HOME` references in hook commands are rebased to
+the real home in the mirrored copy, since they would otherwise resolve inside
+the isolated home where those assets do not exist; absolute paths and permission
+rule text are left untouched. All AO-owned state stays under `~/.ao`, and nothing
+is written to the project's `AGENTS.md` or `.commandcode/AGENTS.md`.
 
 The redirected `HOME` is inherited by the agent's shell children, so the real
 developer's tooling is repointed rather than copied: `GIT_CONFIG_GLOBAL` aims git
 at the real `~/.gitconfig`, `GH_CONFIG_DIR` at the real gh config, and `~/.ssh`
 is linked through so git-over-SSH keeps working -- each only when its target
-exists, and the link is skipped where the platform denies symlink privilege. No
-secrets move for any of the three: keys stay live-linked so rotation is never
-stale.
+exists, and the link is skipped where the platform denies symlink privilege. An
+explicitly configured value or an XDG layout always wins over these defaults, so
+native lookup order is never downgraded. No secrets move for any of the three:
+keys stay live-linked so rotation is never stale.
+
+The home is retained like the prompts directory: it is never removed on spawn,
+restore, or teardown, because every one of those paths can precede a retry that
+needs the native history. Mirrored credentials refresh on every launch, so a
+stale copy self-heals the next time the session starts.
 
 Sessions created before per-session homes existed keep their native transcript
 under the real home. Restoring one copies that conversation's own files into the
 isolated home first, so `--resume` and `session/load` keep working after the
-upgrade; files the session already has are never overwritten. The home is removed
-only on final workspace teardown, never on spawn or restore failures, so a failed
-restore cannot destroy the history its retry needs.
+upgrade; files the session already has are never overwritten.
 
 Because a session whose memory is empty would run with no AO role at all, a
 Command Code session fails to start rather than launching without its standing
