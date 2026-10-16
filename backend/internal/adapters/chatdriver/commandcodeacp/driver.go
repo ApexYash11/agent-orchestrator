@@ -80,7 +80,7 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 // (v1.79.x rejects `--append-system-prompt` with "unknown option", which kills
 // the provider before the host publishes host.json and surfaces as a
 // missing-descriptor startup failure). They are delivered as the session's memory
-// instead â€” see prepareSessionHome below.
+// instead -- see prepareSessionHome below.
 func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
 	env, err := prepareSessionHome(cfg)
 	if err != nil {
@@ -107,7 +107,7 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 // This is how Chat receives AO's standing instructions. `cmd acp` builds no mod
 // host, so `appendSystemPrompt` is unreachable there, and SessionStart is the one
 // hook the ACP path never fires. The other three do run, but their
-// `additionalContext` lands as tool-result context — a PreToolUse note arrives
+// `additionalContext` lands as tool-result context -- a PreToolUse note arrives
 // wrapped in `<hook_context>`, only once a tool runs, and Command Code's own model
 // discounts it as injected rather than authoritative. A role prompt has to be the
 // system prompt.

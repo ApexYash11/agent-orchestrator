@@ -174,8 +174,8 @@ func TestSessionHomeSurvivesOutsideThePromptsDirectory(t *testing.T) {
 	}
 }
 
-// settings.json and mcp.json are separate supported inputs from config.json —
-// user deny rules, hooks and MCP servers — so they must ride along into the
+// settings.json and mcp.json are separate supported inputs from config.json --
+// user deny rules, hooks and MCP servers -- so they must ride along into the
 // session home rather than silently disappearing behind the redirect.
 func TestPrepareSessionHomeMirrorsUserSettingsAndMCP(t *testing.T) {
 	dataDir := t.TempDir()
@@ -325,7 +325,47 @@ func TestSessionProcessEnvOmitsMissingTooling(t *testing.T) {
 	}
 }
 
-// Final workspace teardown removes the session home. It runs only there —
+// SSH has no environment redirect, so the session home links the real ~/.ssh
+// rather than copying it: a copied key would silently go stale on rotation,
+// and private keys must never be duplicated by an agent launcher. Linking needs
+// symlink privilege, which stock Windows lacks, so there the session proceeds
+// without it -- exactly as before this change.
+func TestPrepareSessionHomeLinksRealSSHDirectory(t *testing.T) {
+	dataDir := t.TempDir()
+	source := t.TempDir()
+	sshDir := filepath.Join(source, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "config"), []byte("Host example\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", source)
+	t.Setenv("USERPROFILE", source)
+
+	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
+	if err != nil {
+		t.Fatalf("PrepareSessionHome: %v", err)
+	}
+	link := filepath.Join(home, ".ssh")
+	if runtime.GOOS == "windows" {
+		if _, err := os.Lstat(link); os.IsNotExist(err) {
+			t.Skip("no symlink privilege: session proceeds without the ssh link")
+		}
+	}
+	contents, err := os.ReadFile(filepath.Join(link, "config"))
+	if err != nil {
+		t.Fatalf("read through ssh link: %v", err)
+	}
+	if string(contents) != "Host example\n" {
+		t.Fatalf("ssh config through link = %q", contents)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link = %v, want a symlink so key rotation stays live", link)
+	}
+}
+
+// Final workspace teardown removes the session home. It runs only there --
 // never on spawn or restore failures, where the home still holds the native
 // history a retry needs.
 func TestCleanupWorkspaceRemovesTheSessionHome(t *testing.T) {

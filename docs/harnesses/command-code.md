@@ -118,8 +118,11 @@ All AO-owned state stays under `~/.ao`, and nothing is written to the project's
 
 The redirected `HOME` is inherited by the agent's shell children, so the real
 developer's tooling is repointed rather than copied: `GIT_CONFIG_GLOBAL` aims git
-at the real `~/.gitconfig` and `GH_CONFIG_DIR` at the real gh config, each only
-when it exists. No secrets move for either.
+at the real `~/.gitconfig`, `GH_CONFIG_DIR` at the real gh config, and `~/.ssh`
+is linked through so git-over-SSH keeps working -- each only when its target
+exists, and the link is skipped where the platform denies symlink privilege. No
+secrets move for any of the three: keys stay live-linked so rotation is never
+stale.
 
 Sessions created before per-session homes existed keep their native transcript
 under the real home. Restoring one copies that conversation's own files into the

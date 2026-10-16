@@ -268,7 +268,7 @@ func TestClaudeHookUsageProviderHintUsesTrustedProcessRouting(t *testing.T) {
 		{name: "vertex precedence", baseURL: "https://api.z.ai", vertex: "true", want: "vertex_ai"},
 		// A route AO cannot name is still a route. Reporting silence would make
 		// it indistinguishable from "no hook has run", which is what lets the
-		// legacy repairer fall back to the model that answered â€” and that
+		// legacy repairer fall back to the model that answered — and that
 		// fallback would bill a proxied session at Anthropic list rates.
 		{name: "conflicting flags", bedrock: "1", vertex: "1", want: pricing.UnidentifiedBillingRoute},
 		{name: "unknown custom route", baseURL: "https://token:secret@custom.invalid/v1",
@@ -1150,7 +1150,7 @@ func TestHooks_UnknownAgentCannotReportNativeSessionID(t *testing.T) {
 
 func TestHooks_ClaudeCodePermissionRequestReportsBlocked(t *testing.T) {
 	// claude-code installs the pre/post-tool-use trio, so a permission-request
-	// blocked state can be correlated and cleared â€” it is the one harness that
+	// blocked state can be correlated and cleared — it is the one harness that
 	// reports blocked.
 	t.Setenv("AO_SESSION_ID", "ao-7")
 	cfg := setConfigEnv(t)
@@ -1879,7 +1879,7 @@ func TestHooks_RetryOnlyUncommittedActivityProjection(t *testing.T) {
 
 // TestHooks_DeliveryFailureGoesToHooksLog covers the durable failure sink:
 // agents swallow hook stderr, so a delivery failure must also land in
-// $AO_DATA_DIR/hooks.log â€” and a delivered hook must not write the file at all.
+// $AO_DATA_DIR/hooks.log — and a delivered hook must not write the file at all.
 func TestHooks_DeliveryFailureGoesToHooksLog(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2231,7 +2231,7 @@ func TestHooks_DaemonNotRunningStaysOutOfStderr(t *testing.T) {
 }
 
 func TestHooks_ReviewerPermissionRequestAnswersInsteadOfBlocking(t *testing.T) {
-	// Claude Code â‰¥ 2.1.257 prompts on Bash commands its analyzer cannot verify
+	// Claude Code ≥ 2.1.257 prompts on Bash commands its analyzer cannot verify
 	// even when an allow rule matches (#4810). A headless reviewer has nobody to
 	// answer, so the hook decides: the exact submit shapes are allowed, anything
 	// else is denied, and no blocked activity is reported either way.

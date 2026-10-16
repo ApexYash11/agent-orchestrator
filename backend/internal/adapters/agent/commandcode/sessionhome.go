@@ -17,7 +17,7 @@ import (
 // either. SessionStart is the one hook the ACP path never fires, and the other
 // three reach the model as tool-result context: a PreToolUse `additionalContext`
 // arrives wrapped in a `<hook_context>` tag, only once a tool runs, and Command
-// Code's own model discounts it — asked to repeat a token delivered that way, it
+// Code's own model discounts it -- asked to repeat a token delivered that way, it
 // answered that the note was "injected content from tool output, not a note I
 // was ever given". A role prompt needs to be authoritative, not advice attached
 // to a tool result.
@@ -43,6 +43,19 @@ import (
 // file is independent: one missing or unreadable file must not stop the session
 // from launching.
 var mirroredProfileFiles = []string{"auth.json", "config.json", "providers.json", "settings.json", "mcp.json"}
+
+// linkedHomeEntries are real-home dotfiles exposed inside the session home as
+// links rather than copies. They cover developer tooling that must resolve
+// under HOME and offers no environment redirect: SSH reads keys, config and
+// known_hosts from ~/.ssh, so git-over-SSH and ssh-based tooling would
+// otherwise break behind the redirect. Links keep a single source of truth --
+// a copied key would silently go stale on rotation -- and cross no privilege
+// boundary since the session already runs as the same user.
+//
+// Linking is best-effort per entry: platforms without symlink privilege (stock
+// Windows) skip the link and the session proceeds without it, exactly as
+// before. Nothing is ever overwritten: an existing session-side entry wins.
+var linkedHomeEntries = []string{".ssh"}
 
 // SessionHomeDir returns the per-session home directory for a Command Code
 // process, or "" when AO has no data directory to build it under.
@@ -98,6 +111,9 @@ func PrepareSessionHome(dataDir string, sessionID domain.SessionID, systemPrompt
 	}
 	if source := realCommandCodeDir(); source != "" && source != profile {
 		mirrorProfileFiles(source, profile)
+	}
+	if realHome, err := os.UserHomeDir(); err == nil && strings.TrimSpace(realHome) != "" && realHome != home {
+		linkRealDotfiles(realHome, home)
 	}
 	memory := strings.TrimRight(systemPrompt, "\n") + "\n"
 	if err := writePrivateFile(filepath.Join(profile, "AGENTS.md"), []byte(memory)); err != nil {
@@ -214,6 +230,24 @@ func isRegularFile(path string) bool {
 func isDirectory(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// linkRealDotfiles exposes entries from the real home inside the session home
+// without copying them. Copying would fork the source of truth -- a rotated
+// key would leave a stale copy behind -- and private keys must never be
+// duplicated onto disk by an agent launcher.
+func linkRealDotfiles(realHome, sessionHome string) {
+	for _, name := range linkedHomeEntries {
+		source := filepath.Join(realHome, name)
+		if !isDirectory(source) && !isRegularFile(source) {
+			continue
+		}
+		link := filepath.Join(sessionHome, name)
+		if _, err := os.Lstat(link); err == nil {
+			continue
+		}
+		_ = os.Symlink(source, link)
+	}
 }
 
 // mirrorProfileFiles copies the user's Command Code profile into the session
