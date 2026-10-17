@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -21,6 +22,9 @@ func writeShim(t *testing.T, dir, content string) string {
 const dshShimBody = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js\" %*\r\n"
 
 func TestResolveWindowsShimArgvStartsNodeEntryPointDirectly(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the shim body below uses Windows path separators; the rewrite only fires for a .cmd binary, which the binary resolver only produces on Windows")
+	}
 	dir := t.TempDir()
 	node := filepath.Join(dir, "node.exe")
 	if err := os.WriteFile(node, nil, 0o644); err != nil {
@@ -48,6 +52,9 @@ func TestResolveWindowsShimArgvStartsNodeEntryPointDirectly(t *testing.T) {
 }
 
 func TestResolveWindowsShimArgvFallsBackToPathNode(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the shim body below uses Windows path separators; the rewrite only fires for a .cmd binary, which the binary resolver only produces on Windows")
+	}
 	dir := t.TempDir()
 	entry := filepath.Join(dir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js")
 	if err := os.MkdirAll(filepath.Dir(entry), 0o755); err != nil {
@@ -110,6 +117,9 @@ func TestResolveWindowsShimArgvKeepsArgvWhenShimIsUnparseable(t *testing.T) {
 }
 
 func TestResolveWindowsShimArgvKeepsArgvForNativeBinary(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the shim body below uses Windows path separators; the rewrite only fires for a .cmd binary, which the binary resolver only produces on Windows")
+	}
 	dir := t.TempDir()
 	shim := writeShim(t, dir, "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\n\"%dp0%\\payload\\tool.exe\" %*\r\n")
 	payload := filepath.Join(dir, "payload", "tool.exe")
