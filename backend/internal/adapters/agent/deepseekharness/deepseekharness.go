@@ -46,6 +46,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 
@@ -120,6 +121,10 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 // headless task with a delimiter rather than passed as a separate argument.
 // The headless profile takes a single positional task, which is the only
 // channel that reaches the model on this path.
+// The resolved binary may be the npm `.cmd` batch shim on Windows, which
+// cmd.exe caps near 8,191 characters — shorter than a task that carries the
+// standing instructions. resolveWindowsShimArgv rewrites that argv to start the
+// shim's Node target directly so the longer CreateProcess limit applies.
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (cmd []string, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -136,7 +141,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	if err != nil {
 		return nil, err
 	}
-	return []string{binary, "--profile", headlessProfile, task}, nil
+	return resolveWindowsShimArgv([]string{binary, "--profile", headlessProfile, task}, exec.LookPath), nil
 }
 
 // GetRestoreCommand rebuilds the argv that continues a persisted DeepSeek
@@ -169,7 +174,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	if err != nil {
 		return nil, false, err
 	}
-	return []string{binary, "--profile", headlessProfile, "--session-id", agentSessionID, task}, true, nil
+	return resolveWindowsShimArgv([]string{binary, "--profile", headlessProfile, "--session-id", agentSessionID, task}, exec.LookPath), true, nil
 }
 
 // SessionInfo surfaces the standard hook-derived session metadata. DeepSeek

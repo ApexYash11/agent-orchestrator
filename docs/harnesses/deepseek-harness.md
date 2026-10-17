@@ -29,8 +29,10 @@ sent — `none`/`minimal`/`off` become `off`, `low` stays `low`, `medium`/`high`
 become `high`, and `xhigh`/`max` become `max` — so an effort configured for
 another harness does not fail a Harness session.
 
-AO standing instructions ride the first turn as a text block, re-armed on
-resume, because `session/new` reads only the working directory.
+AO standing instructions ride the first turn as a text block, because
+`session/new` reads only the working directory. The block is delivered when a
+fresh conversation opens and is not repeated when a resumed session already has
+prior turns, so it is not duplicated mid-conversation.
 
 ## Terminal UI
 
@@ -89,3 +91,9 @@ surface is normally not the case, so terminal resume falls back to a fresh run.
   takes no system-prompt flag and has no hook file, so the task is the only
   channel that reaches the model. Chat delivers the same instructions as a text
   block on the first turn.
+- On Windows, npm installs `dsh` as a `.cmd` batch shim that cmd.exe caps near
+  the 8,191-character command-line limit, and a task carrying standing
+  instructions exceeds that. When AO resolves the binary to a batch shim whose
+  npm shape it understands, it launches the shim's Node entry point directly
+  instead, which raises the limit to CreateProcess's 32,767 characters. A shim
+  AO cannot parse keeps the original launch and its own error.
