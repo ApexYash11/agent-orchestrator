@@ -81,6 +81,14 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 // the provider before the host publishes host.json and surfaces as a
 // missing-descriptor startup failure). They are delivered as the session's memory
 // instead -- see prepareSessionHome below.
+//
+// Mods are NOT passed here either: `cmd acp` accepts `--mod`/`--mod-option`
+// (and reads settings `mods.paths` / `.commandcode/mods/`) but silently never
+// loads them — verified on v1.82.4/v1.83.0, where the same sentinel mod logs
+// `factory:ran` under `cmd -p --mod` and logs nothing under `cmd acp --mod`
+// after initialize + session/new (issue #6784). Passing --mod would look
+// configured while staying inert, so this binding deliberately omits it and
+// delivers standing context via prepareSessionHome instead.
 func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
 	env, err := prepareSessionHome(cfg)
 	if err != nil {
