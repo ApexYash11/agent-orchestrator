@@ -112,9 +112,17 @@ func PrepareSessionHome(dataDir string, sessionID domain.SessionID, systemPrompt
 	}
 	if source := realCommandCodeDir(); source != "" && source != profile {
 		mirrorProfileFiles(source, profile)
+		// Command Code resolves the user's own mods from $HOME/.commandcode/
+		// mods, npm installs there as well, and relative configured mod paths
+		// resolve against the home: mirroring the real directory is what keeps
+		// the user's mods loading under the redirected HOME. Refreshed on
+		// every launch, so a change made to the real mods tree, including a
+		// `mods update` run inside an earlier session, lands next launch.
+		mirrorDirectoryTree(filepath.Join(source, "mods"), filepath.Join(profile, "mods"))
 	}
 	if realHome, err := os.UserHomeDir(); err == nil && strings.TrimSpace(realHome) != "" && realHome != home {
 		linkRealDotfiles(realHome, home)
+		mirrorUserGitConfig(realHome, home)
 	}
 	memory := strings.TrimRight(systemPrompt, "\n") + "\n"
 	if err := writePrivateFile(filepath.Join(profile, "AGENTS.md"), []byte(memory)); err != nil {
@@ -184,20 +192,25 @@ func SessionHomeEnv(home string) map[string]string {
 // developer tooling working under the redirected HOME.
 //
 // The overlay is inherited by Command Code's shell commands and hooks, not just
-// its memory loader, and the generated home contains only .commandcode. Without
-// passthroughs, a user whose author identity or credential helper lives in
-// ~/.gitconfig would fail `git commit` inside every AO session, and gh would
-// lose its login. GIT_CONFIG_GLOBAL repoints git's global config lookup at the
-// real file without copying it; GH_CONFIG_DIR does the same for gh. Each is set
-// only when its target exists, so users without either are unaffected.
+// its memory loader, and the generated home contains only mirrors and links,
+// never the real profile itself. Without passthroughs, a user whose author
+// identity or credential helper lives in ~/.gitconfig would fail `git commit`
+// inside every AO session, and gh would lose its login. GIT_CONFIG_GLOBAL
+// repoints git's global config lookup at the real file without copying it;
+// GH_CONFIG_DIR does the same for gh. Each is set only when its target exists,
+// so users without either are unaffected.
 //
-// Values the caller already supplied always win: an explicit GH_CONFIG_DIR or
-// GIT_CONFIG_GLOBAL in base (daemon or project environment) is never
-// overwritten, and neither is a native lookup the tool would otherwise perform.
-// In particular git prefers $XDG_CONFIG_HOME/git/config over ~/.gitconfig and
-// gh prefers $XDG_CONFIG_HOME/gh, so when XDG is in play there is nothing to
-// fill in. Comparison is case-insensitive because Windows folds environment
-// keys.
+// Decisions are made against the environment the child actually starts from:
+// the daemon's ambient environment overlaid by the caller's session
+// environment. An explicit GH_CONFIG_DIR or GIT_CONFIG_GLOBAL, whether
+// configured per project or simply inherited by the daemon, is therefore never
+// overwritten. Git loads $XDG_CONFIG_HOME/git/config and ~/.gitconfig
+// independently and the latter wins, so the git passthrough stays on whenever
+// the real file exists even when XDG is set; the real XDG git config itself is
+// mirrored in PrepareSessionHome when XDG is unset. gh resolves to
+// $XDG_CONFIG_HOME/gh the moment that variable is set, so GH_CONFIG_DIR is
+// filled in only when it is not. Comparison is case-insensitive because
+// Windows folds environment keys.
 func SessionProcessEnv(dataDir string, sessionID domain.SessionID, base map[string]string) map[string]string {
 	env := SessionHomeEnv(SessionHomeDir(dataDir, sessionID))
 	if env == nil {
@@ -207,19 +220,37 @@ func SessionProcessEnv(dataDir string, sessionID domain.SessionID, base map[stri
 	if err != nil || strings.TrimSpace(realHome) == "" {
 		return env
 	}
-	xdgSet := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")) != ""
-	// Without an XDG layer, git falls back to ~/.gitconfig.
-	if !hasEnvKey(base, "GIT_CONFIG_GLOBAL") && !xdgSet {
+	effective := effectiveEnv(base)
+	if !hasEnvKey(effective, "GIT_CONFIG_GLOBAL") {
 		if gitconfig := filepath.Join(realHome, ".gitconfig"); isRegularFile(gitconfig) {
 			env["GIT_CONFIG_GLOBAL"] = gitconfig
 		}
 	}
-	if !hasEnvKey(base, "GH_CONFIG_DIR") && !xdgSet {
+	if !hasEnvKey(effective, "GH_CONFIG_DIR") && strings.TrimSpace(effective["XDG_CONFIG_HOME"]) == "" {
 		if dir := ghConfigDir(realHome); dir != "" {
 			env["GH_CONFIG_DIR"] = dir
 		}
 	}
 	return env
+}
+
+// effectiveEnv merges the daemon's ambient environment with the caller's
+// session overlay, which is what the child resolves before our additions are
+// applied on either launch path. The overlay wins case-insensitively, matching
+// how the flat environment behaves after Windows key folding.
+func effectiveEnv(base map[string]string) map[string]string {
+	effective := make(map[string]string)
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || hasEnvKey(effective, key) {
+			continue
+		}
+		effective[key] = value
+	}
+	for key, value := range base {
+		effective[key] = value
+	}
+	return effective
 }
 
 // hasEnvKey reports whether an environment map already defines a key,
@@ -276,6 +307,65 @@ func linkRealDotfiles(realHome, sessionHome string) {
 	}
 }
 
+// mirrorUserGitConfig copies the real ~/.config/git directory into the
+// session home when no XDG layer redirects git's second user config path.
+// Git computes that path from HOME at startup, so behind the redirect it
+// would otherwise resolve to the generated home and disappear; a user's
+// split-over-XDG identity or credentials would silently stop applying.
+// With $XDG_CONFIG_HOME set, the real directory stays directly readable, so
+// copying it would be redundant. Each launch refreshes the copy.
+func mirrorUserGitConfig(realHome, sessionHome string) {
+	if strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")) != "" {
+		return
+	}
+	source := filepath.Join(realHome, ".config", "git")
+	if !isDirectory(source) {
+		return
+	}
+	mirrorDirectoryTree(source, filepath.Join(sessionHome, ".config", "git"))
+}
+
+// mirrorDirectoryTree recursively copies a real directory into a mirrored
+// one, overwriting existing files so each launch refreshes the session's
+// copy. Nothing is ever deleted: session-side additions survive. Best-effort
+// per entry, like every other mirror input; a single unreadable file must not
+// stop the session from launching.
+func mirrorDirectoryTree(source, destination string) {
+	if !isDirectory(source) {
+		return
+	}
+	if err := os.MkdirAll(destination, 0o700); err != nil {
+		return
+	}
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		sourceEntry := filepath.Join(source, entry.Name())
+		destinationEntry := filepath.Join(destination, entry.Name())
+		if entry.IsDir() {
+			mirrorDirectoryTree(sourceEntry, destinationEntry)
+			continue
+		}
+		// Regular files only: links are deliberately not followed, since a
+		// mirrored tree must never drag real-home state behind them.
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		contents, err := os.ReadFile(sourceEntry)
+		if err != nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(destinationEntry), 0o700); err != nil {
+			continue
+		}
+		if err := os.WriteFile(destinationEntry, contents, 0o600); err != nil {
+			continue
+		}
+	}
+}
+
 // mirrorProfileFiles copies the user's Command Code profile into the session
 // home. Each file is independent: one missing or unreadable file must not stop
 // the session from launching.
@@ -296,17 +386,19 @@ func mirrorProfileFiles(source, destination string) {
 // settings.json to absolute real-home paths.
 //
 // Copying the JSON alone leaves home-relative references broken: a skill entry
-// like "~/.commandcode/custom-skills" or a hook running
-// `bash "$HOME/.commandcode/hooks/guard.sh"` would resolve inside the isolated
-// home, where neither exists, so configured skills disappear and user hooks
-// cannot execute. Command Code explicitly expands `~/` in configured skill
-// paths, so these references unambiguously mean the real home. Rewriting
-// happens on AO's copy only; the user's file is never touched.
+// like "~/.commandcode/custom-skills", a hook running
+// `bash "$HOME/.commandcode/hooks/guard.sh"`, or a configured mod path all
+// resolve inside the isolated home, where none of them exists, so configured
+// skills disappear, user hooks cannot execute, and the user's mods stop
+// loading. Command Code expands `~/` in configured skill and mod paths, so
+// these references unambiguously mean the real home. Rewriting happens on AO's
+// copy only; the user's file is never touched.
 //
 // Only `~/` and `$HOME` prefixes are rewritten, and only inside the `skills`
-// list and hook `command` strings -- permission rule patterns and other free
-// text keep their literal form. Anything that fails to parse as JSON is
-// returned unchanged rather than dropping the user's settings.
+// list, the `mods.paths` list, and hook `command` strings -- permission rule
+// patterns and other free text keep their literal form. Anything that fails to
+// parse as JSON is returned unchanged rather than dropping the user's
+// settings.
 func rebaseSettingsHomeRefs(contents []byte, realHome string) []byte {
 	realHome = strings.TrimSpace(realHome)
 	if realHome == "" {
@@ -317,12 +409,29 @@ func rebaseSettingsHomeRefs(contents []byte, realHome string) []byte {
 		return contents
 	}
 	changed := false
-	if skills, ok := settings["skills"].([]any); ok {
-		for i, skill := range skills {
-			if path, ok := skill.(string); ok {
+	rebaseList := func(key string) {
+		list, ok := settings[key].([]any)
+		if !ok {
+			return
+		}
+		for i, entry := range list {
+			if path, ok := entry.(string); ok {
 				if rebased, ok := rebaseHomeRef(path, realHome); ok {
-					skills[i] = rebased
+					list[i] = rebased
 					changed = true
+				}
+			}
+		}
+	}
+	rebaseList("skills")
+	if mods, ok := settings["mods"].(map[string]any); ok {
+		if paths, ok := mods["paths"].([]any); ok {
+			for i, path := range paths {
+				if entry, ok := path.(string); ok {
+					if rebased, ok := rebaseHomeRef(entry, realHome); ok {
+						paths[i] = rebased
+						changed = true
+					}
 				}
 			}
 		}
@@ -351,11 +460,7 @@ func rebaseSettingsHomeRefs(contents []byte, realHome string) []byte {
 					if !ok || command == "" {
 						continue
 					}
-					rebased := strings.ReplaceAll(command, "$HOME", realHome)
-					for strings.Contains(rebased, "~/") {
-						rebased = strings.Replace(rebased, "~/", realHome+"/", 1)
-					}
-					if rebased != command {
+					if rebased, ok := rebaseHookCommand(command, realHome); ok {
 						handlerMap["command"] = rebased
 						changed = true
 					}
@@ -390,6 +495,206 @@ func rebaseHomeRef(path, realHome string) (string, bool) {
 		return realHome, true
 	}
 	return path, false
+}
+
+// shellWordDelimiters are the characters that end a command word when a
+// rebuilt expansion must stop pretending to be one word.
+func isShellDelimiter(char byte) bool {
+	switch char {
+	case ' ', '\t', '\n', '\r', ';', '&', '|', '(', ')', '<', '>':
+		return true
+	}
+	return false
+}
+
+// homeVarEnd reports the position just past a $HOME reference at index, or -1
+// when the reference is not followed by a real variable boundary: $HOMEBREW
+// and similar identifiers share the $HOME prefix and must stay untouched.
+func homeVarEnd(command string, index int) int {
+	if !strings.HasPrefix(command[index:], "$HOME") {
+		return -1
+	}
+	end := index + len("$HOME")
+	if end < len(command) {
+		boundary := command[end]
+		if boundary >= 'a' && boundary <= 'z' || boundary >= 'A' && boundary <= 'Z' || boundary >= '0' && boundary <= '9' || boundary == '_' {
+			return -1
+		}
+	}
+	return end
+}
+
+// rebaseHookCommand rewrites home-relative references in a shell command so
+// they keep resolving to the real home while it runs under the session home.
+// Shell semantics are preserved rather than guessed at:
+//
+//   - $HOME expands, and is rewritten, outside single quotes only; inside
+//     single quotes it is intentionally literal. $HOMEBREW-style identifiers
+//     that merely share the $HOME prefix are left alone.
+//   - A leading ~ expands only when unquoted at the start of a word; inside
+//     quotes it stays a literal character.
+//   - A home whose path contains whitespace would split into two arguments
+//     after naive substitution, so the rebuilt word is double-quoted to stay
+//     one word, exactly like the tilde expansion it replaces. Words that
+//     would break that quoting are left untouched.
+//
+// Anything ambiguous is left as written; a hook command that cannot be
+// rewritten safely keeps running with its original source.
+func rebaseHookCommand(command, realHome string) (string, bool) {
+	realHome = strings.TrimSpace(realHome)
+	if realHome == "" {
+		return command, false
+	}
+	if strings.ContainsAny(realHome, "\"\n") {
+		return command, false
+	}
+	needsQuote := strings.ContainsAny(realHome, " \t")
+	var out strings.Builder
+	changed := false
+	inSingle := false
+	inDouble := false
+
+	for index := 0; index < len(command); index++ {
+		char := command[index]
+		atTokenStart := index == 0 || isShellDelimiter(command[index-1])
+
+		if inSingle {
+			if char == '\'' {
+				inSingle = false
+			}
+			out.WriteByte(char)
+			continue
+		}
+		if inDouble {
+			if char == '\\' && index+1 < len(command) && strings.IndexByte("$\"\\\n", command[index+1]) >= 0 {
+				out.WriteByte(char)
+				out.WriteByte(command[index+1])
+				index++
+				continue
+			}
+			if char == '"' {
+				inDouble = false
+				out.WriteByte(char)
+				continue
+			}
+			if end := homeVarEnd(command, index); end >= 0 {
+				out.WriteString(realHome)
+				changed = true
+				index = end - 1
+				continue
+			}
+			out.WriteByte(char)
+			continue
+		}
+		// Unquoted context.
+		if char == '\'' {
+			inSingle = true
+			out.WriteByte(char)
+			continue
+		}
+		if char == '"' {
+			inDouble = true
+			out.WriteByte(char)
+			continue
+		}
+		if char == '\\' && index+1 < len(command) {
+			out.WriteByte(char)
+			out.WriteByte(command[index+1])
+			index++
+			continue
+		}
+		if char == '~' && atTokenStart {
+			rest := command[index+1:]
+			endsWord := rest == "" || isShellDelimiter(rest[0])
+			if endsWord || strings.HasPrefix(rest, "/") {
+				if !needsQuote {
+					out.WriteString(realHome)
+					if strings.HasPrefix(rest, "/") {
+						// Copy the remainder verbatim but do not consume it:
+						// it may itself contain references to rewrite.
+						changed = true
+						continue
+					}
+					changed = true
+					continue
+				}
+				if endsWord {
+					out.WriteByte('"')
+					out.WriteString(realHome)
+					out.WriteByte('"')
+					changed = true
+					continue
+				}
+				end := tokenWordEnd(command, index+1)
+				tail := command[index+1 : end]
+				if strings.Contains(tail, "\"") {
+					// The tail would end the inserted quoting; leave the
+					// expansion to the runtime and keep scanning.
+					out.WriteByte(char)
+					continue
+				}
+				out.WriteByte('"')
+				out.WriteString(realHome)
+				out.WriteString(tail)
+				out.WriteByte('"')
+				changed = true
+				index = end - 1
+				continue
+			}
+		}
+		if char == '$' {
+			if end := homeVarEnd(command, index); end >= 0 {
+				if !needsQuote {
+					out.WriteString(realHome)
+					changed = true
+					index = end - 1
+					continue
+				}
+				endsWord := end >= len(command) || isShellDelimiter(command[end])
+				if endsWord {
+					out.WriteByte('"')
+					out.WriteString(realHome)
+					out.WriteByte('"')
+					changed = true
+					index = end - 1
+					continue
+				}
+				word := tokenWordEnd(command, end)
+				tail := command[end:word]
+				if strings.Contains(tail, "\"") {
+					// Leave the reference as written; the tail would break
+					// the inserted quoting. Emit it verbatim and resume
+					// scanning after it.
+					out.WriteString(command[index:end])
+					index = end - 1
+				} else {
+					out.WriteByte('"')
+					out.WriteString(realHome)
+					out.WriteString(tail)
+					out.WriteByte('"')
+					changed = true
+					index = word - 1
+				}
+				continue
+			}
+		}
+		out.WriteByte(char)
+	}
+	if !changed {
+		return command, false
+	}
+	return out.String(), true
+}
+
+// tokenWordEnd returns the index of the next shell delimiter at or after
+// from, or the length of command. Escaped characters are not special here:
+// a token whose quoting must be rebuilt around them is left alone.
+func tokenWordEnd(command string, from int) int {
+	end := from
+	for end < len(command) && !isShellDelimiter(command[end]) {
+		end++
+	}
+	return end
 }
 
 // writePrivateFile writes contents atomically with owner-only permissions, so a

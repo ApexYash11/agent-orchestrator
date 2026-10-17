@@ -113,19 +113,28 @@ The session home mirrors the user's `auth.json`, `config.json`, `providers.json`
 `settings.json` and `mcp.json` so the session keeps its login, preferences,
 permission rules, hooks and MCP servers; Command Code has no environment variable
 for its OAuth token, so the token is copied at `0600` rather than referenced.
-`~/`-relative skill paths and `$HOME` references in hook commands are rebased to
-the real home in the mirrored copy, since they would otherwise resolve inside
-the isolated home where those assets do not exist; absolute paths and permission
-rule text are left untouched. All AO-owned state stays under `~/.ao`, and nothing
-is written to the project's `AGENTS.md` or `.commandcode/AGENTS.md`.
+The user's mods directory (`~/.commandcode/mods`, including npm-installed
+packages under `.store`) is mirrored recursively and refreshed on every launch,
+because Command Code resolves mods from `HOME` -- without the copy every mod
+the user has installed would vanish behind the redirect. `~/`-relative skill
+and mod paths and `$HOME` references in hook commands are rebased to the real
+home in the mirrored copy, since they would otherwise resolve inside the
+isolated home where those assets do not exist; absolute paths, single-quoting
+and permission rule text are left untouched. All AO-owned state stays under
+`~/.ao`, and nothing is written to the project's `AGENTS.md` or
+`.commandcode/AGENTS.md`.
 
 The redirected `HOME` is inherited by the agent's shell children, so the real
-developer's tooling is repointed rather than copied: `GIT_CONFIG_GLOBAL` aims git
-at the real `~/.gitconfig`, `GH_CONFIG_DIR` at the real gh config, and `~/.ssh`
-is linked through so git-over-SSH keeps working -- each only when its target
-exists, and the link is skipped where the platform denies symlink privilege. An
-explicitly configured value or an XDG layout always wins over these defaults, so
-native lookup order is never downgraded. No secrets move for any of the three:
+developer's tooling is kept reachable rather than moved: `GIT_CONFIG_GLOBAL`
+aims git at the real `~/.gitconfig` (git reads the XDG config file and
+`~/.gitconfig` side by side, so this applies even when XDG is set, and the real
+`~/.config/git` is mirrored when it is not), `GH_CONFIG_DIR` points at the real
+gh config whenever no `$XDG_CONFIG_HOME` redirect covers it, and `~/.ssh` is
+linked through so git-over-SSH keeps working -- each only when its target
+exists, and the link is skipped where the platform denies symlink privilege.
+The decision about what is already configured is made against the environment
+the child actually starts from, so a pointer configured per project or simply
+inherited by the daemon is never overwritten by our defaults. No secrets move:
 keys stay live-linked so rotation is never stale.
 
 The home is retained like the prompts directory: it is never removed on spawn,
