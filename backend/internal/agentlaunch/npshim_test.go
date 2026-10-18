@@ -350,6 +350,113 @@ func TestResolveWindowsShimArgvWithEnvFallsBackToDaemonLookPath(t *testing.T) {
 	}
 }
 
+// A Node batch wrapper is not a usable runtime: replacing one `.cmd` with
+// another keeps the oversized prompt inside cmd.exe, so the wrapper is skipped
+// and the daemon's native runtime is used instead.
+func TestResolveWindowsShimArgvWithEnvSkipsBatchNodeWrapper(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "node_modules", "pkg", "bin")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(pkgDir, "entry")
+	if err := os.WriteFile(entry, []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shim := writeShim(t, dir, "pkg.cmd", nodeShimBody)
+
+	wrapperDir := t.TempDir()
+	wrapper := filepath.Join(wrapperDir, "node.cmd")
+	if err := os.WriteFile(wrapper, []byte("@ECHO off\r\nnode.exe %*\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bat := filepath.Join(wrapperDir, "node.bat")
+	if err := os.WriteFile(bat, []byte("@ECHO off\r\nnode.exe %*\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	nodeDir := t.TempDir()
+	node := filepath.Join(nodeDir, "node.exe")
+	if err := os.WriteFile(node, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"PATH": wrapperDir, "PATHEXT": ".COM;.EXE;.BAT;.CMD"}
+	lookPath := func(name string) (string, error) {
+		if name != "node.exe" {
+			t.Errorf("lookPath(%q) should not be consulted", name)
+		}
+		return node, nil
+	}
+
+	got := ResolveWindowsShimArgvWithEnv([]string{shim, "-p"}, env, lookPath)
+	if !equalArgs(got, []string{node, entry, "-p"}) {
+		t.Fatalf("ResolveWindowsShimArgvWithEnv() = %q, want native node argv, not %q", got, wrapper)
+	}
+}
+
+// With no native Node anywhere the rewrite must decline: leaving the argv alone
+// keeps the original shim and its own diagnostic.
+func TestResolveWindowsShimArgvWithEnvLeavesShimWhenOnlyBatchNodeExists(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "node_modules", "pkg", "bin")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "entry"), []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shim := writeShim(t, dir, "pkg.cmd", nodeShimBody)
+
+	wrapperDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wrapperDir, "node.cmd"), []byte("@ECHO off\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	missingLookPath := func(string) (string, error) { return "", os.ErrNotExist }
+
+	argv := []string{shim, "-s", strings.Repeat("x", 13000)}
+	got := ResolveWindowsShimArgvWithEnv(argv, map[string]string{"PATH": wrapperDir}, missingLookPath)
+	if !equalArgs(got, argv) {
+		t.Fatalf("argv = %q, want unchanged", got)
+	}
+}
+
+// Directory order on the child PATH outranks PATHEXT order: the shim would run
+// the runtime in the earliest matching directory, so a later directory's
+// native Node must not win over an earlier directory's.
+func TestResolveWindowsShimArgvWithEnvKeepsChildPathDirectoryOrder(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "node_modules", "pkg", "bin")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(pkgDir, "entry")
+	if err := os.WriteFile(entry, []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shim := writeShim(t, dir, "pkg.cmd", nodeShimBody)
+
+	first := t.TempDir()
+	firstNode := filepath.Join(first, "node.com")
+	if err := os.WriteFile(firstNode, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	second := t.TempDir()
+	if err := os.WriteFile(filepath.Join(second, "node.exe"), []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := map[string]string{"PATH": strings.Join([]string{first, second}, string(os.PathListSeparator)), "PATHEXT": ".COM;.EXE"}
+	failLookPath := func(string) (string, error) {
+		t.Error("daemon lookPath must not be consulted when the child PATH has Node")
+		return "", os.ErrNotExist
+	}
+
+	got := ResolveWindowsShimArgvWithEnv([]string{shim}, env, failLookPath)
+	if !equalArgs(got, []string{firstNode, entry}) {
+		t.Fatalf("ResolveWindowsShimArgvWithEnv() = %q, want earliest PATH directory's %q", got, firstNode)
+	}
+}
+
 func TestResolveWindowsShimArgvLeavesUnrelatedArgvAlone(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "claude.exe")

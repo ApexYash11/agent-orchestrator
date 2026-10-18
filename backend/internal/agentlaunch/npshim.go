@@ -334,9 +334,15 @@ func expandShimPath(token, dir string) string {
 // is how nvm-style installs pin the interpreter, before falling back to PATH.
 // The fallback searches the child PATH from env first: that is the PATH the
 // original shim would have searched, after the caller's augmentation. Only
-// when env carries no PATH does it use lookPath against the daemon
+// when env carries no usable Node does it use lookPath against the daemon
 // environment, preserving the previous behavior for callers without a session
 // environment.
+//
+// Every candidate must be a native executable. A PATH entry whose only Node is
+// a `node.cmd`/`node.bat` wrapper is skipped rather than used, because starting
+// that wrapper would send the prompt back through cmd.exe; if no native Node
+// exists anywhere the argv is left alone and the launch fails through the
+// original shim with its own diagnostic.
 func resolveNodeRuntime(shimDir string, env map[string]string, lookPath func(string) (string, error)) string {
 	if local := filepath.Join(shimDir, "node.exe"); isRegularFile(local) {
 		return local
@@ -348,7 +354,7 @@ func resolveNodeRuntime(shimDir string, env map[string]string, lookPath func(str
 		lookPath = exec.LookPath
 	}
 	for _, name := range []string{"node.exe", "node"} {
-		if path, err := lookPath(name); err == nil && isRegularFile(path) {
+		if path, err := lookPath(name); err == nil && isDirectlyLaunchable(path) {
 			return path
 		}
 	}
@@ -357,53 +363,65 @@ func resolveNodeRuntime(shimDir string, env map[string]string, lookPath func(str
 
 // lookNodeOnChildPath searches the session PATH for a Node runtime, mirroring
 // the fallback the `.cmd` shim itself performs. It reports false when env
-// carries no PATH so the caller falls back to the daemon environment.
+// carries no PATH, or when the PATH holds no Node CreateProcess can start on
+// its own, so the caller falls back to the daemon environment.
+//
+// Directories are visited in PATH order and extensions in PATHEXT order within
+// each directory. A single pass per extension would let a later directory's
+// runtime win over an earlier directory's, which is the opposite of what the
+// shim itself would have run.
 func lookNodeOnChildPath(env map[string]string) (string, bool) {
 	pathVar := env["PATH"]
 	if strings.TrimSpace(pathVar) == "" {
 		return "", false
 	}
 	dirs := strings.Split(pathVar, string(os.PathListSeparator))
-	if path, ok := findOnDirs(dirs, "node.exe"); ok {
-		return path, true
-	}
-	for _, ext := range pathExts(env) {
-		if path, ok := findOnDirs(dirs, "node"+ext); ok {
-			return path, true
-		}
-	}
-	return "", false
-}
-
-// findOnDirs reports the first regular file named name under dirs.
-func findOnDirs(dirs []string, name string) (string, bool) {
+	exts := launchableExts(env)
 	for _, dir := range dirs {
 		if strings.TrimSpace(dir) == "" {
 			continue
 		}
-		if path := filepath.Join(dir, name); isRegularFile(path) {
-			return path, true
+		for _, ext := range exts {
+			if path := filepath.Join(dir, "node"+ext); isDirectlyLaunchable(path) {
+				return path, true
+			}
 		}
 	}
 	return "", false
 }
 
-// pathExts lists the executable extensions a bare `node` name may carry, in
-// search order. It honors the session PATHEXT and falls back to the Windows
-// default order otherwise.
-func pathExts(env map[string]string) []string {
+// directlyLaunchableExts are the executable extensions CreateProcess can start
+// without an interpreter. The remaining PATHEXT entries — `.cmd`, `.bat`,
+// `.ps1`, `.vbs` — need a host process, which would put the command line back
+// through cmd.exe's ~8,191-character cap and reintroduce the failure this
+// rewrite exists to remove.
+var directlyLaunchableExts = map[string]bool{".exe": true, ".com": true}
+
+// isDirectlyLaunchable reports whether CreateProcess can start path on its own.
+// A batch wrapper is deliberately not accepted as a Node runtime: replacing one
+// `.cmd` with another keeps the oversized prompt inside cmd.exe.
+func isDirectlyLaunchable(path string) bool {
+	return path != "" && directlyLaunchableExts[strings.ToLower(filepath.Ext(path))] && isRegularFile(path)
+}
+
+// launchableExts lists the executable extensions a bare `node` name may carry,
+// in search order, keeping only the ones CreateProcess can start directly. It
+// honors the session PATHEXT and falls back to the Windows default order
+// otherwise.
+func launchableExts(env map[string]string) []string {
 	raw := env["PATHEXT"]
 	if raw == "" {
 		raw = os.Getenv("PATHEXT")
 	}
 	var exts []string
 	for _, ext := range strings.Split(raw, ";") {
-		if ext = strings.TrimSpace(ext); ext != "" {
-			exts = append(exts, strings.ToLower(ext))
+		ext = strings.ToLower(strings.TrimSpace(ext))
+		if ext != "" && directlyLaunchableExts[ext] {
+			exts = append(exts, ext)
 		}
 	}
 	if len(exts) == 0 {
-		exts = []string{".com", ".exe", ".bat", ".cmd"}
+		exts = []string{".com", ".exe"}
 	}
 	return exts
 }
