@@ -37,6 +37,7 @@ describe("shared UI locale schema", () => {
 			locale: "en",
 			soundNotificationsEnabled: true,
 			terminalShell: { kind: "auto" },
+			browserExternalHandoffHosts: [],
 		});
 		expect(coerceUiSettings({ locale: "en", soundNotificationsEnabled: false })).toEqual({
 			...DEFAULT_UI_SETTINGS,
@@ -66,5 +67,15 @@ describe("shared UI locale schema", () => {
 		});
 		expect(coerceTerminalShell({ kind: "custom", path: "   " })).toEqual({ kind: "custom" });
 		expect(coerceTerminalShell({ kind: "fish" })).toEqual({ kind: "auto" });
+	});
+
+	it("normalizes the persisted browser handoff host list", () => {
+		expect(coerceUiSettings({ locale: "en", browserExternalHandoffHosts: ["SSO.test", "bad host"] })).toEqual({
+			...DEFAULT_UI_SETTINGS,
+			browserExternalHandoffHosts: ["sso.test"],
+		});
+		expect(coerceUiSettings({ locale: "en", browserExternalHandoffHosts: "sso.test" })).toEqual(
+			DEFAULT_UI_SETTINGS,
+		);
 	});
 });

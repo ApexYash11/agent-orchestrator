@@ -229,6 +229,15 @@ window for HMR-driven verification.
 Temporary browser profiles are isolated per worker. Named profiles persist and
 can be reused across sessions, intentionally sharing cookies and storage.
 Profile selection does not broaden the session authorization on browser commands.
+
+Sign-in, OAuth authorization, and checkout pages never load in the panel. Their
+providers refuse to run those flows inside an embedded browser, so AO hands the
+URL to the user's own browser and leaves the tab on the page it already had.
+This covers Google accounts, Google Workspace checkout, `pay.google.com`, Stripe
+and PayPal checkout, and any OAuth `authorize` endpoint, plus any extra hosts the
+user adds under Settings > Browser. Agents should expect `open` on such a URL to
+report the handoff instead of a loaded page, and must not retry it in a loop or
+try to work around it by scripting the page.
 Network capture is disabled by default and must be started explicitly. It is
 scoped to the active tab at start time, expires after 60 seconds by default
 (maximum 300), retains at most 200 in-memory entries, and is cleared with the

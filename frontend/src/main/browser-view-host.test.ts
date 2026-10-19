@@ -3,6 +3,7 @@ import { net } from "electron";
 import {
 	type BrowserNavState,
 	type BrowserTabsState,
+	type BrowserViewHostOptions,
 	browserShortcutAction,
 	clampBoundsToWindow,
 	createBrowserViewHost,
@@ -154,7 +155,10 @@ function submittedAnnotationSession(
 	};
 }
 
-function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").AgentBrowserRuntime) {
+function setupHost(
+	agentBrowserRuntime?: import("./agent-browser-runtime").AgentBrowserRuntime,
+	overrides: Partial<BrowserViewHostOptions> = {},
+) {
 	let currentURL = "";
 	let browserZoomFactor = 1;
 	const webContentsListeners = new Map<string, (...args: never[]) => void>();
@@ -238,6 +242,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 		send: vi.fn(),
 		sendInputEvent: vi.fn(),
 		setWindowOpenHandler: () => undefined,
+		setUserAgent: vi.fn(),
 		stop: () => undefined,
 		stopFindInPage,
 		close: vi.fn(),
@@ -297,6 +302,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 	const shellSend = vi.fn((channel: string, payload?: unknown) => sent.push({ channel, payload }));
 	const mainContentView = { addChildView: vi.fn(), removeChildView: vi.fn() };
 	const isWindowVisible = vi.fn(() => true);
+	const openExternal = vi.fn(async (_url: string) => undefined);
 	const host = createBrowserViewHost({
 		mainWindow: {
 			isVisible: isWindowVisible,
@@ -317,7 +323,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 			removeHandler: () => undefined,
 			off: () => undefined,
 		} as never,
-		shell: { openExternal: async () => undefined },
+		shell: { openExternal },
 		WebContentsView: function () {
 			return view;
 		} as never,
@@ -325,6 +331,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 		rendererOrigin: "http://localhost:5173",
 		agentBrowserRuntime: runtime,
 		clipboard: { writeImage },
+		...overrides,
 	});
 	const rendererFrame = { processId: 5, routingId: 7 };
 	const invoke = (channel: string, ...args: unknown[]) =>

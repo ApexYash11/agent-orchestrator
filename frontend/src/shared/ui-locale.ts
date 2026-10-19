@@ -1,4 +1,6 @@
 /** UI locales supported across the Electron main, preload, and renderer boundaries. */
+import { parseExternalHandoffHosts } from "./browser-external-handoff";
+
 export const APP_LOCALES = ["en", "zh-CN", "ja", "ko", "es", "fr", "de", "pt-BR"] as const;
 
 export type AppLocale = (typeof APP_LOCALES)[number];
@@ -20,6 +22,12 @@ export interface UiSettings {
 	soundNotificationsEnabled: boolean;
 	/** Windows shell used for new standalone terminal panes. */
 	terminalShell: TerminalShellPreference;
+	/**
+	 * Extra hosts whose pages always continue in the user's own browser.
+	 * Providers that block embedded webviews (Google sign-in and checkout being
+	 * the common case) never load in the panel at all; these widen that set.
+	 */
+	browserExternalHandoffHosts: string[];
 }
 
 export const DEFAULT_TERMINAL_SHELL: TerminalShellPreference = { kind: "auto" };
@@ -28,6 +36,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
 	locale: DEFAULT_LOCALE,
 	soundNotificationsEnabled: true,
 	terminalShell: DEFAULT_TERMINAL_SHELL,
+	browserExternalHandoffHosts: [],
 };
 
 /** Normalize an unknown value to a supported UI locale. */
@@ -62,5 +71,6 @@ export function coerceUiSettings(raw: unknown): UiSettings {
 		locale: coerceLocale(record.locale),
 		soundNotificationsEnabled,
 		terminalShell: coerceTerminalShell(record.terminalShell),
+		browserExternalHandoffHosts: parseExternalHandoffHosts(record.browserExternalHandoffHosts),
 	};
 }

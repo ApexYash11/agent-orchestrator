@@ -1293,6 +1293,22 @@ export function BrowserPanelView({
 			>
 				{browserTabBar}
 				<div className="browser-panel__toolbar" data-testid="browser-toolbar">
+							{navState.externalHandoff ? (
+								<div className="flex min-w-0 items-center gap-1.5 text-2xs" data-testid="browser-external-handoff" role="status">
+									<span className="truncate" title={navState.externalHandoff.url}>
+										{t("browser.externalHandoff.continued")}
+									</span>
+									<Button
+										className="shrink-0"
+										onClick={() => void openLinkInSystemBrowser(navState.externalHandoff?.url ?? "")}
+										size="sm"
+										type="button"
+										variant="outline"
+									>
+										{t("browser.externalHandoff.openAgain")}
+									</Button>
+								</div>
+							) : null}
 							{runtimeDisconnected ? (
 								<div className="flex min-w-0 items-center gap-1.5 text-2xs text-destructive" data-testid="browser-runtime-alert" role="alert">
 									<span className="truncate" title={runtimeRejectedMessage ?? undefined}>

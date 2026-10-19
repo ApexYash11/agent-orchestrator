@@ -4,6 +4,7 @@ import type { TFunction } from "i18next";
 import type { GlobalSettingsSection, HarnessDiagnosticsRequest } from "../../stores/ui-store";
 import { BillingSection } from "./BillingSection";
 import { BrowserDownloadsSection } from "./BrowserDownloadsSection";
+import { BrowserHandoffHostsSection } from "./BrowserHandoffHostsSection";
 import { BrowserProfilesSection } from "./BrowserProfilesSection";
 import { CoderSettingsSection } from "./CoderSettingsSection";
 import { CodexAccountsSection } from "./CodexAccountsSection";
@@ -95,6 +96,7 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		render: (_t, titleHidden) => (
 			<>
 				<BrowserProfilesSection titleHidden={titleHidden} />
+				<BrowserHandoffHostsSection titleHidden={titleHidden} />
 				<BrowserDownloadsSection />
 			</>
 		),

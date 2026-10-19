@@ -59,6 +59,7 @@ describe("ui-settings", () => {
 		await writeUiSettings(dir, { locale: "ja", soundNotificationsEnabled: false });
 		await writeUiSettings(dir, { terminalShell: { kind: "git-bash" } });
 		expect(await readUiSettings(dir)).toEqual({
+			...DEFAULT_UI_SETTINGS,
 			locale: "ja",
 			soundNotificationsEnabled: false,
 			terminalShell: { kind: "git-bash" },

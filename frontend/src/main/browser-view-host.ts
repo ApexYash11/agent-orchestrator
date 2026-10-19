@@ -33,6 +33,7 @@ import {
   type BrowserProfileId,
   type BrowserProfileViewState,
 } from "../shared/browser-profiles";
+import { shouldHandOffToSystemBrowser } from "../shared/browser-external-handoff";
 import { attachAppShortcuts } from "./app-shortcuts";
 import type {
   AppShortcutId,
@@ -129,6 +130,7 @@ export type BrowserNavState = {
   canGoForward: boolean;
   isLoading: boolean;
   error?: string;
+  externalHandoff?: { url: string };
 };
 
 export type BrowserTabState = {
@@ -350,6 +352,7 @@ type BrowserWebContents = Pick<
   | "send"
   | "sendInputEvent"
   | "setWindowOpenHandler"
+  | "setUserAgent"
   | "stop"
   | "stopFindInPage"
 > & {
@@ -498,6 +501,8 @@ export type BrowserViewHostOptions = {
   browserProfileStore?: BrowserProfileStore;
   browserHistoryStore?: BrowserHistoryStore;
   browserDownloadManager?: BrowserDownloadManager;
+  getExternalHandoffHosts?: () => readonly string[];
+  browserUserAgent?: string;
   clearBrowserProfileData?: (partition: string) => Promise<void>;
   // Electron 44 removed clipboard.writeImage; main.ts adapts the async
   // ClipboardItem API to this narrow image-only writer.
@@ -1122,6 +1127,8 @@ export function createBrowserViewHost(
     // so Chromium speaks HTTP/2 to them (preview-certificate.ts).
     const viewSession = view.webContents.session;
     if (viewSession?.setCertificateVerifyProc) trustPreviewCertificate(viewSession);
+    // The panel must not announce itself as an embedded browser (#6622).
+    if (options.browserUserAgent) view.webContents.setUserAgent?.(options.browserUserAgent);
     options.browserDownloadManager?.attach(view.webContents.session);
     let scrollbarStyleKey: string | undefined;
     let scrollbarStyleUpdate = Promise.resolve();
@@ -2738,6 +2745,19 @@ export function createBrowserViewHost(
     if (!isAllowedBrowserURL(normalized.href, options.rendererOrigin)) {
       throw new Error("Unsupported browser URL");
     }
+    entry.state = { ...entry.state, externalHandoff: undefined };
+    const handoff = shouldHandOffToSystemBrowser(
+      normalized.href,
+      options.getExternalHandoffHosts?.() ?? [],
+    )
+      ? normalized.href
+      : null;
+    if (handoff) {
+      void options.shell.openExternal(handoff).catch(() => undefined);
+      entry.state = { ...readNavState(entry), externalHandoff: { url: handoff } };
+      shellContents(options).send("browser:navState", entry.state);
+      return entry.state;
+    }
     return entry.driver().navigate(normalized.href, loadOptions);
   };
 
@@ -4287,8 +4307,32 @@ export function createBrowserViewHost(
               "URL_REQUIRED",
               "url is required",
             );
+            const normalized = normalizeAgentBrowserURL(url);
+            const handoff = shouldHandOffToSystemBrowser(
+              normalized,
+              options.getExternalHandoffHosts?.() ?? [],
+            )
+              ? normalized
+              : null;
+            if (handoff) {
+              void options.shell.openExternal(handoff).catch(() => undefined);
+              const active =
+                session.tabs.size > 0 ? activeEntry(session) : undefined;
+              if (active) {
+                active.state = {
+                  ...readNavState(active),
+                  externalHandoff: { url: handoff },
+                };
+                shellContents(options).send("browser:navState", active.state);
+              }
+              const navState = active?.state ?? emptyNavState(session.viewId);
+              return {
+                ...agentNavState(navState),
+                target: { tabId: active?.tabId ?? "" },
+              };
+            }
             const result = await runNative(action, {
-              url: normalizeAgentBrowserURL(url),
+              url: normalized,
             });
             const targetEntry = session.tabs.get(result.target.tabId);
             if (!targetEntry) {
@@ -4297,6 +4341,8 @@ export function createBrowserViewHost(
                 `Browser target AO tab ${result.target.tabId} is unavailable`,
               );
             }
+            // An ordinary agent navigation clears any earlier handoff notice.
+            targetEntry.state = { ...targetEntry.state, externalHandoff: undefined };
             const navState =
               targetEntry.tabId === session.activeTabId
                 ? pushNavState(options, targetEntry)
@@ -5521,6 +5567,9 @@ function agentNavState(state: BrowserNavState): BrowserNavState {
     url: sanitizeBrowserURL(state.url),
     title: sanitizeBrowserTitle(state.title),
     ...(state.error ? { error: sanitizeURLsInText(state.error) } : {}),
+    ...(state.externalHandoff
+      ? { externalHandoff: { url: sanitizeBrowserURL(state.externalHandoff.url) } }
+      : {}),
   };
 }
 
@@ -5590,7 +5639,12 @@ function hardenWebContents(
       createWindow: (windowOptions) => createPopup(windowOptions, details),
     };
   });
-  const blockUnsafeNavigation = (event: Electron.Event, url: string) => {
+  const blockUnsafeNavigation = (
+    event: Electron.Event,
+    url: string,
+    _isInPlace?: boolean,
+    isMainFrame?: boolean,
+  ) => {
     if (!isAllowedBrowserURL(url, options.rendererOrigin)) {
       event.preventDefault();
       if (!isCurrent()) return;
@@ -5598,6 +5652,23 @@ function hardenWebContents(
       shellContents(options).send("browser:navState", entry.state);
       return;
     }
+    // Only top-level navigations hand off.
+    const handoff =
+      isMainFrame !== false
+        ? shouldHandOffToSystemBrowser(url, options.getExternalHandoffHosts?.() ?? [])
+          ? url
+          : null
+        : null;
+    if (handoff) {
+      event.preventDefault();
+      if (!isCurrent()) return;
+      void options.shell.openExternal(handoff).catch(() => undefined);
+      entry.state = { ...readNavState(entry), externalHandoff: { url: handoff } };
+      shellContents(options).send("browser:navState", entry.state);
+      return;
+    }
+    // Leaving a handoff page for an ordinary URL clears the notice.
+    entry.state = { ...entry.state, externalHandoff: undefined };
     if (!isSameAnnotationPage(contents.getURL(), url)) {
       cancelAnnotation(options, entry, "navigation");
     }
@@ -5964,6 +6035,8 @@ function readNavState(entry: BrowserEntry): BrowserNavState {
     // the panel renders its "enter a URL" empty state and the address bar is
     // blank rather than showing "about:blank".
     url: page.url === "about:blank" ? "" : page.url,
+    // Keep the handoff notice alive across navigation-state refreshes.
+    externalHandoff: entry.state.externalHandoff,
   };
 }
 

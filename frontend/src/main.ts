@@ -158,6 +158,7 @@ import {
 } from "./main/browser-view-host";
 import { createBrowserCloseDiagnostics } from "./main/browser-close-diagnostics";
 import { createBrowserProfileStore } from "./main/browser-profile-store";
+import { browserPanelUserAgent } from "./main/browser-user-agent";
 import { BrowserHistoryStore } from "./main/browser-history-store";
 import { createAwakeDownloadBridge } from "./main/awake-download-bridge";
 import { createBrowserDownloadManager } from "./main/browser-download-manager";
@@ -404,6 +405,9 @@ let pendingBounce: { id: number; critical: boolean } | null = null;
 // Live mirror of the persisted `soundNotificationsEnabled` UI setting, kept in sync by the
 // uiSettings:set handler so a toggle flip takes effect without an app restart.
 let soundNotificationsEnabled = DEFAULT_UI_SETTINGS.soundNotificationsEnabled;
+// Hosts (beyond the built-in account/payment ones) whose pages continue in the
+// user's own browser. Read per navigation so a settings change needs no restart.
+let browserExternalHandoffHosts = DEFAULT_UI_SETTINGS.browserExternalHandoffHosts;
 
 // Plays the bundled notification sound through the renderer (main has no
 // audio output). `shell.beep()` is only the fallback for when no shell is
@@ -1018,6 +1022,10 @@ async function createWindowInternal(): Promise<void> {
 			notify: (state) => { awakeDownloads.update(state); shellWebContents.send("browser:downloadsChanged", state); },
 		}),
 		clearBrowserProfileData: clearElectronBrowserProfileData,
+		getExternalHandoffHosts: () => browserExternalHandoffHosts,
+		// The panel must not announce itself as an embedded browser: sign-in
+		// and checkout pages refuse to run in one (#6622).
+		browserUserAgent: browserPanelUserAgent(app.userAgentFallback),
 		clipboard: { writeImage: writeClipboardImage },
 		onNativeViewAdded: () => windowComposition?.restackShell(),
 	});
@@ -2930,6 +2938,7 @@ ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
 	const result = !runFile ? coerceUiSettings(settings) : await writeUiSettings(path.dirname(runFile), settings);
 	trayController?.setLocale(result.locale);
 	soundNotificationsEnabled = result.soundNotificationsEnabled;
+	browserExternalHandoffHosts = result.browserExternalHandoffHosts;
 	terminalShellPreference = result.terminalShell;
 	shellEnvPromise = null;
 	cachedShellEnv = null;
@@ -3470,6 +3479,7 @@ app.whenReady().then(async () => {
 		? await readUiSettings(path.dirname(keybindingRunFile))
 		: { ...DEFAULT_UI_SETTINGS };
 	soundNotificationsEnabled = initialUiSettings.soundNotificationsEnabled;
+	browserExternalHandoffHosts = initialUiSettings.browserExternalHandoffHosts;
 	terminalShellPreference = initialUiSettings.terminalShell;
 	if (browserQuitRequested) return;
 	if (isTrayEnabled(process.platform)) {
