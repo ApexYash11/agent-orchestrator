@@ -17,17 +17,9 @@ describe("browserPanelUserAgent", () => {
 		expect(browserPanelUserAgent(ua)).toBe(ua);
 	});
 
-	it("strips the production and development app-name tokens from Electron's fallback UA", () => {
-		const production = browserPanelUserAgent(
-			"Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Electron/44.7.0 Orchestrator.inc/0.13.0",
-		);
-		const development = browserPanelUserAgent(
-			"Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Electron/44.7.0 Orchestrator.inc (dev)/0.13.0",
-		);
-		expect(production).not.toContain("Orchestrator.inc");
-		expect(production).not.toContain("Electron");
-		expect(development).not.toContain("Orchestrator.inc");
-		expect(development).not.toContain("Electron");
+	it.each(["Orchestrator.inc", "Orchestrator.inc(dev)", "Orchestrator.inc (dev)"])("strips the %s app-name token from Electron's fallback UA", (name) => {
+		const chromium = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
+		expect(browserPanelUserAgent(`${chromium} Electron/44.7.0 ${name}/0.13.0`)).toBe(chromium);
 	});
 
 	it("does not claim to be Google Chrome", () => {
