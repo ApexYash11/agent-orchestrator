@@ -53,6 +53,24 @@ describe("shouldHandOffToSystemBrowser", () => {
 		expect(shouldHandOffToSystemBrowser("https://example.test/oauth2/v2/auth?client_id=x")).toBe(true);
 	});
 
+	it.each([
+		"https://tenant.auth0.com/authorize?client_id=x",
+		"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=x",
+		"https://sso.example.test/realms/team/protocol/openid-connect/authorize?client_id=x",
+		"https://sso.example.test/tenant/oauth2/v2.0/auth?client_id=x",
+	])("hands off authorization endpoint %s", (url) => {
+		expect(shouldHandOffToSystemBrowser(url)).toBe(true);
+	});
+
+	it.each([
+		"https://example.test/authorized",
+		"https://example.test/preauthorize",
+		"https://example.test/oauth2/v2.0/token",
+		"https://example.test/docs?next=/authorize",
+	])("keeps non-authorization URL %s in the panel", (url) => {
+		expect(shouldHandOffToSystemBrowser(url)).toBe(false);
+	});
+
 	it("leaves ordinary pages alone", () => {
 		expect(shouldHandOffToSystemBrowser("https://example.test/")).toBe(false);
 		expect(shouldHandOffToSystemBrowser("https://news.google.com/topics/abc")).toBe(false);

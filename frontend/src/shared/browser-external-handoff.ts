@@ -39,7 +39,7 @@ const GOOGLE_SENSITIVE_PATHS = [
 
 /** Standard OAuth 2.0 / OpenID Connect authorization endpoints, any host. */
 const OAUTH_AUTHORIZE_PATH =
-  /^\/(?:oauth2?|openid|oidc|auth)(?:\/v\d+)?\/(?:authorize|auth|authenticate)(?:\/|$)/i;
+  /\/(?:authorize|(?:oauth2?|openid|oidc|auth)(?:\/v\d+(?:\.\d+)*)?\/(?:auth|authenticate))(?:\/|$)/i;
 
 /** Normalize a user-entered host: lowercase, no scheme, path, or port. */
 export function normalizeHandoffHost(raw: unknown): string | null {

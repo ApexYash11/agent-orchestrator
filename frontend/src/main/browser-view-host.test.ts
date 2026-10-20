@@ -6395,6 +6395,40 @@ describe("sign-in and checkout handoff to the system browser", () => {
 		expect(openExternal).toHaveBeenCalledWith(GOOGLE_SIGNIN);
 	});
 
+	it("keeps a handoff notice through a later subframe redirect", async () => {
+		const { invoke, viewId, views, sent, openExternal } = await withLoadedPage();
+		await invoke("browser:navigate", { viewId, url: GOOGLE_SIGNIN });
+		const event = { preventDefault: vi.fn() };
+		views[0].listeners.get("will-redirect")?.(
+			event as never, "https://example.test/iframe" as never, false as never, false as never,
+		);
+		views[0].listeners.get("did-stop-loading")?.();
+		const state = sent.filter(({ channel }) => channel === "browser:navState").at(-1)?.payload as BrowserNavState;
+		expect(state.externalHandoff).toEqual({ url: GOOGLE_SIGNIN });
+		expect(event.preventDefault).not.toHaveBeenCalled();
+		expect(openExternal).toHaveBeenCalledOnce();
+	});
+
+	it.each(["redirect", "popup"])("retains a background %s handoff without replacing the active toolbar", async (kind) => {
+		const { invoke, viewId, views, sent, openExternal } = await withLoadedPage();
+		await invoke("browser:openTab", { viewId, url: "https://example.test/foreground" });
+		const sentBefore = sent.length;
+		if (kind === "popup") {
+			expect(views[0].webContents.openWindow(GOOGLE_SIGNIN)).toBeNull();
+		} else {
+			const event = { preventDefault: vi.fn() };
+			views[0].listeners.get("will-redirect")?.(
+				event as never, GOOGLE_SIGNIN as never, false as never, true as never,
+			);
+			expect(event.preventDefault).toHaveBeenCalledOnce();
+		}
+		expect(openExternal).toHaveBeenCalledWith(GOOGLE_SIGNIN);
+		expect(sent.slice(sentBefore).filter(({ channel }) => channel === "browser:navState")).toEqual([]);
+		await invoke("browser:selectTab", { viewId, tabId: "t1" });
+		const state = sent.filter(({ channel }) => channel === "browser:navState").at(-1)?.payload as BrowserNavState;
+		expect(state).toMatchObject({ url: SIGNED_IN_URL, externalHandoff: { url: GOOGLE_SIGNIN } });
+	});
+
 	it("denies a sign-in popup before it becomes an AO tab", async () => {
 		const { invoke, viewId, views, openExternal, sent } = await withLoadedPage();
 		const tabsBefore = views.length;

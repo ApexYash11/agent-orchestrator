@@ -1249,6 +1249,7 @@ export function createBrowserViewHost(
       options,
       entry,
       () => isCurrentEntry() && !session.profileReplacing,
+      () => isCurrentEntry() && session.activeTabId === entry.tabId,
       webPreferences,
       (windowOptions, details) => {
         // Adopt Electron's exact guest, rather than creating an unrelated
@@ -5631,6 +5632,7 @@ function hardenWebContents(
   options: BrowserViewHostOptions,
   entry: BrowserEntry,
   isCurrent: () => boolean,
+  isActive: () => boolean,
   popupWebPreferences: Electron.WebPreferences,
   createPopup: (
     windowOptions: BrowserPopupOptions,
@@ -5657,7 +5659,7 @@ function hardenWebContents(
     if (popupHandoff) {
       void options.shell.openExternal(popupHandoff).catch(() => undefined);
       entry.state = { ...readNavState(entry), externalHandoff: { url: popupHandoff } };
-      shellContents(options).send("browser:navState", entry.state);
+      if (isActive()) shellContents(options).send("browser:navState", entry.state);
       return { action: "deny" };
     }
     return {
@@ -5676,22 +5678,20 @@ function hardenWebContents(
       event.preventDefault();
       if (!isCurrent()) return;
       entry.state = { ...entry.state, error: "Unsupported browser URL" };
-      shellContents(options).send("browser:navState", entry.state);
+      if (isActive()) shellContents(options).send("browser:navState", entry.state);
       return;
     }
+    if (isMainFrame === false) return;
     // Only top-level navigations hand off.
-    const handoff =
-      isMainFrame !== false
-        ? shouldHandOffToSystemBrowser(url, options.getExternalHandoffHosts?.() ?? [])
-          ? url
-          : null
-        : null;
+    const handoff = shouldHandOffToSystemBrowser(url, options.getExternalHandoffHosts?.() ?? [])
+      ? url
+      : null;
     if (handoff) {
       event.preventDefault();
       if (!isCurrent()) return;
       void options.shell.openExternal(handoff).catch(() => undefined);
       entry.state = { ...readNavState(entry), externalHandoff: { url: handoff } };
-      shellContents(options).send("browser:navState", entry.state);
+      if (isActive()) shellContents(options).send("browser:navState", entry.state);
       return;
     }
     // Leaving a handoff page for an ordinary URL clears the notice.

@@ -5,7 +5,7 @@ import path from "node:path";
 import { app, BrowserWindow, WebContentsView } from "electron";
 import type { AgentBrowserRuntime } from "./agent-browser-runtime";
 import { createBrowserViewHost } from "./browser-view-host";
-import type { BrowserTabsState } from "./browser-view-host";
+import type { BrowserNavState, BrowserTabsState } from "./browser-view-host";
 
 function requiredEnvironmentVariable(name: string): string {
 	const value = process.env[name];
@@ -22,6 +22,13 @@ async function run(): Promise<void> {
 	const fixture = await readFile(fixturePath, "utf8");
 	const dragFixture = await readFile(path.join(path.dirname(fixturePath), "drag-regions.html"), "utf8");
 	const server = createServer((request, response) => {
+		if (request.url === "/iframe-redirect" || request.url === "/handoff-redirect") {
+			response.writeHead(302, {
+				location: request.url === "/iframe-redirect" ? "/destination" : "/authorize?client_id=test",
+			});
+			response.end();
+			return;
+		}
 		if (request.url === "/drag-regions") {
 			response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 			response.end(dragFixture);
@@ -241,9 +248,17 @@ async function run(): Promise<void> {
 	const shellWebContents = {
 		id: 1,
 		focus: () => undefined,
-		send: () => undefined,
+		send: (channel: string, state: unknown) => { sent.push({ channel, state }); },
 		on: () => undefined,
 	} as never;
+	const sent: Array<{ channel: string; state: unknown }> = [];
+	const externalURLs: string[] = [];
+	const handlers = new Map<string, (event: { sender: typeof shellWebContents }, ...args: never[]) => unknown>();
+	const invoke = async <T,>(channel: string, ...args: unknown[]): Promise<T> => {
+		const handler = handlers.get(channel);
+		assert.ok(handler, `missing IPC handler ${channel}`);
+		return await handler({ sender: shellWebContents }, ...args as never[]) as T;
+	};
 	const host = createBrowserViewHost({
 		mainWindow: {
 			contentView: window.contentView,
@@ -251,12 +266,14 @@ async function run(): Promise<void> {
 		} as never,
 		shellWebContents,
 		ipcMain: {
-			handle: () => undefined,
+			handle: (channel: string, handler: (event: { sender: typeof shellWebContents }, ...args: never[]) => unknown) => {
+				handlers.set(channel, handler);
+			},
 			on: () => undefined,
 			removeHandler: () => undefined,
 			off: () => undefined,
 		} as never,
-		shell: { openExternal: async () => undefined },
+		shell: { openExternal: async (url: string) => { externalURLs.push(url); } },
 		WebContentsView: IntegrationWebContentsView,
 		annotatePreloadPath: path.join(path.dirname(fixturePath), "empty-preload.cjs"),
 		rendererOrigin: "http://127.0.0.1:1",
@@ -403,6 +420,77 @@ async function run(): Promise<void> {
 		assert.equal(await opener.executeJavaScript("window.open('file:///etc/passwd') === null", true), true);
 		assert.equal((await host.execute("integration-session", "tabs") as BrowserTabsState).tabs.length, 1);
 		process.stdout.write("browser popup handle, cross-origin messaging, shared browser profile and self-close integration passed\n");
+
+		// Use the real host IPC and Chromium events. Only the OS launch is recorded.
+		const sessionId = "integration-session";
+		const { viewId } = await invoke<BrowserNavState>("browser:ensure", sessionId);
+		const baseURL = `http://127.0.0.1:${address.port}`;
+		const signinURL = `${baseURL}/authorize?client_id=test`;
+		const latestNav = () => sent.filter(({ channel }) => channel === "browser:navState").at(-1)?.state as BrowserNavState;
+		for (const url of [
+			signinURL,
+			"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=test",
+		]) {
+			const nav = await invoke<BrowserNavState>("browser:navigate", { viewId, url });
+			assert.equal(externalURLs.at(-1), url);
+			assert.equal(nav.externalHandoff?.url, url);
+			assert.equal(opener.getURL(), `${baseURL}/destination`, "typed handoff must retain the original page");
+		}
+		const agentHandoff = await host.execute(sessionId, "open", { url: signinURL }) as BrowserNavState;
+		assert.equal(agentHandoff.externalHandoff?.url, `${baseURL}/authorize?client_id=%5Bredacted%5D`);
+		assert.equal(opener.getURL(), `${baseURL}/destination`, "agent handoff must retain the original page");
+
+		// A live iframe 302 must neither launch a browser nor discard the notice.
+		const launchesBeforeIframe = externalURLs.length;
+		await deadline(opener.executeJavaScript(`new Promise((resolve, reject) => {
+			const frame = document.createElement('iframe');
+			frame.onload = () => resolve(frame.contentWindow.location.href);
+			frame.onerror = () => reject(new Error('iframe failed'));
+			frame.src = '/iframe-redirect';
+			document.body.append(frame);
+		})`)).then(url => assert.equal(url, `${baseURL}/destination`));
+		const retained = await invoke<BrowserNavState>("browser:ensure", sessionId);
+		assert.equal(retained.externalHandoff?.url, signinURL);
+		assert.equal(externalURLs.length, launchesBeforeIframe);
+
+		const firstTab = (await invoke<BrowserTabsState>("browser:getTabs", viewId)).activeTabId;
+		const foregroundURL = `${baseURL}/drag-regions`;
+		await opener.executeJavaScript("window.open('/drag-regions'); undefined;", true);
+		const foregroundContents = activeWebContents();
+		assert.notEqual(foregroundContents, opener);
+		if (foregroundContents.isLoading()) {
+			await deadline(new Promise<void>(resolve => foregroundContents.once("did-finish-load", () => resolve())));
+		}
+		const foreground = await invoke<BrowserTabsState>("browser:getTabs", viewId);
+		assert.notEqual(foreground.activeTabId, firstTab);
+		assert.equal(foregroundContents.getURL(), foregroundURL, "new foreground tab must finish loading");
+		const assertForegroundState = (start: number) => {
+			for (const { state } of sent.slice(start).filter(({ channel }) => channel === "browser:navState")) {
+				const nav = state as BrowserNavState;
+				assert.equal(nav.url, foregroundURL, "background handoff must not replace the visible toolbar URL");
+				assert.equal(nav.externalHandoff, undefined, "background handoff must not replace the visible notice");
+			}
+		};
+		const sentBeforeRedirect = sent.length;
+		const launchesBeforeRedirect = externalURLs.length;
+		const aborted = new Promise<void>(resolve => opener.once("did-stop-loading", () => resolve()));
+		await opener.executeJavaScript("location.href = '/handoff-redirect'; undefined;");
+		await deadline(aborted);
+		assert.equal(externalURLs.length, launchesBeforeRedirect + 1);
+		assert.equal(externalURLs.at(-1), signinURL);
+		assertForegroundState(sentBeforeRedirect);
+		assert.equal(foregroundContents.getURL(), foregroundURL, "background redirect must retain the foreground page");
+		const sentBeforePopup = sent.length;
+		const launchesBeforePopup = externalURLs.length;
+		const backgroundPopupURL = `${baseURL}/authorize?client_id=popup`;
+		assert.equal(await opener.executeJavaScript(`window.open(${JSON.stringify(backgroundPopupURL)}) === null`, true), true);
+		assert.equal(externalURLs.length, launchesBeforePopup + 1);
+		assert.equal(externalURLs.at(-1), backgroundPopupURL);
+		assertForegroundState(sentBeforePopup);
+		assert.equal((await invoke<BrowserTabsState>("browser:getTabs", viewId)).tabs.length, 2);
+		await invoke("browser:selectTab", { viewId, tabId: firstTab });
+		assert.equal(latestNav().externalHandoff?.url, backgroundPopupURL, "selecting the source tab must restore its notice");
+		process.stdout.write("browser OAuth handoff, iframe redirect retention and background-tab isolation integration passed\n");
 
 		process.stdout.write("browser action postcondition integration passed\n");
 	} finally {
