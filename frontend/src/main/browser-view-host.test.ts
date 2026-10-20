@@ -6287,8 +6287,8 @@ describe("sign-in and checkout handoff to the system browser", () => {
 	});
 
 	it("redacts the handoff URL nested in the agent response while opening the original", async () => {
-		const { host, openExternal } = await withLoadedPage();
-		const signed = `${GOOGLE_SIGNIN}?continue=https%3A%2F%2Fmail.google.com&x=secret-value`;
+		const { host, invoke, openExternal } = await withLoadedPage();
+		const signed = "https://test-user:test-password@accounts.google.com/signin?continue=https%3A%2F%2Fmail.google.com&x=secret-value#secret-fragment";
 
 		const result = (await host.execute("sess-1", "open", { url: signed })) as BrowserNavState;
 
@@ -6298,6 +6298,11 @@ describe("sign-in and checkout handoff to the system browser", () => {
 		expect(result.externalHandoff?.url).toBe(
 			"https://accounts.google.com/signin?continue=%5Bredacted%5D&x=%5Bredacted%5D",
 		);
+		for (const secret of ["test-user", "test-password", "secret-value", "secret-fragment"]) {
+			expect(JSON.stringify(result)).not.toContain(secret);
+		}
+		const retained = await invoke("browser:ensure", "sess-1") as BrowserNavState;
+		expect(retained.externalHandoff?.url).toBe(signed);
 	});
 
 	it("hands off a host configured under Settings > Browser", async () => {
@@ -6448,11 +6453,12 @@ describe("sign-in and checkout handoff to the system browser", () => {
 		expect(await invoke("browser:getTabs", viewId)).toMatchObject({ tabs: [{ id: "t1" }] });
 	});
 
-	it("clears the notice as soon as an ordinary agent navigation starts", async () => {
-		const { host, openExternal, runtime, sent, views } = await withLoadedPage();
+	it("clears a human handoff as soon as an ordinary agent navigation starts", async () => {
+		const { host, invoke, viewId, openExternal, runtime, sent, views } = await withLoadedPage();
 
-		const handed = (await host.execute("sess-1", "open", { url: GOOGLE_SIGNIN })) as BrowserNavState;
-		expect(handed.externalHandoff).toBeDefined();
+		const signed = `${GOOGLE_SIGNIN}?token=human-secret#human-fragment`;
+		const handed = await invoke("browser:navigate", { viewId, url: signed }) as BrowserNavState;
+		expect(handed.externalHandoff?.url).toBe(signed);
 
 		// Hold the second navigation inside the runtime so the window between
 		// "navigation started" and "navigation finished" is observable.
@@ -6488,6 +6494,8 @@ describe("sign-in and checkout handoff to the system browser", () => {
 		release();
 		const ordinary = (await pending) as BrowserNavState;
 		expect(ordinary.externalHandoff).toBeUndefined();
+		expect(JSON.stringify(ordinary)).not.toContain("human-secret");
+		expect(JSON.stringify(ordinary)).not.toContain("human-fragment");
 		expect(openExternal).toHaveBeenCalledTimes(1);
 	});
 
