@@ -1208,6 +1208,7 @@ function setupTabHost(
 	loadURLHook?: (viewIndex: number, url: string) => Promise<void>,
 	browserHistoryStore?: BrowserHistoryStore,
 	clearBrowserProfileData = vi.fn(async (_partition: string) => undefined),
+	overrides: Partial<BrowserViewHostOptions> = {},
 ) {
 	const constructorOptions: Array<{
 		webPreferences: Electron.WebPreferences;
@@ -1224,6 +1225,7 @@ function setupTabHost(
 			openDevTools: ReturnType<typeof vi.fn>;
 			closeDevTools: ReturnType<typeof vi.fn>;
 			send: ReturnType<typeof vi.fn>;
+			setUserAgent: ReturnType<typeof vi.fn>;
 			openWindow: (url: string, nativeGuest?: boolean) => Electron.WebContents | null;
 			close: ReturnType<typeof vi.fn>;
 			emitConsoleMessage: (level: number, message: string, line?: number, sourceId?: string) => void;
@@ -1311,6 +1313,7 @@ function setupTabHost(
 			executeJavaScript: vi.fn(async (_script: string) => undefined),
 			reload: () => undefined,
 			send: vi.fn(),
+			setUserAgent: vi.fn(),
 			setWindowOpenHandler: (
 				handler: (details: Electron.HandlerDetails) => Electron.WindowOpenHandlerResponse,
 			) => {
@@ -1399,6 +1402,7 @@ function setupTabHost(
 	const addChildView = vi.fn();
 	const onNativeViewAdded = vi.fn();
 	const onTabCloseFailure = vi.fn();
+	const openExternal = vi.fn(async (_url: string) => undefined);
 	const host = createBrowserViewHost({
 		mainWindow: {
 			contentView: { addChildView, removeChildView: () => undefined },
@@ -1415,7 +1419,7 @@ function setupTabHost(
 			removeHandler: () => undefined,
 			off: (channel: string) => eventHandlers.delete(channel),
 		} as never,
-		shell: { openExternal: async () => undefined },
+		shell: { openExternal },
 		WebContentsView: function (options: { webPreferences: Electron.WebPreferences; webContents?: Electron.WebContents }) {
 			if (failViewConstruction) throw new Error("browser view startup failed");
 			constructorOptions.push(options);
@@ -1440,6 +1444,7 @@ function setupTabHost(
 		// Kept only as a regression tripwire: the removed auto-send path used
 		// this option to discover the daemon before calling net.fetch.
 		...({ getDaemonPort: () => 43123 } as Record<string, unknown>),
+		...overrides,
 	});
 	const invoke = (channel: string, ...args: unknown[]) =>
 		handlers.get(channel)!({ sender: { id: 1 } }, ...args) as Promise<unknown>;
@@ -1468,6 +1473,7 @@ function setupTabHost(
 		host,
 		invoke,
 		invokeFromTab,
+		openExternal,
 		runtime,
 		sendFromTab,
 		sent,
@@ -6235,5 +6241,232 @@ describe("browser human pointer and annotated screenshots", () => {
 		expect(runtime.screenshot).toHaveBeenNthCalledWith(2, "sess-1", expect.anything(), undefined, { annotate: true });
 		expect(plain).toMatchObject({ width: 1, height: 1 });
 		expect(annotated).toMatchObject({ annotations: [{ number: 1, ref: "e1", role: "button", name: "Save" }] });
+	});
+});
+
+describe("sign-in and checkout handoff to the system browser", () => {
+	const GOOGLE_SIGNIN = "https://accounts.google.com/signin";
+	const SIGNED_IN_URL = "https://example.test/inbox";
+
+	function setupHandoffHost(overrides: Partial<BrowserViewHostOptions> = {}) {
+		return setupTabHost(undefined, false, undefined, undefined, undefined, overrides);
+	}
+
+	async function withLoadedPage(overrides: Partial<BrowserViewHostOptions> = {}) {
+		const harness = setupHandoffHost(overrides);
+		const initial = (await harness.invoke("browser:ensure", "sess-1")) as BrowserNavState;
+		await harness.invoke("browser:navigate", { viewId: initial.viewId, url: SIGNED_IN_URL });
+		return { ...harness, viewId: initial.viewId };
+	}
+
+	it("returns the handoff from an agent open instead of loading the URL in the panel", async () => {
+		const { host, openExternal, runtime, debuggerCommands } = await withLoadedPage();
+
+		const navigationsBefore = debuggerCommands.filter(({ method }) => method === "Page.navigate").length;
+		const result = (await host.execute("sess-1", "open", { url: GOOGLE_SIGNIN })) as BrowserNavState & {
+			target: { tabId: string; url: string; origin: string };
+		};
+
+		// The URL never reaches the CDP bridge: no runtime action, no page load.
+		expect(
+			vi.mocked(runtime.runAction).mock.calls.some(([, action]) => action === "open"),
+		).toBe(false);
+		expect(
+			debuggerCommands.filter(({ method }) => method === "Page.navigate").length,
+		).toBe(navigationsBefore);
+		expect(openExternal).toHaveBeenCalledWith(GOOGLE_SIGNIN);
+		expect(result).toMatchObject({
+			externalHandoff: { url: GOOGLE_SIGNIN },
+			url: SIGNED_IN_URL,
+		});
+		expect(result.target).toEqual({
+			tabId: expect.any(String),
+			url: SIGNED_IN_URL,
+			origin: "https://example.test",
+		});
+	});
+
+	it("redacts the handoff URL nested in the agent response while opening the original", async () => {
+		const { host, openExternal } = await withLoadedPage();
+		const signed = `${GOOGLE_SIGNIN}?continue=https%3A%2F%2Fmail.google.com&x=secret-value`;
+
+		const result = (await host.execute("sess-1", "open", { url: signed })) as BrowserNavState;
+
+		// The person's browser must receive the exact URL; agents, the daemon
+		// and retained transcripts must not.
+		expect(openExternal).toHaveBeenCalledWith(signed);
+		expect(result.externalHandoff?.url).toBe(
+			"https://accounts.google.com/signin?continue=%5Bredacted%5D&x=%5Bredacted%5D",
+		);
+	});
+
+	it("hands off a host configured under Settings > Browser", async () => {
+		const { host, openExternal, runtime } = await withLoadedPage({
+			getExternalHandoffHosts: () => ["sso.example.test"],
+		});
+
+		const result = (await host.execute("sess-1", "open", {
+			url: "https://sso.example.test/login",
+		})) as BrowserNavState;
+
+		expect(openExternal).toHaveBeenCalledWith("https://sso.example.test/login");
+		expect(result.externalHandoff).toEqual({ url: "https://sso.example.test/login" });
+		expect(
+			vi.mocked(runtime.runAction).mock.calls.some(([, action]) => action === "open"),
+		).toBe(false);
+	});
+
+	it("hands a typed navigation off without leaving the page it already had", async () => {
+		const { invoke, viewId, openExternal, views } = await withLoadedPage();
+		const loadsBefore = views[0].webContents.loadURL.mock.calls.length;
+
+		const state = (await invoke("browser:navigate", {
+			viewId,
+			url: `${GOOGLE_SIGNIN}?x=secret-value`,
+		})) as BrowserNavState;
+
+		expect(views[0].webContents.loadURL.mock.calls.length).toBe(loadsBefore);
+		expect(openExternal).toHaveBeenCalledWith(`${GOOGLE_SIGNIN}?x=secret-value`);
+		expect(state).toMatchObject({
+			externalHandoff: { url: `${GOOGLE_SIGNIN}?x=secret-value` },
+			url: SIGNED_IN_URL,
+		});
+	});
+
+	it("keeps the notice through the redirect-cancellation sequence and later state refreshes", async () => {
+		const START_URL = "https://example.test/start";
+		const redirectEvents: Array<{ preventDefault: ReturnType<typeof vi.fn> }> = [];
+		const harness = setupTabHost(undefined, false, async (viewIndex, url) => {
+			if (url !== START_URL) return;
+			// Chromium's own abort of the redirected load: will-redirect is
+			// cancelled first, then the in-flight loadURL rejects with ERR_ABORTED.
+			const event = { preventDefault: vi.fn() };
+			redirectEvents.push(event);
+			harness.views[viewIndex].listeners.get("will-redirect")?.(
+				event as never,
+				`${GOOGLE_SIGNIN}?x=secret-value` as never,
+				false as never,
+				true as never,
+			);
+			throw Object.assign(new Error("net::ERR_ABORTED"), { errorCode: -3 });
+		});
+		const initial = (await harness.invoke("browser:ensure", "sess-1")) as BrowserNavState;
+
+		const state = (await harness.invoke("browser:navigate", {
+			viewId: initial.viewId,
+			url: START_URL,
+		})) as BrowserNavState;
+
+		expect(redirectEvents[0]?.preventDefault).toHaveBeenCalledOnce();
+		expect(harness.openExternal).toHaveBeenCalledWith(`${GOOGLE_SIGNIN}?x=secret-value`);
+		expect(state.externalHandoff).toEqual({ url: `${GOOGLE_SIGNIN}?x=secret-value` });
+
+		// did-stop-loading runs after the cancellation and must not erase the
+		// notice: the next navState push still carries it.
+		const sentBefore = harness.sent.length;
+		harness.views[0].listeners.get("did-stop-loading")?.();
+		const pushed = harness.sent
+			.slice(sentBefore)
+			.filter(({ channel }) => channel === "browser:navState")
+			.at(-1)?.payload as BrowserNavState | undefined;
+		expect(pushed?.externalHandoff).toEqual({ url: `${GOOGLE_SIGNIN}?x=secret-value` });
+	});
+
+	it("ignores a subframe redirect while still handing off main-frame ones", async () => {
+		const { openExternal, views } = await withLoadedPage();
+		const listeners = views[0].listeners;
+
+		const subframe: { preventDefault: ReturnType<typeof vi.fn> } = { preventDefault: vi.fn() };
+		listeners.get("will-redirect")?.(
+			subframe as never,
+			GOOGLE_SIGNIN as never,
+			false as never,
+			false as never,
+		);
+
+		// A hidden iframe must not drag the whole panel into the system browser.
+		expect(subframe.preventDefault).not.toHaveBeenCalled();
+		expect(openExternal).not.toHaveBeenCalled();
+
+		const mainFrame: { preventDefault: ReturnType<typeof vi.fn> } = { preventDefault: vi.fn() };
+		listeners.get("will-navigate")?.(mainFrame as never, GOOGLE_SIGNIN as never, false as never, true as never);
+
+		expect(mainFrame.preventDefault).toHaveBeenCalledOnce();
+		expect(openExternal).toHaveBeenCalledWith(GOOGLE_SIGNIN);
+	});
+
+	it("denies a sign-in popup before it becomes an AO tab", async () => {
+		const { invoke, viewId, views, openExternal, sent } = await withLoadedPage();
+		const tabsBefore = views.length;
+		const sentBefore = sent.length;
+
+		const opened = views[0].webContents.openWindow(`${GOOGLE_SIGNIN}?x=secret-value`);
+
+		expect(opened).toBeNull();
+		expect(views).toHaveLength(tabsBefore);
+		expect(openExternal).toHaveBeenCalledWith(`${GOOGLE_SIGNIN}?x=secret-value`);
+		expect(sent.slice(sentBefore).filter(({ channel }) => channel === "browser:tabsState")).toEqual([]);
+		const notice = sent
+			.slice(sentBefore)
+			.filter(({ channel }) => channel === "browser:navState")
+			.at(-1)?.payload as BrowserNavState | undefined;
+		expect(notice?.externalHandoff).toEqual({ url: `${GOOGLE_SIGNIN}?x=secret-value` });
+		expect(await invoke("browser:getTabs", viewId)).toMatchObject({ tabs: [{ id: "t1" }] });
+	});
+
+	it("clears the notice as soon as an ordinary agent navigation starts", async () => {
+		const { host, openExternal, runtime, sent, views } = await withLoadedPage();
+
+		const handed = (await host.execute("sess-1", "open", { url: GOOGLE_SIGNIN })) as BrowserNavState;
+		expect(handed.externalHandoff).toBeDefined();
+
+		// Hold the second navigation inside the runtime so the window between
+		// "navigation started" and "navigation finished" is observable.
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const runAction = vi.mocked(runtime.runAction);
+		const original = runAction.getMockImplementation()!;
+		const callsBeforeOpen = runAction.mock.calls.length;
+		runAction.mockImplementation(async (sessionId, action, args, provider, signal) => {
+			if (action === "open") await gate;
+			return original(sessionId, action, args, provider, signal);
+		});
+
+		const pending = host.execute("sess-1", "open", {
+			url: "https://example.test/after-login",
+		});
+		await vi.waitFor(() =>
+			expect(runAction.mock.calls.length).toBeGreaterThan(callsBeforeOpen),
+		);
+
+		// Any state refresh while the navigation is still in flight must not
+		// report the previous login's handoff any more.
+		const sentBefore = sent.length;
+		views[0].listeners.get("did-stop-loading")?.();
+		const duringLoad = sent
+			.slice(sentBefore)
+			.filter(({ channel }) => channel === "browser:navState")
+			.at(-1)?.payload as BrowserNavState | undefined;
+		expect(duringLoad?.externalHandoff).toBeUndefined();
+
+		release();
+		const ordinary = (await pending) as BrowserNavState;
+		expect(ordinary.externalHandoff).toBeUndefined();
+		expect(openExternal).toHaveBeenCalledTimes(1);
+	});
+
+	it("applies the panel user agent to the first tab as well as later ones", async () => {
+		const browserUserAgent =
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
+		const { invoke, views } = setupHandoffHost({ browserUserAgent });
+		const initial = (await invoke("browser:ensure", "sess-1")) as BrowserNavState;
+		await invoke("browser:openTab", { viewId: initial.viewId });
+
+		expect(views).toHaveLength(2);
+		for (const view of views) {
+			expect(view.webContents.setUserAgent).toHaveBeenCalledWith(browserUserAgent);
+		}
 	});
 });

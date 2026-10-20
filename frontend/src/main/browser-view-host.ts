@@ -4328,8 +4328,20 @@ export function createBrowserViewHost(
               const navState = active?.state ?? emptyNavState(session.viewId);
               return {
                 ...agentNavState(navState),
-                target: { tabId: active?.tabId ?? "" },
+                // The documented native-command contract: target.tabId plus the
+                // sanitized post-action URL and origin. Nothing navigated, so the
+                // page that received the command is the one still showing.
+                target: active
+                  ? agentActionTarget(active)
+                  : { tabId: "", url: "", origin: "" },
               };
+            }
+            // An ordinary agent navigation clears any earlier handoff notice
+            // as soon as it starts, not only after it loads, so a failed load
+            // cannot leave a notice pointing at the previous login.
+            if (session.tabs.size > 0) {
+              const current = activeEntry(session);
+              current.state = { ...current.state, externalHandoff: undefined };
             }
             const result = await runNative(action, {
               url: normalized,
@@ -5631,6 +5643,21 @@ function hardenWebContents(
       !isCurrent() ||
       (url !== "about:blank" && !isAllowedBrowserURL(url, options.rendererOrigin))
     ) {
+      return { action: "deny" };
+    }
+    // A sign-in or checkout popup is handed off here, before createWindow
+    // turns it into an AO tab: creating the tab first would leave a blank,
+    // activated tab behind the notice (#6622).
+    const popupHandoff = shouldHandOffToSystemBrowser(
+      url,
+      options.getExternalHandoffHosts?.() ?? [],
+    )
+      ? url
+      : null;
+    if (popupHandoff) {
+      void options.shell.openExternal(popupHandoff).catch(() => undefined);
+      entry.state = { ...readNavState(entry), externalHandoff: { url: popupHandoff } };
+      shellContents(options).send("browser:navState", entry.state);
       return { action: "deny" };
     }
     return {
