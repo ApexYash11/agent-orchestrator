@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/activitydispatch"
@@ -20,6 +21,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/gitworktree"
 	workspacerouter "github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/router"
 	scratchworkspace "github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/scratch"
+	"github.com/aoagents/agent-orchestrator/backend/internal/artifactversions"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
@@ -48,16 +50,19 @@ type lifecycleStack struct {
 	// LCM is the Lifecycle Manager (the canonical write path). It is exposed so
 	// startSession can share the same reducer the reaper drives, rather than
 	// standing up a second store+LCM pair that would diverge under writes.
-	LCM            *lifecycle.Manager
-	runtimeReaper  *reaper.Reaper
-	reaperDone     <-chan struct{}
-	activityDone   <-chan struct{}
-	artifactsDone  <-chan struct{}
-	autoReviewDone <-chan struct{}
-	scmDone        <-chan struct{}
-	trackerDone    <-chan struct{}
-	herdr          *herdr.Server
-	automationDone <-chan struct{}
+	LCM *lifecycle.Manager
+	// ArtifactVersions is the one artifact version capturer. The session
+	// service deletes artifacts through it so a delete holds the capture lock.
+	ArtifactVersions *artifactversions.Capturer
+	runtimeReaper    *reaper.Reaper
+	reaperDone       <-chan struct{}
+	activityDone     <-chan struct{}
+	artifactsDone    <-chan struct{}
+	autoReviewDone   <-chan struct{}
+	scmDone          <-chan struct{}
+	trackerDone      <-chan struct{}
+	herdr            *herdr.Server
+	automationDone   <-chan struct{}
 }
 
 // startLifecycle constructs the Lifecycle Manager over the store and starts the
@@ -82,14 +87,16 @@ func startLifecycle(ctx context.Context, dataDir string, store *sqlite.Store, ru
 		// must not prevent the daemon or ordinary agent sessions from starting.
 		logger.Warn("fx Herdr listener unavailable", "error", err)
 	}
-	artifactsPoller := artifactsobserver.New(store, lcm, artifactsobserver.Config{Logger: logger})
+	artifactVersions := artifactversions.New(store, dataDir, logger)
+	artifactsPoller := artifactsobserver.New(store, lcm, artifactVersions, artifactsobserver.Config{Logger: logger})
 	return &lifecycleStack{
-		LCM:           lcm,
-		runtimeReaper: rp,
-		reaperDone:    rp.Start(ctx),
-		activityDone:  activityPoller.Start(ctx),
-		herdr:         herdrServer,
-		artifactsDone: artifactsPoller.Start(ctx),
+		LCM:              lcm,
+		ArtifactVersions: artifactVersions,
+		runtimeReaper:    rp,
+		reaperDone:       rp.Start(ctx),
+		activityDone:     activityPoller.Start(ctx),
+		herdr:            herdrServer,
+		artifactsDone:    artifactsPoller.Start(ctx),
 	}
 }
 
@@ -195,8 +202,20 @@ func (l *lifecycleStack) Stop() {
 type sessionLifecycle interface {
 	Reconcile(ctx context.Context) error
 	ReconcileStartupSafety(ctx context.Context) error
+	ReconnectAwakeAgent(ctx context.Context, target domain.AwakeAgentTarget) error
 	ReconcileBackground(ctx context.Context) error
 	HibernateIdleChats(ctx context.Context) error
+	RefreshStaleChats(ctx context.Context, minIdle time.Duration) error
+	RefreshStaleTerminals(ctx context.Context, minIdle time.Duration) error
+	BusyHarnessSessions(ctx context.Context, harness domain.AgentHarness) ([]domain.SessionWait, error)
+	StopHarnessSessions(ctx context.Context, harness domain.AgentHarness) ([]domain.SessionID, error)
+	ResumeHarnessSessions(ctx context.Context, ids []domain.SessionID) error
+	SetVersionTelemetry(sink ports.EventSink)
+	SetVersionRefreshPolicy(policy func() sessionmanager.VersionRefreshPolicy)
+	RetryVersionMoves(ctx context.Context) error
+	ObserveChatVersionSwitch(id domain.SessionID, version, result string)
+	MarkHarnessUpdated(ctx context.Context, harness domain.AgentHarness, version string, at time.Time) error
+	CountStaleBinarySessions(ctx context.Context) (map[domain.AgentHarness]int64, error)
 	RestoreAll(ctx context.Context) error
 	WaitBackgroundWorkers(ctx context.Context) error
 	WaitAgentSwitchWorkers(ctx context.Context) error
@@ -261,7 +280,7 @@ func telemetryEmitsSpawned(cfg config.Config) bool {
 // (issue #2685). The returned service is mounted at httpd APIDeps.Sessions.
 // It also returns the manager so the caller can wire Reconcile into the boot
 // sequence.
-func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, notifications notificationSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, reviewerRecoveryDone <-chan struct{}, defaults sessionmanager.SessionModeDefaults, reportingPolicy ports.AgentSwitchReportingPolicy, tracker ports.Tracker, codexOperationGate ports.CodexOperationGate, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
+func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, artifactVersions *artifactversions.Capturer, messenger ports.AgentMessenger, telemetry ports.EventSink, notifications notificationSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, reviewerRecoveryDone <-chan struct{}, defaults sessionmanager.SessionModeDefaults, reportingPolicy ports.AgentSwitchReportingPolicy, tracker ports.Tracker, codexOperationGate ports.CodexOperationGate, reviewers *reviewer.Resolver, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
 	gitWS, err := gitworktree.New(gitworktree.Options{
 		// Per-session worktrees live under the data dir, so a single AO_DATA_DIR
 		// override moves all durable per-user state together.
@@ -333,21 +352,25 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		// coverage; partial callbacks cannot prove that silence is abnormal.
 		SignalCapable:        activitydispatch.FullySupportsHarness,
 		OutputTypeReconciler: lcm,
+		ArtifactDeleter:      artifactVersions,
 	})
 	// Triggering a review spawns a reviewer over the worker's worktree, resolved
 	// from the reviewer registry (distinct from the worker agent set). The
 	// reviewer posts its review to the PR itself, so the service needs no SCM
 	// writer.
-	reviewers, err := reviewer.NewResolver()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("reviewer resolver: %w", err)
+	if reviewers == nil {
+		if reviewers, err = reviewer.NewResolver(); err != nil {
+			return nil, nil, nil, fmt.Errorf("reviewer resolver: %w", err)
+		}
 	}
 	reviewerChat, _ := chat.(reviewcore.ReviewerChatController)
 	reviewEngine := reviewcore.New(reviewcore.Deps{
-		Store:    store,
-		Sessions: store,
-		PRs:      store,
-		Projects: store,
+		// The manager's installer gate is bound after the installer is built.
+		HarnessUse: mgr,
+		Store:      store,
+		Sessions:   store,
+		PRs:        store,
+		Projects:   store,
 		Launcher: reviewcore.NewLauncher(reviewers, runtime, cfg.DataDir,
 			reviewcore.WithRunFilePath(cfg.RunFilePath),
 			reviewcore.WithAgentAuth(reviewerAgentAuth{readiness: agentReadiness}),
@@ -581,8 +604,14 @@ var _ interface {
 } = chatLauncher{}
 
 var _ sessionmanager.ChatLauncher = chatLauncher{}
+
+// Session Manager asserts these optional capabilities at runtime: a missing
+// forward compiles but silently turns the feature off.
+var _ sessionmanager.ChatVersionRefresher = chatLauncher{}
+var _ sessionmanager.ChatUpdateHibernator = chatLauncher{}
 var _ interface {
 	RunBackgroundTask(context.Context, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
+	RunPromptSuggestionTask(context.Context, domain.SessionID, string, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
 	ArmChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	PrepareChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	AbortChatHandoff(domain.SessionID)
@@ -667,6 +696,10 @@ func (c chatLauncher) RunBackgroundTask(ctx context.Context, harness domain.Agen
 	return c.svc.RunBackgroundTask(ctx, harness, cfg, prompt)
 }
 
+func (c chatLauncher) RunPromptSuggestionTask(ctx context.Context, id domain.SessionID, turnID string, harness domain.AgentHarness, cfg ports.ChatStartConfig, prompt string) (string, error) {
+	return c.svc.RunPromptSuggestionTask(ctx, id, turnID, harness, cfg, prompt)
+}
+
 func (c chatLauncher) StartChatTurn(ctx context.Context, id domain.SessionID, text string) (string, error) {
 	return c.svc.StartChatTurn(ctx, id, text)
 }
@@ -699,6 +732,28 @@ func (c chatLauncher) HibernateChat(ctx context.Context, id domain.SessionID) (b
 	return c.svc.HibernateChat(ctx, id)
 }
 
+func (c chatLauncher) SwitchToInstalledRelease(ctx context.Context, id domain.SessionID, minIdle time.Duration) (bool, error) {
+	return c.svc.SwitchToInstalledRelease(ctx, id, minIdle)
+}
+
+func (c chatLauncher) HibernateChatForUpdate(ctx context.Context, id domain.SessionID) (bool, error) {
+	return c.svc.HibernateChatForUpdate(ctx, id)
+}
+
+// WaitForWake lets a version move hold its restart permit until the provider
+// it stopped has started again; without it the manager skips the wait.
+func (c chatLauncher) WaitForWake(ctx context.Context, id domain.SessionID) error {
+	return c.svc.WaitForWake(ctx, id)
+}
+
+// The manager discovers these optional capabilities by type assertion, so a
+// method the wrapper forgets to forward is lost silently.
+var (
+	_ sessionmanager.ChatWakeWaiter       = chatLauncher{}
+	_ sessionmanager.ChatVersionRefresher = chatLauncher{}
+	_ sessionmanager.ChatUpdateHibernator = chatLauncher{}
+)
+
 // ArmChatHandoff closes Chat intake and dispatch synchronously at transition
 // acceptance. PrepareChatHandoff then settles interrupt work or waits for drain
 // work before Session Manager stops the source. These methods intentionally live
@@ -710,6 +765,12 @@ func (c chatLauncher) ArmChatHandoff(
 	policy domain.SessionInterfaceTransitionPolicy,
 ) error {
 	return c.svc.ArmChatHandoff(ctx, id, policy)
+}
+
+// MarkAccountSwitch marks the turn an account move stopped, so the chat shows
+// the switch instead of a failure.
+func (c chatLauncher) MarkAccountSwitch(ctx context.Context, id domain.SessionID, accountID string) error {
+	return c.svc.MarkAccountSwitch(ctx, id, accountID)
 }
 
 func (c chatLauncher) PrepareChatHandoff(

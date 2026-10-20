@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useChatModelChoices } from "../../hooks/useChatModelChoices";
 import { useCloudCp } from "../../hooks/useCloudCp";
 import type { CloudCpClient, CloudCpClientEvent } from "../../lib/cloud-cp";
 import { CloudCpError } from "../../lib/cloud-cp/errors";
@@ -11,6 +12,12 @@ import { ChatWorkspace } from "./ChatWorkspace";
 
 type EventPayload = {
 	attempt?: unknown;
+	/** workspace.setup */
+	status?: unknown;
+	step?: unknown;
+	exitCode?: unknown;
+	durationMs?: unknown;
+	output?: unknown;
 	clientMessageId?: unknown;
 	requestId?: unknown;
 	decision?: unknown;
@@ -116,6 +123,26 @@ function cloudTurnDiff(patch: string): (DiffFile & { patch: string })[] {
 	return files;
 }
 
+/**
+ * The outcome of the project's Setup commands (Project settings > Scripts), as
+ * a system row: Setup runs before the agent starts, so it belongs to no turn.
+ */
+function projectSetupActivity(event: CloudCpClientEvent): ConversationActivity {
+	const payload = eventPayload(event);
+	const status = payload.status === "succeeded" || payload.status === "timed_out" ? payload.status : "failed";
+	const step = typeof payload.step === "number" && payload.step > 0 ? payload.step : undefined;
+	const exitCode = typeof payload.exitCode === "number" ? payload.exitCode : undefined;
+	const durationMs = typeof payload.durationMs === "number" ? payload.durationMs : undefined;
+	const output = typeof payload.output === "string" && payload.output.trim() !== "" ? payload.output : undefined;
+	return {
+		kind: "activity", id: `cloud-project-setup-${event.sequence}`, sequence: event.sequence, revision: 1,
+		activityKind: "system", status: status === "succeeded" ? "completed" : "failed",
+		summary: status === "succeeded" ? "Setup finished" : status === "timed_out" ? "Setup timed out" : "Setup failed",
+		detail: { event: "workspace.setup", setupStatus: status, setupStep: step, exitCode, durationMs, output },
+		createdAt: event.createdAt,
+	};
+}
+
 export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent[]): ConversationSnapshot {
 	const turns = new Map<string, ConversationTurn>();
 	const assistant = new Map<string, ConversationMessage>();
@@ -214,6 +241,10 @@ export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent
 				activities.set(key, activity);
 				items.push(activity);
 			}
+			continue;
+		}
+		if (event.type === "workspace.setup") {
+			items.push(projectSetupActivity(event));
 			continue;
 		}
 		const text = eventText(event);
@@ -506,15 +537,30 @@ export function CloudSessionChatSurface({
 				],
 			}]
 			: undefined;
+	const workerModels = modelsQuery.data?.models ?? [];
+	const selectedModel = workerModels.find((model) => model.id === settings.model) ?? workerModels.find((model) => model.default);
+	// Claude's model and effort as provider options, the shape local Claude Chat gets from its agent.
+	const claudeOptions: ChatConfigOption[] = session.provider === "claude-code" && workerModels.length > 0 ? [
+		{ id: "model", name: "Model", category: "model", type: "select", currentValue: selectedModel?.id, choices: workerModels.map((model) => ({ value: model.id, name: model.displayName, description: model.description })) },
+		...(selectedModel?.efforts?.length
+			? [{ id: "effort", name: "Effort", category: "thought_level", type: "select" as const, currentValue: settings.reasoningEffort ?? selectedModel.defaultEffort, choices: selectedModel.efforts.map((value) => ({ value, name: "" })) }]
+			: []),
+	] : [];
+	const providerOptions = [...(planOptions ?? []), ...claudeOptions];
+	const { models, configOptions } = useChatModelChoices(session.provider, workerModels, providerOptions.length ? providerOptions : undefined, settings.model);
 	return (
 		<ChatWorkspace
 			snapshot={snapshot}
 			onSessionLinkOpen={openSessionLink}
-			models={modelsQuery.data?.models ?? []}
-			configOptions={planOptions}
-			onChooseConfigOption={planOptions ? (id, choice) => {
-				if (id !== "mode" || !("value" in choice) || !planOptions[0].choices.some((option) => option.value === choice.value)) return;
-				updateSettings({ ...settingsRef.current.settings, executionMode: choice.value === "plan" ? "plan" : "agent" });
+			models={models}
+			configOptions={configOptions}
+			onChooseConfigOption={configOptions?.length ? (id, choice) => {
+				if (!("value" in choice)) return;
+				if (id === "model") updateSettings({ ...settingsRef.current.settings, model: choice.value, reasoningEffort: undefined });
+				else if (id === "effort") updateSettings({ ...settingsRef.current.settings, reasoningEffort: choice.value });
+				else if (id === "mode" && planOptions?.[0].choices.some((option) => option.value === choice.value)) {
+					updateSettings({ ...settingsRef.current.settings, executionMode: choice.value === "plan" ? "plan" : "agent" });
+				}
 			} : undefined}
 			onChooseSettings={(next) => updateSettings({ ...settingsRef.current.settings, ...next })}
 			showApprovalMode={approvalModes.length > 0}

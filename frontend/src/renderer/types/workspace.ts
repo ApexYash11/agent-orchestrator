@@ -108,6 +108,9 @@ export type SessionProvisionStep = {
 /** The daemon's observed branch facts. `unpushed` equals `commits` until the branch reaches its remote. */
 export type SessionBranchState = { commits: number; remoteBranch?: string; unpushed: number };
 
+/** The session's current launch still runs a harness release an update has replaced. */
+export type SessionStaleBinary = { version: string; since: string; switchFailedAt?: string };
+
 export type WorkspaceSession = {
 	workspaceCleanup?: "pending" | "removed" | "preserved_dirty" | "failed" | "not_applicable";
 	id: string;
@@ -180,6 +183,8 @@ export type WorkspaceSession = {
 	provisionSteps?: SessionProvisionStep[];
 	/** The daemon's observed branch facts: commits on top of the base and whether they reached the remote. */
 	branchState?: SessionBranchState;
+	/** Set while this launch runs a harness release an update replaced; it moves to `version` when idle. */
+	staleBinary?: SessionStaleBinary;
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
 	/** Whether the cloud worker has a current control-plane connection. */
@@ -227,6 +232,8 @@ export type WorkspaceSession = {
 	prs: PullRequestFacts[];
 	/** What kind of durable output this session has produced, when known. */
 	outputType?: SessionOutputType;
+	/** The deliverable requested at spawn; "artifact" for sessions started from Create artifact. */
+	requestedOutput?: "artifact";
 	/**
 	 * Files present in this session's artifact directory, when {@link outputType}
 	 * is `"artifact"`. Empty/absent for sessions whose output is a PR or nothing.
@@ -248,7 +255,9 @@ export type WorkspaceSession = {
 		runtimeState?: string;
 		runtimeError?: string;
 		/** Why the worker has not started; cleared once it connects. */
-		startupError?: { code: string; message: string; at: string };
+		startupError?: { code: string; message: string; at: string; detail?: string };
+		/** Bring-your-own Coder workspace page; absent for managed compute. */
+		coderWorkspaceUrl?: string;
 	};
 };
 
