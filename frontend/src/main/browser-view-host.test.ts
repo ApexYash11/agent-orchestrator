@@ -6377,14 +6377,14 @@ describe("sign-in and checkout handoff to the system browser", () => {
 		expect(pushed?.externalHandoff).toEqual({ url: `${GOOGLE_SIGNIN}?x=secret-value` });
 	});
 
-	it("ignores a subframe redirect while still handing off main-frame ones", async () => {
-		const { openExternal, views } = await withLoadedPage();
+	it.each([GOOGLE_SIGNIN, "https://provider.test/authorize?client_id=test", "https://sso.example.test/login"])("hands off %s only for main-frame redirects", async (url) => {
+		const { openExternal, views } = await withLoadedPage({ getExternalHandoffHosts: () => ["sso.example.test"] });
 		const listeners = views[0].listeners;
 
 		const subframe: { preventDefault: ReturnType<typeof vi.fn> } = { preventDefault: vi.fn() };
 		listeners.get("will-redirect")?.(
 			subframe as never,
-			GOOGLE_SIGNIN as never,
+			url as never,
 			false as never,
 			false as never,
 		);
@@ -6394,10 +6394,20 @@ describe("sign-in and checkout handoff to the system browser", () => {
 		expect(openExternal).not.toHaveBeenCalled();
 
 		const mainFrame: { preventDefault: ReturnType<typeof vi.fn> } = { preventDefault: vi.fn() };
-		listeners.get("will-navigate")?.(mainFrame as never, GOOGLE_SIGNIN as never, false as never, true as never);
+		listeners.get("will-redirect")?.(mainFrame as never, url as never, false as never, true as never);
 
 		expect(mainFrame.preventDefault).toHaveBeenCalledOnce();
-		expect(openExternal).toHaveBeenCalledWith(GOOGLE_SIGNIN);
+		expect(openExternal).toHaveBeenCalledWith(url);
+	});
+
+	it("still blocks unsafe URLs in subframe redirects", async () => {
+		const { openExternal, views } = await withLoadedPage();
+		const event = { preventDefault: vi.fn() };
+		views[0].listeners.get("will-redirect")?.(
+			event as never, "file:///tmp/unsafe.html" as never, false as never, false as never,
+		);
+		expect(event.preventDefault).toHaveBeenCalledOnce();
+		expect(openExternal).not.toHaveBeenCalled();
 	});
 
 	it("keeps a handoff notice through a later subframe redirect", async () => {

@@ -22,7 +22,7 @@ async function run(): Promise<void> {
 	const fixture = await readFile(fixturePath, "utf8");
 	const dragFixture = await readFile(path.join(path.dirname(fixturePath), "drag-regions.html"), "utf8");
 	const server = createServer((request, response) => {
-		if (request.url === "/iframe-redirect" || request.url === "/handoff-redirect") {
+		if (request.url === "/iframe-redirect" || request.url === "/iframe-auth-redirect" || request.url === "/handoff-redirect") {
 			response.writeHead(302, {
 				location: request.url === "/iframe-redirect" ? "/destination" : "/authorize?client_id=test",
 			});
@@ -442,13 +442,18 @@ async function run(): Promise<void> {
 
 		// A live iframe 302 must neither launch a browser nor discard the notice.
 		const launchesBeforeIframe = externalURLs.length;
-		await deadline(opener.executeJavaScript(`new Promise((resolve, reject) => {
+		for (const [route, expectedURL] of [
+			["/iframe-redirect", `${baseURL}/destination`],
+			["/iframe-auth-redirect", signinURL],
+		]) {
+			await deadline(opener.executeJavaScript(`new Promise((resolve, reject) => {
 			const frame = document.createElement('iframe');
 			frame.onload = () => resolve(frame.contentWindow.location.href);
 			frame.onerror = () => reject(new Error('iframe failed'));
-			frame.src = '/iframe-redirect';
+			frame.src = ${JSON.stringify(route)};
 			document.body.append(frame);
-		})`)).then(url => assert.equal(url, `${baseURL}/destination`));
+		})`)).then(url => assert.equal(url, expectedURL));
+		}
 		const retained = await invoke<BrowserNavState>("browser:ensure", sessionId);
 		assert.equal(retained.externalHandoff?.url, signinURL);
 		assert.equal(externalURLs.length, launchesBeforeIframe);
