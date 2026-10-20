@@ -106,6 +106,40 @@ func TestDetectTerminalActivityIgnoresApprovalFooterAlone(t *testing.T) {
 	}
 }
 
+func TestDetectTerminalActivityIgnoresApprovalTextWithoutControls(t *testing.T) {
+	// Only the dialog's own structure counts. Assistant/tool output that quotes
+	// the question, or prose mentioning both answers, has no dialog controls and
+	// must not become authoritative waiting_input while a tool is running.
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{
+			name:   "quoted question",
+			output: "I'll run the focused adapter tests.\nThe prompt says Approve tool call?\n",
+		},
+		{
+			name:   "approve and deny prose",
+			output: "I'll approve the change and deny the request if the tests fail.\nRunning go test ./...\n",
+		},
+		{
+			name:   "question without controls",
+			output: "Approve tool call?\nrun_commands\n  $ go test ./internal/adapters/agent/cline\n",
+		},
+		{
+			name:   "controls without question",
+			output: "  [y] approve  [n] deny\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, ok := (&Plugin{}).DetectTerminalActivity(tt.output); ok {
+				t.Fatalf("DetectTerminalActivity() = (%q, true), want no signal", got)
+			}
+		})
+	}
+}
+
 func TestDeriveActivityStateTreatsPreToolUseAsActive(t *testing.T) {
 	// Regression test for #6414: PreToolUse fires after approval (upstream
 	// cline/cline#7446) or with no prompt under auto-approve, so it must
@@ -118,12 +152,26 @@ func TestDeriveActivityStateTreatsPreToolUseAsActive(t *testing.T) {
 	}
 }
 
-func TestClinePreToolUseHookMapsToActiveSignal(t *testing.T) {
+func TestClinePreToolUseHookResolvesApproval(t *testing.T) {
+	// PreToolUse must resolve, not just report active: the terminal detector can
+	// already have written waiting_input from the dialog, and lifecycle
+	// precedence suppresses plain tool events against that sticky state. Only a
+	// turn-boundary event (permission-resolved) clears it; the full sequence is
+	// covered in lifecycle's TestToolPrecedence_ClinePreToolUseClearsObservedApproval.
 	for _, spec := range clineManagedHooks {
-		if spec.Event == "PreToolUse" && spec.Subcommand != "pre-tool-use" {
-			t.Fatalf("PreToolUse subcommand = %q, want %q", spec.Subcommand, "pre-tool-use")
+		if spec.Event != "PreToolUse" {
+			continue
 		}
+		if spec.Subcommand != "permission-resolved" {
+			t.Fatalf("PreToolUse subcommand = %q, want %q", spec.Subcommand, "permission-resolved")
+		}
+		state, ok := DeriveActivityState(spec.Subcommand, nil)
+		if state != domain.ActivityActive || !ok {
+			t.Fatalf("DeriveActivityState(%q) = (%q, %v), want (%q, true)", spec.Subcommand, state, ok, domain.ActivityActive)
+		}
+		return
 	}
+	t.Fatal("missing managed PreToolUse hook")
 }
 
 func TestClineManagedHooksClearCompletedTurns(t *testing.T) {
