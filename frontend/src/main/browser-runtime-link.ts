@@ -1,16 +1,11 @@
 import net from "node:net";
 import { StringDecoder } from "node:string_decoder";
 import { HANDSHAKE_CLOSED_BEFORE_ACCEPT } from "../shared/daemon-takeover";
+import type { BrowserRuntimeState } from "./browser-view-host";
 
 const PROTOCOL_VERSION = 2;
 const BACKOFF_INIT_MS = 200;
 const BACKOFF_MAX_MS = 2_000;
-/**
- * Fallback acceptance window for daemons that predate the hello ack. A daemon
- * that rejects the handshake closes within microseconds, so anything still open
- * this long is treated as authenticated.
- */
-const HANDSHAKE_GRACE_MS = 1_000;
 const MAX_COMMAND_BYTES = 1 << 20;
 const MAX_RESULT_BYTES = 8 << 20;
 
@@ -27,10 +22,20 @@ type BrowserRuntimeCancel = {
 	requestId: string;
 };
 
-type BrowserRuntimeHandshakeFrame = {
-	type: "helloAck" | "helloRejected";
-	reason?: string;
+// The daemon's answer to the hello (backend/internal/browserruntime/broker.go).
+type BrowserRuntimeHelloReply =
+	| { type: "hello-ok" }
+	| { type: "hello-rejected"; error?: BrowserRuntimeCommandError };
+
+type Handshake = {
+	accept: () => void;
+	refuse: (error: BrowserRuntimeCommandError | undefined) => void;
 };
+
+const CONNECTING: BrowserRuntimeState = { connected: false, connecting: true, rejected: false };
+const CONNECTED: BrowserRuntimeState = { connected: true, connecting: false, rejected: false };
+const REJECTED: BrowserRuntimeState = { connected: false, connecting: false, rejected: true };
+export const BROWSER_RUNTIME_DISCONNECTED: BrowserRuntimeState = { connected: false, connecting: false, rejected: false };
 
 export type BrowserRuntimeCommandError = {
 	code: string;
@@ -38,7 +43,8 @@ export type BrowserRuntimeCommandError = {
 };
 
 export interface BrowserRuntimeLinkHandle {
-	readonly connected: boolean;
+	readonly state: BrowserRuntimeState;
+	/** Tears the link down without reporting a state; the caller publishes one. */
 	dispose(): void;
 }
 
@@ -46,9 +52,26 @@ type BrowserRuntimeLinkOptions = {
 	execute: (command: BrowserRuntimeCommand, signal: AbortSignal) => Promise<unknown>;
 	token?: string;
 	log?: (message: string) => void;
-	onStateChange?: (connected: boolean) => void;
+	onStateChange?: (state: BrowserRuntimeState) => void;
+	/**
+	 * Reported when the daemon refuses this app's hello, or drops the link before
+	 * accepting it — which is how a daemon predating hello-rejected refuses a stale
+	 * token. main.ts turns an unrecoverable reason into a replacement of the daemon
+	 * it merely adopted; see browserRuntimeRecoveryDecision.
+	 */
 	onHandshakeRejected?: (reason: string) => void;
 };
+
+/**
+ * The recovery decision's vocabulary, derived from the broker's stable error code
+ * (backend/internal/browserruntime/broker.go). Only a rejected token is
+ * unrecoverable by retrying; a protocol mismatch resolves once the app and the
+ * daemon are upgraded together, so it keeps its own code.
+ */
+function handshakeRejectionReason(error: BrowserRuntimeCommandError | undefined): string {
+	if (error?.code === "BROWSER_RUNTIME_TOKEN_REJECTED") return "invalid-token";
+	return error?.code ?? "handshake-rejected";
+}
 
 export function connectBrowserRuntime(
 	address: string | net.TcpNetConnectOpts,
@@ -56,29 +79,24 @@ export function connectBrowserRuntime(
 ): BrowserRuntimeLinkHandle {
 	const log = options.log ?? (() => undefined);
 	let disposed = false;
-	let connected = false;
+	let state = CONNECTING;
+	let unansweredStreak = 0;
 	let socket: net.Socket | null = null;
 	let retryTimer: ReturnType<typeof setTimeout> | null = null;
-	let graceTimer: ReturnType<typeof setTimeout> | null = null;
 	let backoff = BACKOFF_INIT_MS;
 	let buffer = "";
 	let decoder = new StringDecoder("utf8");
 	let connectionEpoch = 0;
-	let acceptHandshake: (() => void) | null = null;
-	let lastRejectionReason: string | null = null;
-	// Connection epoch that already reported a refusal, so a daemon that explains
-	// itself with helloRejected is not also counted as an unexplained hang-up.
-	let rejectedEpoch = -1;
 	const commandChains = new Map<string, Promise<void>>();
 	const commandControllers = new Map<string, AbortController>();
 	const activeCommands = new Map<
 		string,
 		{ command: BrowserRuntimeCommand; target: net.Socket; epoch: number }
 	>();
-	const setConnected = (value: boolean) => {
-		if (connected === value) return;
-		connected = value;
-		options.onStateChange?.(value);
+	const setState = (next: BrowserRuntimeState) => {
+		if (disposed || state === next) return;
+		state = next;
+		options.onStateChange?.(state);
 	};
 
 	const sendCancelledResultOnTarget = (command: BrowserRuntimeCommand, target: net.Socket) => {
@@ -113,10 +131,6 @@ export function connectBrowserRuntime(
 			clearTimeout(retryTimer);
 			retryTimer = null;
 		}
-		if (graceTimer !== null) {
-			clearTimeout(graceTimer);
-			graceTimer = null;
-		}
 	};
 
 	const destroySocket = () => {
@@ -124,24 +138,9 @@ export function connectBrowserRuntime(
 		const target = socket;
 		cancelConnectionCommands();
 		connectionEpoch += 1;
-		acceptHandshake = null;
 		target.removeAllListeners();
 		target.destroy();
 		socket = null;
-	};
-
-	/**
-	 * A refused hello is a hard failure, not a transient blip. Retrying it at
-	 * the fast initial backoff would redial every 200ms forever, so jump to the
-	 * cap and only log when the daemon reports a different reason.
-	 */
-	const noteHandshakeRejection = (reason: string) => {
-		backoff = BACKOFF_MAX_MS;
-		rejectedEpoch = connectionEpoch;
-		options.onHandshakeRejected?.(reason);
-		if (reason === lastRejectionReason) return;
-		lastRejectionReason = reason;
-		log(`browser-runtime-link: daemon rejected the runtime handshake: ${reason}`);
 	};
 
 	const send = async (message: unknown, target: net.Socket, epoch: number): Promise<void> => {
@@ -222,24 +221,24 @@ export function connectBrowserRuntime(
 		}
 	};
 
-	const consumeLine = (line: string, target: net.Socket, epoch: number) => {
+	const consumeLine = (line: string, target: net.Socket, epoch: number, handshake: Handshake) => {
 		if (!line.trim()) return;
-		let message: BrowserRuntimeCommand | BrowserRuntimeCancel | BrowserRuntimeHandshakeFrame;
+		let message: BrowserRuntimeCommand | BrowserRuntimeCancel | BrowserRuntimeHelloReply;
 		try {
-			message = JSON.parse(line) as BrowserRuntimeCommand | BrowserRuntimeCancel | BrowserRuntimeHandshakeFrame;
+			message = JSON.parse(line) as BrowserRuntimeCommand | BrowserRuntimeCancel | BrowserRuntimeHelloReply;
 		} catch {
 			return;
 		}
+		if (message.type === "hello-rejected") {
+			handshake.refuse(message.error);
+			return;
+		}
+		// An older daemon never sends hello-ok, but it writes commands only to a
+		// runtime it accepted, so any other frame accepts the link as well.
+		handshake.accept();
+		if (message.type === "hello-ok") return;
 		if (message.type === "cancel" && typeof message.requestId === "string") {
 			commandControllers.get(message.requestId)?.abort();
-			return;
-		}
-		if (message.type === "helloAck") {
-			acceptHandshake?.();
-			return;
-		}
-		if (message.type === "helloRejected") {
-			noteHandshakeRejection(typeof message.reason === "string" ? message.reason : "unknown");
 			return;
 		}
 		const command = message as BrowserRuntimeCommand;
@@ -262,7 +261,7 @@ export function connectBrowserRuntime(
 		});
 	};
 
-	const consume = (chunk: Buffer, target: net.Socket, epoch: number) => {
+	const consume = (chunk: Buffer, target: net.Socket, epoch: number, handshake: Handshake) => {
 		if (socket !== target || connectionEpoch !== epoch) return;
 		buffer += decoder.write(chunk);
 		for (;;) {
@@ -281,7 +280,7 @@ export function connectBrowserRuntime(
 				target.destroy();
 				return;
 			}
-			consumeLine(line, target, epoch);
+			consumeLine(line, target, epoch, handshake);
 		}
 	};
 
@@ -302,55 +301,74 @@ export function connectBrowserRuntime(
 		const next = typeof address === "string" ? net.connect(address) : net.connect(address);
 		socket = next;
 		let accepted = false;
-		let opened = false;
-		// A TCP connect only proves the socket opened. The daemon authenticates
-		// the hello, so the link — and the retry backoff — stay unclaimed until
-		// the daemon accepts it.
-		const accept = () => {
-			if (disposed || accepted || socket !== next || connectionEpoch !== epoch) return;
-			accepted = true;
-			clearRetry();
-			setConnected(true);
-			backoff = BACKOFF_INIT_MS;
-			lastRejectionReason = null;
-			rejectedEpoch = -1;
-			log("browser-runtime-link: connected");
+		let refused = false;
+		// A TCP connect is not an accepted link: only the daemon's answer to the
+		// hello settles the handshake. Treating connect as success flipped the state
+		// and reset the backoff on every refused attempt (#6466).
+		const handshake: Handshake = {
+			accept: () => {
+				if (accepted || refused || socket !== next || connectionEpoch !== epoch) return;
+				accepted = true;
+				unansweredStreak = 0;
+				backoff = BACKOFF_INIT_MS;
+				setState(CONNECTED);
+				log("browser-runtime-link: connected");
+			},
+			refuse: (error) => {
+				if (accepted || refused || socket !== next || connectionEpoch !== epoch) return;
+				refused = true;
+				// Keep the daemon's reason: a stale token, a protocol mismatch and a
+				// malformed hello are all refusals, with different causes.
+				const reason = error ? `${error.code}: ${error.message}` : "no reason given";
+				log(
+					`browser-runtime-link: the AO daemon refused this app's browser runtime (${reason}); ` +
+						"run `ao stop`, then reopen AO.",
+				);
+				setState({ ...REJECTED, rejectionCode: error?.code });
+				// A refused token cannot be retried into acceptance, so the caller may
+				// have to retire the daemon it adopted instead of waiting for a redial.
+				options.onHandshakeRejected?.(handshakeRejectionReason(error));
+			},
 		};
-		acceptHandshake = accept;
 		next.on("connect", () => {
 			if (disposed) {
 				next.destroy();
 				return;
 			}
-			opened = true;
-			void send({ type: "hello", version: PROTOCOL_VERSION, token: options.token }, next, epoch)
-				.then(() => {
-					if (disposed || accepted || socket !== next || connectionEpoch !== epoch) return;
-					graceTimer = setTimeout(accept, HANDSHAKE_GRACE_MS);
-				})
-				.catch((error) => {
-					log(`browser-runtime-link: hello failed: ${String(error)}`);
-					next.destroy();
-				});
+			void send({ type: "hello", version: PROTOCOL_VERSION, token: options.token }, next, epoch).catch((error) => {
+				log(`browser-runtime-link: hello failed: ${String(error)}`);
+				next.destroy();
+			});
 		});
-		next.on("data", (chunk) => consume(chunk, next, epoch));
+		next.on("data", (chunk) => consume(chunk, next, epoch, handshake));
 		next.on("error", (error) => log(`browser-runtime-link: error: ${error.message}`));
 		let connectionTornDown = false;
 		const tearDownConnection = () => {
 			if (connectionTornDown || socket !== next || connectionEpoch !== epoch) return;
 			connectionTornDown = true;
-			if (acceptHandshake === accept) acceptHandshake = null;
-			// A daemon that hangs up on a hello it will never accept explains
-			// itself with helloRejected; one predating that frame just closes.
-			// Both mean this daemon cannot drive our browser panel, and neither is
-			// fixable by retrying, so report it the same way — once per connection.
-			if (opened && !accepted && !disposed && rejectedEpoch !== epoch) {
-				noteHandshakeRejection(HANDSHAKE_CLOSED_BEFORE_ACCEPT);
-			}
-			setConnected(false);
 			cancelConnectionCommands();
 			socket = null;
 			connectionEpoch += 1;
+			// The same token would be refused again. Stay down until the user asks to
+			// reconnect or the daemon changes, both of which build a new link.
+			if (refused) return;
+			if (accepted) {
+				// A daemon restart or replaced link. Redial at once, and report a
+				// disconnect only if that attempt fails too.
+				setState(CONNECTING);
+			} else {
+				// An unreachable daemon, a transport error, or an older daemon closing on
+				// a hello it refused. None of these proves a refusal, so keep retrying
+				// without resetting the backoff.
+				unansweredStreak += 1;
+				if (unansweredStreak === 1) log("browser-runtime-link: link closed before the daemon answered the hello; retrying");
+				// A daemon predating hello-rejected refuses a stale token by simply
+				// hanging up, so this is the only signal the recovery path gets for it.
+				// An accepted link that drops is an ordinary disconnect, reported above
+				// instead, and must never retire a healthy daemon.
+				options.onHandshakeRejected?.(HANDSHAKE_CLOSED_BEFORE_ACCEPT);
+				setState(BROWSER_RUNTIME_DISCONNECTED);
+			}
 			if (!disposed) scheduleReconnect();
 		};
 		// Cancel while the socket may still accept writes; 'close' can arrive too late.
@@ -358,14 +376,14 @@ export function connectBrowserRuntime(
 		next.on("close", tearDownConnection);
 	}
 
+	options.onStateChange?.(state);
 	connect();
 	return {
-		get connected() {
-			return connected;
+		get state() {
+			return state;
 		},
 		dispose() {
 			disposed = true;
-			setConnected(false);
 			clearRetry();
 			destroySocket();
 		},

@@ -31,19 +31,11 @@ const (
 	RuntimeTokenStdinEnv = "AO_BROWSER_RUNTIME_TOKEN_STDIN" //nolint:gosec // Environment variable name, not a credential.
 	// RuntimeAddressEnv carries the exact listener address into running.json so
 	// Electron never has to duplicate the backend's platform-specific naming.
-	RuntimeAddressEnv = "AO_BROWSER_RUNTIME_ADDRESS"
-	// HelloAckType tells the runtime the daemon accepted its hello. The runtime
-	// must not treat a TCP connect as authenticated until this arrives.
-	HelloAckType = "helloAck"
-	// HelloRejectedType reports why the daemon refused a runtime hello before
-	// closing the connection.
-	HelloRejectedType     = "helloRejected"
+	RuntimeAddressEnv     = "AO_BROWSER_RUNTIME_ADDRESS"
 	helloTimeout          = 5 * time.Second
+	helloReplyTimeout     = time.Second
 	runtimeReconnectGrace = 2 * time.Second
-	// helloFrameTimeout bounds the best-effort handshake frames so a runtime that
-	// stopped reading cannot hold the connection open.
-	helloFrameTimeout    = time.Second
-	maxRuntimeFrameBytes = 8 << 20
+	maxRuntimeFrameBytes  = 8 << 20
 )
 
 // ReadRuntimeToken reads the one-line token handoff used by the desktop app.
@@ -110,7 +102,6 @@ type wireMessage struct {
 	Type      string                 `json:"type"`
 	Version   int                    `json:"version,omitempty"`
 	Token     string                 `json:"token,omitempty"`
-	Reason    string                 `json:"reason,omitempty"`
 	RequestID string                 `json:"requestId,omitempty"`
 	SessionID domain.SessionID       `json:"sessionId,omitempty"`
 	Action    string                 `json:"action,omitempty"`
@@ -258,22 +249,22 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 	_ = conn.SetReadDeadline(time.Now().Add(helloTimeout))
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 64*1024), maxRuntimeFrameBytes)
-	var hello wireMessage
-	if reason := b.helloRejectionReason(scanner, &hello); reason != "" {
-		rejectHello(conn, reason)
+	if !scanner.Scan() {
+		_ = conn.Close()
+		return
+	}
+	// Answer every hello explicitly, so the runtime knows whether it was accepted
+	// instead of guessing from how long the socket stays open (#6466). Older
+	// runtimes ignore both frames.
+	if rejection := helloRejection(scanner.Bytes(), b.token); rejection != nil {
+		_ = writeHelloReply(conn, wireMessage{Type: "hello-rejected", Error: rejection})
 		_ = conn.Close()
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
-
-	// Acknowledge before publishing the connection. The swap below wakes any
-	// pending Execute, and that command must never overtake the acknowledgement:
-	// the desktop app treats itself as connected only once the ack arrives, so a
-	// command arriving first would run against a link it still considers down.
-	// The write is bounded so a runtime that stopped reading cannot stall the
-	// registration; the connection is dropped instead.
-	if err := writeHelloFrame(conn, wireMessage{Type: HelloAckType, Version: ProtocolVersion}); err != nil {
-		b.log.Warn("browser runtime hello ack failed", "err", err)
+	// Nothing else can write to conn until it is published below, so hello-ok is
+	// always the first frame the runtime reads.
+	if err := writeHelloReply(conn, wireMessage{Type: "hello-ok"}); err != nil {
 		_ = conn.Close()
 		return
 	}
@@ -307,46 +298,6 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 		b.resolve(msg)
 	}
 	b.disconnect(conn, scanner.Err())
-}
-
-// helloRejectionReason returns an empty string when hello carries an accepted
-// handshake, and otherwise a stable machine-readable reason for the refusal.
-func (b *Broker) helloRejectionReason(scanner *bufio.Scanner, hello *wireMessage) string {
-	switch {
-	case !scanner.Scan():
-		return "no-hello"
-	case json.Unmarshal(scanner.Bytes(), hello) != nil:
-		return "malformed-hello"
-	case hello.Type != "hello":
-		return "unexpected-frame"
-	case hello.Version != ProtocolVersion:
-		return "unsupported-version"
-	case !validRuntimeToken(b.token, hello.Token):
-		return "invalid-token"
-	}
-	return ""
-}
-
-// rejectHello reports the refusal reason before the connection is closed so the
-// desktop app can log one actionable error instead of an anonymous connect/close
-// loop. A runtime that ignores the frame is closed regardless.
-func rejectHello(conn net.Conn, reason string) {
-	_ = writeHelloFrame(conn, wireMessage{Type: HelloRejectedType, Reason: reason})
-}
-
-// writeHelloFrame writes one bounded handshake frame. It bypasses the shared
-// write gate on purpose: a freshly accepted connection is not reachable from any
-// other writer yet, so there is nothing to serialize against, and a runtime must
-// not be dropped because an unrelated command write is holding the gate.
-func writeHelloFrame(conn net.Conn, msg wireMessage) error {
-	frame, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	frame = append(frame, '\n')
-	_ = conn.SetWriteDeadline(time.Now().Add(helloFrameTimeout))
-	_, err = conn.Write(frame)
-	return err
 }
 
 func (b *Broker) write(ctx context.Context, conn net.Conn, msg wireMessage) error {
@@ -409,6 +360,40 @@ func (b *Broker) write(ctx context.Context, conn net.Conn, msg wireMessage) erro
 	if requested, ok := ctx.Deadline(); ok && !time.Now().Before(requested) {
 		return context.DeadlineExceeded
 	}
+	return err
+}
+
+// helloRejection reports why a runtime's first frame is not an acceptable hello,
+// or nil if it is.
+func helloRejection(frame []byte, token string) *CommandError {
+	var hello wireMessage
+	switch {
+	case json.Unmarshal(frame, &hello) != nil || hello.Type != "hello":
+		return &CommandError{Code: "BROWSER_RUNTIME_BAD_HELLO", Message: "first frame was not a hello"}
+	case hello.Version != ProtocolVersion:
+		return &CommandError{
+			Code:    "BROWSER_RUNTIME_PROTOCOL_MISMATCH",
+			Message: fmt.Sprintf("daemon speaks browser runtime protocol %d, runtime sent %d", ProtocolVersion, hello.Version),
+		}
+	case !validRuntimeToken(token, hello.Token):
+		return &CommandError{
+			Code:    "BROWSER_RUNTIME_TOKEN_REJECTED",
+			Message: "browser runtime token does not match the one this daemon was started with",
+		}
+	}
+	return nil
+}
+
+func writeHelloReply(conn net.Conn, msg wireMessage) error {
+	frame, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(helloReplyTimeout)); err != nil {
+		return err
+	}
+	defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
+	_, err = conn.Write(append(frame, '\n'))
 	return err
 }
 

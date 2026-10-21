@@ -1,24 +1,19 @@
-import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
-import os from "node:os";
-import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./browser-runtime-link";
-import { resolveBrowserRuntimeToken } from "./browser-runtime-token";
 import { HANDSHAKE_CLOSED_BEFORE_ACCEPT } from "../shared/daemon-takeover";
+import type { BrowserRuntimeState } from "./browser-view-host";
+import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./browser-runtime-link";
 
 const handles: BrowserRuntimeLinkHandle[] = [];
 const servers: net.Server[] = [];
 
-const HELLO_ACK = `${JSON.stringify({ type: "helloAck", version: 2 })}\n`;
-
-/** Mirror the daemon: acknowledge an accepted hello so the link counts as authenticated. */
-function acknowledgeHello(socket: net.Socket, message: { type?: string }): void {
-	if (message.type === "hello") socket.write(HELLO_ACK);
-}
+const CONNECTING: BrowserRuntimeState = { connected: false, connecting: true, rejected: false };
+const CONNECTED: BrowserRuntimeState = { connected: true, connecting: false, rejected: false };
+const DISCONNECTED: BrowserRuntimeState = { connected: false, connecting: false, rejected: false };
+const REJECTED: BrowserRuntimeState = { connected: false, connecting: false, rejected: true };
 
 afterEach(async () => {
+	vi.useRealTimers();
 	handles.splice(0).forEach((handle) => handle.dispose());
 	await Promise.all(
 		servers.splice(0).map((server) =>
@@ -29,6 +24,32 @@ afterEach(async () => {
 	);
 });
 
+// Answer the hello the way the daemon's broker accepts a valid token.
+function ackHello(socket: net.Socket) {
+	socket.once("data", () => socket.write(`${JSON.stringify({ type: "hello-ok" })}\n`));
+}
+
+async function listen(server: net.Server) {
+	servers.push(server);
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address() as net.AddressInfo;
+	return { host: address.address, port: address.port };
+}
+
+// Waits on socket I/O without advancing fake timers, so a test controls every
+// backoff step itself. setImmediate and performance.now() are never faked here.
+async function until(check: () => boolean, label: string) {
+	const deadline = performance.now() + 5_000;
+	while (!check()) {
+		if (performance.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+}
+
+function useBackoffTimers() {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+}
+
 describe("browser runtime link", () => {
 	it("handshakes and correlates a command result", async () => {
 		const execute = vi.fn(async () => ({ text: "button Save [ref=e1]" }));
@@ -37,15 +58,14 @@ describe("browser runtime link", () => {
 		const messages: unknown[] = [];
 		const server = net.createServer((socket) => {
 			serverSocket = socket;
+			ackHello(socket);
 			socket.on("data", (chunk) => {
 				inbound += chunk.toString("utf8");
 				for (;;) {
 					const newline = inbound.indexOf("\n");
 					if (newline < 0) return;
-					const message = JSON.parse(inbound.slice(0, newline));
+					messages.push(JSON.parse(inbound.slice(0, newline)));
 					inbound = inbound.slice(newline + 1);
-					messages.push(message);
-					acknowledgeHello(socket, message);
 				}
 			});
 		});
@@ -54,7 +74,7 @@ describe("browser runtime link", () => {
 		const address = server.address() as net.AddressInfo;
 		const handle = connectBrowserRuntime({ host: address.address, port: address.port }, { execute });
 		handles.push(handle);
-		await vi.waitFor(() => expect(handle.connected).toBe(true));
+		await vi.waitFor(() => expect(handle.state.connected).toBe(true));
 		await vi.waitFor(() => expect(messages).toContainEqual({ type: "hello", version: 2 }));
 
 		serverSocket!.write(
@@ -77,37 +97,54 @@ describe("browser runtime link", () => {
 		);
 	});
 
-	it("reports disconnects so the desktop can offer reconnect", async () => {
+	it("reports connecting until hello-ok, and connecting again while an accepted link redials", async () => {
+		useBackoffTimers();
 		let serverSocket: net.Socket | null = null;
-		const states: boolean[] = [];
+		let connections = 0;
+		const states: BrowserRuntimeState[] = [];
+		const address = await listen(
+			net.createServer((socket) => {
+				connections += 1;
+				serverSocket = socket;
+				ackHello(socket);
+			}),
+		);
+		const handle = connectBrowserRuntime(address, { execute: async () => ({}), onStateChange: (state) => states.push(state) });
+		handles.push(handle);
+		await until(() => handle.state.connected, "hello-ok");
+
+		serverSocket!.destroy();
+		await until(() => handle.state.connecting, "the drop");
+		await vi.advanceTimersByTimeAsync(200);
+		await until(() => handle.state.connected && connections === 2, "the redial");
+
+		// The panel never sees a disconnect: the link was always connected or about to be.
+		expect(states).toEqual([CONNECTING, CONNECTED, CONNECTING, CONNECTED]);
+	});
+
+	it("reports a disconnect once the redial after a drop fails too", async () => {
+		useBackoffTimers();
+		let serverSocket: net.Socket | null = null;
+		const states: BrowserRuntimeState[] = [];
 		const server = net.createServer((socket) => {
 			serverSocket = socket;
-			let inbound = "";
-			socket.on("data", (chunk) => {
-				inbound += chunk.toString("utf8");
-				for (;;) {
-					const newline = inbound.indexOf("\n");
-					if (newline < 0) return;
-					const message = JSON.parse(inbound.slice(0, newline));
-					inbound = inbound.slice(newline + 1);
-					acknowledgeHello(socket, message);
-				}
-			});
+			ackHello(socket);
 		});
-		servers.push(server);
-		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-		const address = server.address() as net.AddressInfo;
-		const handle = connectBrowserRuntime(
-			{ host: address.address, port: address.port },
-			{ execute: async () => ({}), onStateChange: (connected) => states.push(connected) },
-		);
+		const address = await listen(server);
+		const handle = connectBrowserRuntime(address, { execute: async () => ({}), onStateChange: (state) => states.push(state) });
 		handles.push(handle);
-		await vi.waitFor(() => expect(handle.connected).toBe(true));
-		await vi.waitFor(() => expect(states).toContain(true));
-		serverSocket!.destroy();
-		await vi.waitFor(() => expect(states).toContain(false));
-		handle.dispose();
-		expect(states).toEqual([true, false]);
+		await until(() => handle.state.connected, "hello-ok");
+
+		servers.splice(servers.indexOf(server), 1);
+		await new Promise<void>((resolve) => {
+			server.close(() => resolve());
+			serverSocket!.destroy();
+		});
+		await until(() => handle.state.connecting, "the drop");
+		await vi.advanceTimersByTimeAsync(200);
+		await until(() => !handle.state.connecting, "the failed redial");
+
+		expect(states).toEqual([CONNECTING, CONNECTED, CONNECTING, DISCONNECTED]);
 	});
 
 	it("returns structured command errors", async () => {
@@ -116,16 +153,12 @@ describe("browser runtime link", () => {
 		const messages: unknown[] = [];
 		const server = net.createServer((socket) => {
 			serverSocket = socket;
+			ackHello(socket);
 			socket.on("data", (chunk) => {
 				inbound += chunk.toString("utf8");
 				const lines = inbound.split("\n");
 				inbound = lines.pop() ?? "";
-				for (const line of lines) {
-					if (!line) continue;
-					const message = JSON.parse(line);
-					messages.push(message);
-					acknowledgeHello(socket, message);
-				}
+				for (const line of lines) if (line) messages.push(JSON.parse(line));
 			});
 		});
 		servers.push(server);
@@ -140,7 +173,7 @@ describe("browser runtime link", () => {
 			},
 		);
 		handles.push(handle);
-		await vi.waitFor(() => expect(handle.connected).toBe(true));
+		await vi.waitFor(() => expect(handle.state.connected).toBe(true));
 		serverSocket!.write(`${JSON.stringify({ type: "command", requestId: "r2", sessionId: "s1", action: "click" })}\n`);
 		await vi.waitFor(() =>
 			expect(messages).toContainEqual({
@@ -157,24 +190,14 @@ describe("browser runtime link", () => {
 		const execute = vi.fn(async () => ({}));
 		const server = net.createServer((socket) => {
 			serverSocket = socket;
-			let inbound = "";
-			socket.on("data", (chunk) => {
-				inbound += chunk.toString("utf8");
-				for (;;) {
-					const newline = inbound.indexOf("\n");
-					if (newline < 0) return;
-					const message = JSON.parse(inbound.slice(0, newline));
-					inbound = inbound.slice(newline + 1);
-					acknowledgeHello(socket, message);
-				}
-			});
+			ackHello(socket);
 		});
 		servers.push(server);
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const address = server.address() as net.AddressInfo;
 		const handle = connectBrowserRuntime({ host: address.address, port: address.port }, { execute });
 		handles.push(handle);
-		await vi.waitFor(() => expect(handle.connected).toBe(true));
+		await vi.waitFor(() => expect(handle.state.connected).toBe(true));
 
 		const frame = Buffer.from(
 			`${JSON.stringify({
@@ -205,17 +228,13 @@ describe("browser runtime link", () => {
 		const executed: string[] = [];
 		const server = net.createServer((socket) => {
 			serverSocket = socket;
+			ackHello(socket);
 			let inbound = "";
 			socket.on("data", (chunk) => {
 				inbound += chunk.toString("utf8");
 				const lines = inbound.split("\n");
 				inbound = lines.pop() ?? "";
-				for (const line of lines) {
-					if (!line) continue;
-					const message = JSON.parse(line);
-					messages.push(message);
-					acknowledgeHello(socket, message);
-				}
+				for (const line of lines) if (line) messages.push(JSON.parse(line));
 			});
 		});
 		servers.push(server);
@@ -236,7 +255,7 @@ describe("browser runtime link", () => {
 			},
 		);
 		handles.push(handle);
-		await vi.waitFor(() => expect(handle.connected).toBe(true));
+		await vi.waitFor(() => expect(handle.state.connected).toBe(true));
 
 		serverSocket!.write(
 			[
@@ -270,8 +289,8 @@ describe("browser runtime link", () => {
 					(message.error as { code?: string })?.code === "BROWSER_COMMAND_CANCELED",
 			),
 		).toHaveLength(1);
-		await vi.waitFor(() => expect(handle.connected).toBe(false));
-		await vi.waitFor(() => expect(handle.connected).toBe(true));
+		await vi.waitFor(() => expect(handle.state.connected).toBe(false));
+		await vi.waitFor(() => expect(handle.state.connected).toBe(true));
 		expect(executed).not.toContain("queued");
 	});
 
@@ -281,17 +300,13 @@ describe("browser runtime link", () => {
 		const executed: string[] = [];
 		const server = net.createServer((socket) => {
 			serverSocket = socket;
+			ackHello(socket);
 			let inbound = "";
 			socket.on("data", (chunk) => {
 				inbound += chunk.toString("utf8");
 				const lines = inbound.split("\n");
 				inbound = lines.pop() ?? "";
-				for (const line of lines) {
-					if (!line) continue;
-					const message = JSON.parse(line);
-					messages.push(message);
-					acknowledgeHello(socket, message);
-				}
+				for (const line of lines) if (line) messages.push(JSON.parse(line));
 			});
 		});
 		servers.push(server);
@@ -312,7 +327,7 @@ describe("browser runtime link", () => {
 			},
 		);
 		handles.push(handle);
-		await vi.waitFor(() => expect(handle.connected).toBe(true));
+		await vi.waitFor(() => expect(handle.state.connected).toBe(true));
 
 		serverSocket!.write(
 			[
@@ -357,16 +372,12 @@ describe("browser runtime link", () => {
 		});
 		const server = net.createServer((socket) => {
 			serverSocket = socket;
+			ackHello(socket);
 			socket.on("data", (chunk) => {
 				inbound += chunk.toString("utf8");
 				const lines = inbound.split("\n");
 				inbound = lines.pop() ?? "";
-				for (const line of lines) {
-					if (!line) continue;
-					const message = JSON.parse(line);
-					messages.push(message);
-					acknowledgeHello(socket, message);
-				}
+				for (const line of lines) if (line) messages.push(JSON.parse(line));
 			});
 		});
 		servers.push(server);
@@ -374,7 +385,7 @@ describe("browser runtime link", () => {
 		const address = server.address() as net.AddressInfo;
 		const handle = connectBrowserRuntime({ host: address.address, port: address.port }, { execute });
 		handles.push(handle);
-		await vi.waitFor(() => expect(handle.connected).toBe(true));
+		await vi.waitFor(() => expect(handle.state.connected).toBe(true));
 
 		serverSocket!.write(`${JSON.stringify({ type: "command", requestId: "r3", sessionId: "s1", action: "wait" })}\n`);
 		await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
@@ -389,176 +400,171 @@ describe("browser runtime link", () => {
 		);
 	});
 
-	it("backs off instead of hot-looping when the daemon rejects the handshake", async () => {
-		let attempts = 0;
+	it("stops on hello-rejected, reports it once, and never redials with the refused token (#6466)", async () => {
+		useBackoffTimers();
+		let connections = 0;
+		const address = await listen(
+			net.createServer((socket) => {
+				connections += 1;
+				// The broker's answer to a stale token: an explicit refusal, then close.
+				socket.once("data", () => {
+					socket.end(
+						`${JSON.stringify({
+							type: "hello-rejected",
+							error: { code: "BROWSER_RUNTIME_TOKEN_REJECTED", message: "token mismatch" },
+						})}\n`,
+					);
+				});
+			}),
+		);
+		const states: BrowserRuntimeState[] = [];
 		const logs: string[] = [];
-		const rejected: string[] = [];
-		const server = net.createServer((socket) => {
-			attempts += 1;
-			socket.on("data", (chunk) => {
-				for (const line of chunk.toString("utf8").split("\n")) {
-					if (!line.trim()) continue;
-					const message = JSON.parse(line) as { type?: string };
-					if (message.type !== "hello") continue;
-					socket.end(`${JSON.stringify({ type: "helloRejected", reason: "invalid-token" })}\n`);
-				}
-			});
+		const handle = connectBrowserRuntime(address, {
+			execute: async () => ({}),
+			token: "stale-token",
+			log: (message) => logs.push(message),
+			onStateChange: (state) => states.push(state),
 		});
-		servers.push(server);
-		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-		const address = server.address() as net.AddressInfo;
-		const handle = connectBrowserRuntime(
-			{ host: address.address, port: address.port },
-			{
-				execute: async () => ({}),
-				log: (message) => logs.push(message),
-				onHandshakeRejected: (reason) => rejected.push(reason),
-			},
-		);
 		handles.push(handle);
+		await until(() => handle.state.rejected, "hello-rejected");
+		await vi.advanceTimersByTimeAsync(60_000);
+		await new Promise((resolve) => setImmediate(resolve));
 
-		await vi.waitFor(() => expect(attempts).toBe(1));
-		await new Promise((resolve) => setTimeout(resolve, 1_500));
-
-		// A rejected handshake is a hard failure: back off at the cap instead of
-		// redialing every 200ms, and never claim the link is connected.
-		expect(attempts).toBeLessThanOrEqual(2);
-		expect(handle.connected).toBe(false);
-		expect(logs).toContain("browser-runtime-link: daemon rejected the runtime handshake: invalid-token");
-		expect(logs.filter((line) => line === "browser-runtime-link: connected")).toEqual([]);
-		// The reason reaches the caller on every refusal so startup recovery can
-		// react even when the log line is suppressed as a repeat.
-		expect(rejected).not.toEqual([]);
-		expect(new Set(rejected)).toEqual(new Set(["invalid-token"]));
+		// Before the fix every refused attempt reported connected and redialed every 200 ms.
+		expect(connections).toBe(1);
+		// The daemon's reason reaches the Browser panel, which names a cause only for
+		// a code that identifies one.
+		expect(states).toEqual([CONNECTING, { ...REJECTED, rejectionCode: "BROWSER_RUNTIME_TOKEN_REJECTED" }]);
+		expect(logs.filter((line) => line.includes("connected"))).toEqual([]);
+		expect(logs.filter((line) => line.includes("refused"))).toEqual([
+			expect.stringContaining("BROWSER_RUNTIME_TOKEN_REJECTED: token mismatch"),
+		]);
 	});
 
-	it("authenticates a link held open by a daemon that predates the hello ack", async () => {
-		const server = net.createServer((socket) => {
-			socket.on("data", () => undefined);
+	it("backs off without claiming a refusal when the link closes before the daemon answers", async () => {
+		useBackoffTimers();
+		let connections = 0;
+		// A transport failure mid-handshake, or an older daemon closing on a hello it refused.
+		const address = await listen(
+			net.createServer((socket) => {
+				connections += 1;
+				socket.once("data", () => socket.destroy());
+			}),
+		);
+		const states: BrowserRuntimeState[] = [];
+		const logs: string[] = [];
+		const handle = connectBrowserRuntime(address, {
+			execute: async () => ({}),
+			log: (message) => logs.push(message),
+			onStateChange: (state) => states.push(state),
 		});
-		servers.push(server);
-		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-		const address = server.address() as net.AddressInfo;
-		const handle = connectBrowserRuntime({ host: address.address, port: address.port }, { execute: async () => ({}) });
 		handles.push(handle);
+		// A close has been handled once its redial is scheduled.
+		await until(() => connections === 1 && vi.getTimerCount() === 1, "the first close");
 
-		await vi.waitFor(() => expect(handle.connected).toBe(true), { timeout: 5_000 });
+		// Each close doubles the wait to the 2 s cap; nothing resets it.
+		for (const [delay, attempt] of [[200, 2], [400, 3], [800, 4], [1_600, 5], [2_000, 6], [2_000, 7]] as const) {
+			await vi.advanceTimersByTimeAsync(delay - 1);
+			expect(connections).toBe(attempt - 1);
+			await vi.advanceTimersByTimeAsync(1);
+			await until(() => connections === attempt && vi.getTimerCount() === 1, `attempt ${attempt}`);
+		}
+		expect(states).toEqual([CONNECTING, DISCONNECTED]);
+		expect(logs.filter((line) => line.includes("closed before the daemon answered"))).toHaveLength(1);
 	});
 
-	// The reproduced restart path: a kept-alive daemon outlives the Electron
-	// process that spawned it, and the next launch adopts it. That daemon holds
-	// the token from the previous launch, so a per-launch token could never
-	// authenticate again and the browser panel stayed dead for the whole app
-	// lifetime. The token is derived from the data dir, so it must survive.
-	// A daemon predating helloRejected explains a refusal by hanging up. That is
-	// the adoption path for a surviving daemon from before this change: it holds
-	// a token we cannot derive, so without reporting the silent close the app
-	// would retry forever and never recover.
-	it("reports a daemon that hangs up before accepting the hello", async () => {
-		let attempts = 0;
-		const rejected: string[] = [];
-		const server = net.createServer((socket) => {
-			attempts += 1;
-			socket.on("data", () => socket.destroy());
-		});
-		servers.push(server);
-		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-		const address = server.address() as net.AddressInfo;
-		const handle = connectBrowserRuntime(
-			{ host: address.address, port: address.port },
-			{ execute: async () => ({}), onHandshakeRejected: (reason) => rejected.push(reason) },
+	it("reports an unrecoverable reason so an adopted daemon can be replaced", async () => {
+		useBackoffTimers();
+		const reasons: string[] = [];
+		const address = await listen(
+			net.createServer((socket) => {
+				socket.once("data", () => {
+					socket.end(
+						`${JSON.stringify({
+							type: "hello-rejected",
+							error: { code: "BROWSER_RUNTIME_TOKEN_REJECTED", message: "token mismatch" },
+						})}\n`,
+					);
+				});
+			}),
 		);
+		const handle = connectBrowserRuntime(address, {
+			execute: async () => ({}),
+			token: "stale-token",
+			onHandshakeRejected: (reason) => reasons.push(reason),
+		});
 		handles.push(handle);
+		await until(() => handle.state.rejected, "hello-rejected");
 
-		await vi.waitFor(() => expect(rejected).toContain(HANDSHAKE_CLOSED_BEFORE_ACCEPT));
-		expect(handle.connected).toBe(false);
-		expect(rejected.every((reason) => reason === HANDSHAKE_CLOSED_BEFORE_ACCEPT)).toBe(true);
-		// Backing off still applies to an unexplained hang-up.
-		await new Promise((resolve) => setTimeout(resolve, 1_500));
-		expect(attempts).toBeLessThanOrEqual(2);
+		// browserRuntimeRecoveryDecision retires a daemon only for this reason; a
+		// protocol mismatch keeps the broker's code and waits for an upgrade.
+		expect(reasons).toEqual(["invalid-token"]);
 	});
 
-	it("does not report a refusal for a link that had already connected", async () => {
-		const rejected: string[] = [];
-		const server = net.createServer((socket) => {
-			socket.on("data", () => acknowledgeHello(socket, { type: "hello" }));
-		});
-		servers.push(server);
-		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-		const address = server.address() as net.AddressInfo;
-		const handle = connectBrowserRuntime(
-			{ host: address.address, port: address.port },
-			{ execute: async () => ({}), onHandshakeRejected: (reason) => rejected.push(reason) },
+	it("reports a link the daemon dropped before accepting it, but not an ordinary disconnect", async () => {
+		useBackoffTimers();
+		const silentReasons: string[] = [];
+		// How a daemon predating hello-rejected refuses a stale token: it closes.
+		const silent = await listen(
+			net.createServer((socket) => {
+				socket.once("data", () => socket.destroy());
+			}),
 		);
-		handles.push(handle);
-		await vi.waitFor(() => expect(handle.connected).toBe(true));
+		const silentHandle = connectBrowserRuntime(silent, {
+			execute: async () => ({}),
+			onHandshakeRejected: (reason) => silentReasons.push(reason),
+		});
+		handles.push(silentHandle);
+		await until(() => silentReasons.length > 0, "the silent refusal");
+		expect(silentReasons).toEqual([HANDSHAKE_CLOSED_BEFORE_ACCEPT]);
 
-		// A runtime that later disconnects is not a handshake refusal; startup
-		// recovery must not retire the daemon for an ordinary drop.
-		handle.dispose();
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		expect(rejected).toEqual([]);
+		const acceptedReasons: string[] = [];
+		let serverSocket: net.Socket | null = null;
+		const accepted = await listen(
+			net.createServer((socket) => {
+				serverSocket = socket;
+				ackHello(socket);
+			}),
+		);
+		const acceptedHandle = connectBrowserRuntime(accepted, {
+			execute: async () => ({}),
+			onHandshakeRejected: (reason) => acceptedReasons.push(reason),
+		});
+		handles.push(acceptedHandle);
+		await until(() => acceptedHandle.state.connected, "the accepted handshake");
+		serverSocket!.destroy();
+		await until(() => acceptedHandle.state.connecting, "the redial after the drop");
+
+		// A daemon restart after a working link must not be retired as a refusal.
+		expect(acceptedReasons).toEqual([]);
 	});
 
-	it("authenticates a restarted app against a daemon that survived it", async () => {
-		const dataDir = mkdtempSync(path.join(os.tmpdir(), "ao-runtime-restart-"));
-		// Stands in for the broker: authenticate against the token the daemon was
-		// handed at spawn and hold the connection open across the "restart".
-		const daemonToken = resolveBrowserRuntimeToken(dataDir);
-		const rejections: string[] = [];
-		const server = net.createServer((socket) => {
-			let inbound = "";
-			socket.on("data", (chunk) => {
-				inbound += chunk.toString("utf8");
-				for (;;) {
-					const newline = inbound.indexOf("\n");
-					if (newline < 0) return;
-					const message = JSON.parse(inbound.slice(0, newline)) as { type?: string; token?: string };
-					inbound = inbound.slice(newline + 1);
-					if (message.type !== "hello") continue;
-					if (message.token !== daemonToken) {
-						rejections.push(String(message.token));
-						socket.end(`${JSON.stringify({ type: "helloRejected", reason: "invalid-token" })}\n`);
-						continue;
-					}
-					socket.write(HELLO_ACK);
-				}
-			});
-		});
-		servers.push(server);
-		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-		const address = server.address() as net.AddressInfo;
+	it("does not report a refusal while the daemon is unreachable", async () => {
+		const closed = net.createServer();
+		const address = await listen(closed);
+		servers.splice(servers.indexOf(closed), 1);
+		await new Promise<void>((resolve) => closed.close(() => resolve()));
+		const states: BrowserRuntimeState[] = [];
+		const handle = connectBrowserRuntime(address, { execute: async () => ({}), onStateChange: (state) => states.push(state) });
+		handles.push(handle);
 
-		const firstLaunch = connectBrowserRuntime(
-			{ host: address.address, port: address.port },
-			{ execute: async () => ({}), token: resolveBrowserRuntimeToken(dataDir) },
+		await vi.waitFor(() => expect(states).toEqual([CONNECTING, DISCONNECTED]));
+		expect(handle.state.rejected).toBe(false);
+	});
+
+	it("accepts an older daemon, which never sends hello-ok, on its first command", async () => {
+		const execute = vi.fn(async () => ({}));
+		const address = await listen(
+			net.createServer((socket) => {
+				socket.once("data", () =>
+					socket.write(`${JSON.stringify({ type: "command", requestId: "r1", sessionId: "s1", action: "snapshot" })}\n`),
+				);
+			}),
 		);
-		handles.push(firstLaunch);
-		await vi.waitFor(() => expect(firstLaunch.connected).toBe(true));
+		const handle = connectBrowserRuntime(address, { execute });
+		handles.push(handle);
 
-		// The app quits; the daemon (and the token it holds) survives.
-		firstLaunch.dispose();
-		handles.splice(handles.indexOf(firstLaunch), 1);
-
-		// A fresh launch derives its token from the same data dir and adopts it.
-		const secondLaunch = connectBrowserRuntime(
-			{ host: address.address, port: address.port },
-			{ execute: async () => ({}), token: resolveBrowserRuntimeToken(dataDir) },
-		);
-		handles.push(secondLaunch);
-
-		await vi.waitFor(() => expect(secondLaunch.connected).toBe(true));
-		expect(rejections).toEqual([]);
-
-		// A launch on a different data dir still cannot claim this daemon.
-		const foreignLaunch = connectBrowserRuntime(
-			{ host: address.address, port: address.port },
-			{ execute: async () => ({}), token: randomBytes(32).toString("base64url") },
-		);
-		handles.push(foreignLaunch);
-		await vi.waitFor(() => expect(rejections).toHaveLength(1));
-		expect(foreignLaunch.connected).toBe(false);
-
-		rmSync(dataDir, { recursive: true, force: true });
+		await vi.waitFor(() => expect(handle.state).toEqual(CONNECTED));
+		await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
 	});
 });
