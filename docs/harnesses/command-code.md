@@ -113,6 +113,11 @@ The session home mirrors the user's `auth.json`, `config.json`, `providers.json`
 `settings.json` and `mcp.json` so the session keeps its login, preferences,
 permission rules, hooks and MCP servers; Command Code has no environment variable
 for its OAuth token, so the token is copied at `0600` rather than referenced.
+The user's own `~/.commandcode/AGENTS.md`, when present, is composed into the
+session's memory ahead of AO's instructions instead of being replaced: the
+redirect would otherwise hide the global instructions the user already relies
+on. The original is only read, and the session file is rebuilt from it on every
+launch, so a restore neither loses the user's memory nor duplicates it.
 The user's mods directory (`~/.commandcode/mods`, including npm-installed
 packages under `.store`) is mirrored recursively and refreshed on every launch,
 because Command Code resolves mods from `HOME` -- without the copy every mod
@@ -120,22 +125,30 @@ the user has installed would vanish behind the redirect. `~/`-relative skill
 and mod paths and `$HOME` references in hook commands are rebased to the real
 home in the mirrored copy, since they would otherwise resolve inside the
 isolated home where those assets do not exist; absolute paths, single-quoting
-and permission rule text are left untouched. All AO-owned state stays under
-`~/.ao`, and nothing is written to the project's `AGENTS.md` or
-`.commandcode/AGENTS.md`.
+and permission rule text are left untouched. When the real home contains
+whitespace, only the substituted home prefix is quoted and the rest of the path
+stays outside the quotes, so a wildcard such as
+`~/.commandcode/hooks/*.json` still expands. All AO-owned state stays under
+`~/.ao`, and nothing outside it is written: the repository's `AGENTS.md` and the
+user's real `.commandcode/AGENTS.md` are only read.
 
 The redirected `HOME` is inherited by the agent's shell children, so the real
-developer's tooling is kept reachable rather than moved: `GIT_CONFIG_GLOBAL`
-aims git at the real `~/.gitconfig` (git reads the XDG config file and
-`~/.gitconfig` side by side, so this applies even when XDG is set, and the real
-`~/.config/git` is mirrored when it is not), `GH_CONFIG_DIR` points at the real
-gh config whenever no `$XDG_CONFIG_HOME` redirect covers it, and `~/.ssh` is
-linked through so git-over-SSH keeps working -- each only when its target
-exists, and the link is skipped where the platform denies symlink privilege.
-The decision about what is already configured is made against the environment
-the child actually starts from, so a pointer configured per project or simply
-inherited by the daemon is never overwritten by our defaults. No secrets move:
-keys stay live-linked so rotation is never stale.
+developer's tooling is kept reachable rather than moved. Git stays on its native
+discovery: the session home's `~/.gitconfig` includes the real `~/.gitconfig`
+(only the `[include]` is written; nothing is copied), so a user who splits
+identity or credentials between `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config`
+keeps both, in the same order git resolves them outside a session. When
+`$XDG_CONFIG_HOME` is unset, so that path would resolve inside the session home,
+the real `~/.config/git` is mirrored there instead. `GIT_CONFIG_GLOBAL` is
+deliberately not set: it would replace both native global files and hide the XDG
+half. `GH_CONFIG_DIR` points at the real gh config whenever no
+`$XDG_CONFIG_HOME` redirect covers it, and `~/.ssh` is linked through so
+git-over-SSH keeps working -- each only when its target exists, and the link is
+skipped where the platform denies symlink privilege. The decision about what is
+already configured is made against the environment the child actually starts
+from, so a pointer configured per project or simply inherited by the daemon is
+never overwritten by our defaults. No secrets move: keys stay live-linked so
+rotation is never stale.
 
 The home is retained like the prompts directory: it is never removed on spawn,
 restore, or teardown, because every one of those paths can precede a retry that
