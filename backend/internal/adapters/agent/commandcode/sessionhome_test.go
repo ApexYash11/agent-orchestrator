@@ -799,52 +799,102 @@ func TestPrepareSessionHomePreservesBothGlobalGitSources(t *testing.T) {
 }
 
 // The global-scope mark lasts only as long as it is needed. Once the XDG chain
-// stops depending on HOME, a restore must drop it so the child goes back to
-// native discovery rather than staying pinned to the session file.
+// stops depending on HOME, a restore must drop both the mark and AO's include
+// block: a leftover block would keep reading the old copy next to the live XDG
+// file, duplicating multivalued settings and pinning values the user has since
+// changed. The block is dropped whether or not a real ~/.gitconfig is left to
+// fall back on, and the session's own settings survive.
 func TestPrepareSessionHomeDropsGitGlobalScopeWhenNoLongerNeeded(t *testing.T) {
-	realHome := isolatedHome(t)
-	xdg := t.TempDir()
-	write := func(path, contents string) {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(filepath.Join(realHome, ".gitconfig"), "[user]\n\tname = Real Name\n")
-	second := filepath.Join(xdg, "git", "config")
-	write(second, "[user]\n\temail = split@example.com\n[include]\n\tpath = ~/.gitconfig-work\n")
-	write(filepath.Join(realHome, ".gitconfig-work"), "[core]\n\tpager = cat\n")
-	t.Setenv("XDG_CONFIG_HOME", xdg)
-	t.Setenv("APPDATA", t.TempDir())
+	for _, test := range []struct {
+		name   string
+		global bool
+	}{
+		{name: "real .gitconfig", global: true},
+		{name: "xdg only", global: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			realHome := isolatedHome(t)
+			xdg := t.TempDir()
+			write := func(path, contents string) {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.global {
+				write(filepath.Join(realHome, ".gitconfig"), "[user]\n\tname = Real Name\n")
+			}
+			second := filepath.Join(xdg, "git", "config")
+			write(second, "[user]\n\temail = split@example.com\n"+
+				"[http]\n\textraHeader = Authorization: Bearer token\n"+
+				"[include]\n\tpath = ~/.gitconfig-xdg\n")
+			write(filepath.Join(realHome, ".gitconfig-xdg"), "[commit]\n\ttemplate = xdg-template\n")
+			t.Setenv("XDG_CONFIG_HOME", xdg)
+			t.Setenv("APPDATA", t.TempDir())
 
-	sessionID := domain.SessionID("mer-1")
-	dataDir := t.TempDir()
-	if _, err := PrepareSessionHome(dataDir, sessionID, "worker role"); err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
-	if got := SessionProcessEnv(dataDir, sessionID, nil)["GIT_CONFIG_GLOBAL"]; got == "" {
-		t.Fatalf("GIT_CONFIG_GLOBAL empty, want the global scope while the XDG chain is home-relative")
-	}
+			sessionID := domain.SessionID("mer-1")
+			dataDir := t.TempDir()
+			home, err := PrepareSessionHome(dataDir, sessionID, "worker role")
+			if err != nil {
+				t.Fatalf("PrepareSessionHome: %v", err)
+			}
+			sessionConfig := filepath.Join(home, ".gitconfig")
+			env := SessionProcessEnv(dataDir, sessionID, nil)
+			env["XDG_CONFIG_HOME"] = xdg
+			if got := env["GIT_CONFIG_GLOBAL"]; got == "" {
+				t.Fatalf("GIT_CONFIG_GLOBAL empty, want the global scope while the XDG chain is home-relative")
+			}
+			if headers := effectiveGitConfigAll(t, env, t.TempDir(), "http.extraHeader"); len(headers) != 1 {
+				t.Fatalf("http.extraHeader = %q before restore, want one entry", headers)
+			}
 
-	// The user folds the include into the file itself, so nothing needs anchoring.
-	write(second, "[user]\n\temail = split@example.com\n[core]\n\tpager = cat\n")
-	home, err := PrepareSessionHome(dataDir, sessionID, "worker role")
-	if err != nil {
-		t.Fatalf("restore: %v", err)
-	}
-	env := SessionProcessEnv(dataDir, sessionID, nil)
-	if got := env["GIT_CONFIG_GLOBAL"]; got != "" {
-		t.Fatalf("GIT_CONFIG_GLOBAL = %q after restore, want native discovery", got)
-	}
-	env["XDG_CONFIG_HOME"] = xdg
-	if gitConfigGlobalScope(home) {
-		t.Fatalf("global-scope mark survived a restore that no longer needs it")
-	}
-	values := effectiveGitConfigEnv(t, env, t.TempDir())
-	if values["core.pager"] != "cat" || values["user.email"] != "split@example.com" {
-		t.Fatalf("values = %v, want the XDG file read natively again", values)
+			// The session writes a setting of its own, then the user folds the
+			// include into the XDG file so nothing needs anchoring any more.
+			existing, err := os.ReadFile(sessionConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionOwned := append(existing, []byte("[user]\n\tname = Session Name\n")...)
+			if err := os.WriteFile(sessionConfig, sessionOwned, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			write(second, "[user]\n\temail = split@example.com\n[http]\n\textraHeader = Authorization: Bearer token\n")
+
+			home, err = PrepareSessionHome(dataDir, sessionID, "worker role")
+			if err != nil {
+				t.Fatalf("restore: %v", err)
+			}
+			if gitConfigGlobalScope(home) {
+				t.Fatalf("global-scope mark survived a restore that no longer needs it")
+			}
+			env = SessionProcessEnv(dataDir, sessionID, nil)
+			env["XDG_CONFIG_HOME"] = xdg
+			if got := env["GIT_CONFIG_GLOBAL"]; got != "" {
+				t.Fatalf("GIT_CONFIG_GLOBAL = %q after restore, want native discovery", got)
+			}
+			contents, err := os.ReadFile(sessionConfig)
+			if err != nil {
+				t.Fatalf("read session .gitconfig: %v", err)
+			}
+			values := effectiveGitConfigEnv(t, env, t.TempDir())
+			if values["user.email"] != "split@example.com" || values["user.name"] != "Session Name" {
+				t.Fatalf("values = %v, want the live XDG file and the session's own setting", values)
+			}
+			if headers := effectiveGitConfigAll(t, env, t.TempDir(), "http.extraHeader"); len(headers) != 1 {
+				t.Fatalf("http.extraHeader = %q after restore, want one entry", headers)
+			}
+			if _, ok := values["commit.template"]; ok {
+				t.Fatalf("values = %v, want the stale copy no longer read", values)
+			}
+			if strings.Contains(string(contents), sessionGitConfigCopiesDir) {
+				t.Fatalf("session .gitconfig still includes the removed XDG copy: %q", contents)
+			}
+			if !strings.Contains(string(contents), "Session Name") {
+				t.Fatalf("session .gitconfig = %q, want the session's own setting preserved", contents)
+			}
+		})
 	}
 }
 

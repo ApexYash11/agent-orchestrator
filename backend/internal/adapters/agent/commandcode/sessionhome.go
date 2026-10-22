@@ -419,7 +419,9 @@ const (
 //
 // An existing session .gitconfig keeps its content and precedence: AO's block is
 // only replaced in place, or placed ahead of it when the session wrote its own
-// file first, so a value the session set later still wins.
+// file first, so a value the session set later still wins. When nothing needs
+// including any more, the block is removed and the session returns to native
+// discovery, with the session's own settings left in place.
 func preserveGitConfiguration(realHome, sessionHome string) {
 	rewriter := &gitConfigRewriter{
 		realHome:    realHome,
@@ -465,6 +467,12 @@ func preserveGitConfiguration(realHome, sessionHome string) {
 	path := filepath.Join(sessionHome, ".gitconfig")
 	marker := filepath.Join(sessionHome, sessionGitConfigCopiesDir, gitConfigGlobalScopeMarker)
 	if len(includes) == 0 {
+		// Nothing needs including any more, so git resolves both native files
+		// itself. Drop AO's block first: leaving it would keep reading the old
+		// copy next to the live XDG file, duplicating multivalued settings and
+		// pinning values the user has since changed. Anything the session wrote
+		// itself stays.
+		dropGitConfigIncludeBlock(path)
 		_ = os.Remove(marker)
 		return
 	}
@@ -517,6 +525,26 @@ func replaceGitConfigIncludeBlock(existing, block string) string {
 		return block
 	}
 	return block + "\n" + existing
+}
+
+// dropGitConfigIncludeBlock removes AO's include block from the session
+// .gitconfig, which is what returns a session to native discovery, while keeping
+// anything the session wrote there itself. A file that held nothing else is
+// removed, since git would find nothing in it.
+func dropGitConfigIncludeBlock(path string) {
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	updated := replaceGitConfigIncludeBlock(string(existing), "")
+	if updated == string(existing) {
+		return
+	}
+	if strings.TrimSpace(updated) == "" {
+		_ = os.Remove(path)
+		return
+	}
+	_ = writePrivateFile(path, []byte(updated))
 }
 
 // gitConfigRewriter rebases home-relative include paths in real git config

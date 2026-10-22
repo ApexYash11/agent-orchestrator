@@ -162,9 +162,11 @@ copy, applying the whole file twice; most settings tolerate that, but multivalue
 ones do not (`http.extraHeader` would send two `Authorization` headers). For that
 session only, the session home's `.gitconfig` -- which already includes both
 sources in native order -- becomes the child's global file, and the mark is
-dropped again on the first launch whose XDG chain needs no anchoring. A user who
-sets `GIT_CONFIG_GLOBAL` themselves keeps their choice, and git then reads only
-their file, so nothing is duplicated either.
+dropped again on the first launch whose XDG chain needs no anchoring. That launch
+also removes AO's include block, keeping whatever the session wrote itself, so
+the session is back on native discovery rather than left reading a stale copy. A
+user who sets `GIT_CONFIG_GLOBAL` themselves keeps their choice, and git then
+reads only their file, so nothing is duplicated either.
 
 `GH_CONFIG_DIR` points at the real gh config whenever no
 `$XDG_CONFIG_HOME` redirect covers it, and `~/.ssh` is linked through so
