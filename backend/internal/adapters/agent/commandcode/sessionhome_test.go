@@ -803,14 +803,17 @@ func TestPrepareSessionHomePreservesBothGlobalGitSources(t *testing.T) {
 // block: a leftover block would keep reading the old copy next to the live XDG
 // file, duplicating multivalued settings and pinning values the user has since
 // changed. The block is dropped whether or not a real ~/.gitconfig is left to
-// fall back on, and the session's own settings survive.
+// fall back on, the session's own settings survive, and a session file that held
+// nothing else is removed.
 func TestPrepareSessionHomeDropsGitGlobalScopeWhenNoLongerNeeded(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		global bool
+		name           string
+		global         bool
+		sessionSetting bool
 	}{
-		{name: "real .gitconfig", global: true},
-		{name: "xdg only", global: false},
+		{name: "real .gitconfig", global: true, sessionSetting: true},
+		{name: "xdg only", sessionSetting: true},
+		{name: "xdg only, untouched session file"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			realHome := isolatedHome(t)
@@ -852,13 +855,15 @@ func TestPrepareSessionHomeDropsGitGlobalScopeWhenNoLongerNeeded(t *testing.T) {
 
 			// The session writes a setting of its own, then the user folds the
 			// include into the XDG file so nothing needs anchoring any more.
-			existing, err := os.ReadFile(sessionConfig)
-			if err != nil {
-				t.Fatal(err)
-			}
-			sessionOwned := append(existing, []byte("[user]\n\tname = Session Name\n")...)
-			if err := os.WriteFile(sessionConfig, sessionOwned, 0o600); err != nil {
-				t.Fatal(err)
+			if test.sessionSetting {
+				existing, err := os.ReadFile(sessionConfig)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sessionOwned := append(existing, []byte("[user]\n\tname = Session Name\n")...)
+				if err := os.WriteFile(sessionConfig, sessionOwned, 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			write(second, "[user]\n\temail = split@example.com\n[http]\n\textraHeader = Authorization: Bearer token\n")
 
@@ -874,19 +879,28 @@ func TestPrepareSessionHomeDropsGitGlobalScopeWhenNoLongerNeeded(t *testing.T) {
 			if got := env["GIT_CONFIG_GLOBAL"]; got != "" {
 				t.Fatalf("GIT_CONFIG_GLOBAL = %q after restore, want native discovery", got)
 			}
-			contents, err := os.ReadFile(sessionConfig)
-			if err != nil {
-				t.Fatalf("read session .gitconfig: %v", err)
-			}
 			values := effectiveGitConfigEnv(t, env, t.TempDir())
-			if values["user.email"] != "split@example.com" || values["user.name"] != "Session Name" {
-				t.Fatalf("values = %v, want the live XDG file and the session's own setting", values)
+			if values["user.email"] != "split@example.com" {
+				t.Fatalf("values = %v, want the live XDG file read natively again", values)
+			}
+			if test.sessionSetting && values["user.name"] != "Session Name" {
+				t.Fatalf("values = %v, want the session's own setting preserved", values)
 			}
 			if headers := effectiveGitConfigAll(t, env, t.TempDir(), "http.extraHeader"); len(headers) != 1 {
 				t.Fatalf("http.extraHeader = %q after restore, want one entry", headers)
 			}
 			if _, ok := values["commit.template"]; ok {
 				t.Fatalf("values = %v, want the stale copy no longer read", values)
+			}
+			if !test.sessionSetting {
+				if _, err := os.Stat(sessionConfig); !os.IsNotExist(err) {
+					t.Fatalf("session .gitconfig = %v, want it removed when it held only AO's block", err)
+				}
+				return
+			}
+			contents, err := os.ReadFile(sessionConfig)
+			if err != nil {
+				t.Fatalf("read session .gitconfig: %v", err)
 			}
 			if strings.Contains(string(contents), sessionGitConfigCopiesDir) {
 				t.Fatalf("session .gitconfig still includes the removed XDG copy: %q", contents)
