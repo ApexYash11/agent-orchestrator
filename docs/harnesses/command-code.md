@@ -142,14 +142,19 @@ inside the session home, the real `~/.config/git` is mirrored there instead.
 `GIT_CONFIG_GLOBAL` is deliberately not set: it would replace both native global
 files and hide the XDG half.
 
-Git expands a `~/` include path against `HOME`, not against the file containing
-the directive, so a layered config (`~/.gitconfig` chaining to
-`~/.gitconfig-work`, optionally further) would lose everything it references.
-Those files are rewritten into a session-owned copy under
-`~/.ao-gitconfig/` with every include anchored to its real absolute path, and the
-copies are regenerated on each launch; the originals are only read. A config
-whose includes are already absolute or relative needs no rewrite and is included
-in place.
+Git expands a `~/` include path and a `gitdir:~/` condition against `HOME`, not
+against the file containing the directive, and resolves `./` bases against that
+file's directory. A layered config (`~/.gitconfig` chaining to
+`~/.gitconfig-work`, optionally further) would therefore lose everything it
+references, and a relocated conditional include would silently stop matching.
+Those files are rewritten into a session-owned copy under `~/.ao-gitconfig/`
+with every include and `gitdir` condition anchored to its real absolute path,
+and the copies are regenerated on each launch; the originals are only read. The
+same treatment covers the XDG global file, whether git reads it natively or from
+the mirrored `~/.config/git`. A config whose bases already resolve correctly
+from where it lives is used in place. Backslash-continued values are parsed as
+the single logical line git sees, so a rewritten include never leaves half a
+path behind.
 
 `GH_CONFIG_DIR` points at the real gh config whenever no
 `$XDG_CONFIG_HOME` redirect covers it, and `~/.ssh` is linked through so

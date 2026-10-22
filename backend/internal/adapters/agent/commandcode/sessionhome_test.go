@@ -800,16 +800,23 @@ func TestPrepareSessionHomePreservesBothGlobalGitSources(t *testing.T) {
 
 // effectiveGitConfig reports what git resolves for the session home, using the
 // same environment the child would receive plus a clean config environment so
-// the developer's own machine cannot answer the question.
+// the developer's own machine cannot answer the question. It runs in a directory
+// without a repository, so conditional includes match nothing.
 func effectiveGitConfig(t *testing.T, home, xdg string) map[string]string {
+	t.Helper()
+	return effectiveGitConfigIn(t, home, xdg, t.TempDir())
+}
+
+// effectiveGitConfigIn is effectiveGitConfig run inside dir, which lets a test
+// put a repository where a gitdir condition expects one.
+func effectiveGitConfigIn(t *testing.T, home, xdg, dir string) map[string]string {
 	t.Helper()
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("git is unavailable")
 	}
-	work := t.TempDir()
 	cmd := exec.Command(git, "config", "--list")
-	cmd.Dir = work
+	cmd.Dir = dir
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		switch strings.ToUpper(key) {
@@ -909,6 +916,258 @@ func TestPrepareSessionHomeRebasesNestedGitIncludes(t *testing.T) {
 	}
 }
 
+// Git expands `~/` in a gitdir condition against HOME and resolves `./` against
+// the directory holding the config. A relocated config would therefore point
+// them at the session home and at the copy directory, silently stopping them
+// from matching, so every copied condition has to be anchored like an include
+// path.
+func TestPrepareSessionHomeAnchorsConditionalIncludeHeaders(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is unavailable")
+	}
+	realHome := isolatedHome(t)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("APPDATA", t.TempDir())
+
+	write := func(path, contents string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := func(name string) string { return filepath.Join(realHome, filepath.FromSlash(name)) }
+	write(at(".gitconfig"), "[user]\n\tname = Real Name\n"+
+		"[includeIf \"gitdir:./\"]\n\tpath = identity/home.gitconfig\n"+
+		"[includeIf \"gitdir/i:~/projects/**\"]\n\tpath = identity/projects.gitconfig\n"+
+		"[include]\n\tpath = ~/.gitconfig-extra\n")
+	write(at(".gitconfig-extra"), "[core]\n\tpager = cat\n")
+	write(at("identity/home.gitconfig"), "[user]\n\temail = home@example.com\n")
+	write(at("identity/projects.gitconfig"), "[commit]\n\tgpgsign = true\n")
+
+	work := at("work-repo")
+	project := at("projects/app")
+	for _, repo := range []string{work, project} {
+		if err := os.MkdirAll(repo, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(git, "init", "-q", repo).CombinedOutput(); err != nil {
+			t.Fatalf("git init %s: %v: %s", repo, err, output)
+		}
+	}
+
+	home, err := PrepareSessionHome(t.TempDir(), domain.SessionID("mer-1"), "worker role")
+	if err != nil {
+		t.Fatalf("PrepareSessionHome: %v", err)
+	}
+
+	workConfig := effectiveGitConfigIn(t, home, "", work)
+	if got := workConfig["user.email"]; got != "home@example.com" {
+		t.Fatalf("user.email in the work repo = %q, want the gitdir:./ include to keep matching", got)
+	}
+	if got := workConfig["commit.gpgsign"]; got != "" {
+		t.Fatalf("commit.gpgsign in the work repo = %q, want the projects-only include to stay unmatched", got)
+	}
+	projectConfig := effectiveGitConfigIn(t, home, "", project)
+	if got := projectConfig["commit.gpgsign"]; got != "true" {
+		t.Fatalf("commit.gpgsign in a projects repo = %q, want the gitdir:~/ include to keep matching", got)
+	}
+	if got := projectConfig["user.email"]; got != "home@example.com" {
+		t.Fatalf("user.email in a projects repo = %q, want the gitdir:./ include to keep matching", got)
+	}
+
+	// The copy is self-contained: no condition may still depend on HOME or on
+	// the copy's own directory.
+	copies, err := os.ReadDir(filepath.Join(home, sessionGitConfigCopiesDir))
+	if err != nil || len(copies) == 0 {
+		t.Fatalf("session git config copies = %v (%v), want the rewritten config", copies, err)
+	}
+	anchored := "gitdir:" + filepath.ToSlash(realHome) + "/"
+	for _, entry := range copies {
+		contents, err := os.ReadFile(filepath.Join(home, sessionGitConfigCopiesDir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, stale := range []string{"~/", "gitdir:./", "gitdir/i:./"} {
+			if strings.Contains(string(contents), stale) {
+				t.Fatalf("copy %s still contains %q: %q", entry.Name(), stale, contents)
+			}
+		}
+		if !strings.Contains(string(contents), anchored) {
+			t.Fatalf("copy %s = %q, want the gitdir:./ condition anchored to %q", entry.Name(), contents, anchored)
+		}
+	}
+}
+
+// The second global file goes through the same treatment, whether git reads it
+// natively from an absolute $XDG_CONFIG_HOME or from the directory mirrored into
+// the session home. Its includes must keep resolving, and its values must keep
+// losing to ~/.gitconfig, which is git's native order.
+func TestPrepareSessionHomeAnchorsXDGGlobalIncludes(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		xdg  bool
+	}{
+		{name: "xdg unset", xdg: false},
+		{name: "xdg set", xdg: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			realHome := isolatedHome(t)
+			write := func(path, contents string) {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(filepath.Join(realHome, ".gitconfig"), "[user]\n\tname = Real Name\n[core]\n\tpager = global\n")
+
+			xdg := ""
+			secondDir := filepath.Join(realHome, ".config", "git")
+			if test.xdg {
+				xdg = t.TempDir()
+				secondDir = filepath.Join(xdg, "git")
+			}
+			write(filepath.Join(secondDir, "config"), "[user]\n\temail = split@example.com\n[core]\n\tpager = xdg\n"+
+				"[include]\n\tpath = ~/.gitconfig-xdg\n[include]\n\tpath = extra.gitconfig\n")
+			write(filepath.Join(realHome, ".gitconfig-xdg"), "[commit]\n\ttemplate = xdg-template\n")
+			write(filepath.Join(secondDir, "extra.gitconfig"), "[core]\n\texcludesfile = extra-excludes\n")
+			t.Setenv("XDG_CONFIG_HOME", xdg)
+			t.Setenv("APPDATA", t.TempDir())
+
+			home, err := PrepareSessionHome(t.TempDir(), domain.SessionID("mer-1"), "worker role")
+			if err != nil {
+				t.Fatalf("PrepareSessionHome: %v", err)
+			}
+
+			values := effectiveGitConfig(t, home, xdg)
+			for key, want := range map[string]string{
+				"user.name":         "Real Name",
+				"user.email":        "split@example.com",
+				"commit.template":   "xdg-template",
+				"core.excludesfile": "extra-excludes",
+			} {
+				if values[key] != want {
+					t.Fatalf("%s = %q, want %q", key, values[key], want)
+				}
+			}
+			if got := values["core.pager"]; got != "global" {
+				t.Fatalf("core.pager = %q, want ~/.gitconfig to override the XDG file as it does natively", got)
+			}
+
+			// Whatever git reads has to be anchored: the mirrored file when XDG
+			// is unset, the session copy when the real XDG file is read in place.
+			for _, dir := range []string{filepath.Join(home, ".config", "git"), filepath.Join(home, sessionGitConfigCopiesDir)} {
+				entries, err := os.ReadDir(dir)
+				if err != nil {
+					continue
+				}
+				for _, entry := range entries {
+					if entry.IsDir() {
+						continue
+					}
+					contents, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(string(contents), "~/") {
+						t.Fatalf("%s still uses a home-relative include: %q", filepath.Join(dir, entry.Name()), contents)
+					}
+				}
+			}
+		})
+	}
+}
+
+// Git joins a physical line ending in an unescaped backslash with the next one.
+// Parsing the halves separately would rewrite only the first and leave a stray
+// path fragment behind, which makes the rewritten config unreadable. CRLF files
+// have to parse the same way, otherwise the CR would end up inside the path.
+func TestPrepareSessionHomeJoinsContinuedIncludeValues(t *testing.T) {
+	t.Run("continued include", func(t *testing.T) {
+		realHome := isolatedHome(t)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("APPDATA", t.TempDir())
+
+		write := func(name, contents string) {
+			path := filepath.Join(realHome, filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write(".gitconfig", "[user]\n\tname = Real Name\n"+
+			"[include]\n\tpath = ~/\\\n.gitconfig-work\n"+
+			"[alias]\n\tlong = one\\\ntwo\n")
+		write(".gitconfig-work", "[user]\n\temail = work@example.com\n")
+
+		home, err := PrepareSessionHome(t.TempDir(), domain.SessionID("mer-1"), "worker role")
+		if err != nil {
+			t.Fatalf("PrepareSessionHome: %v", err)
+		}
+
+		values := effectiveGitConfig(t, home, "")
+		if got := values["user.email"]; got != "work@example.com" {
+			t.Fatalf("user.email = %q, want the continued include path to resolve", got)
+		}
+		if got := values["alias.long"]; got != "onetwo" {
+			t.Fatalf("alias.long = %q, want git to join the untouched continuation", got)
+		}
+
+		copies, err := os.ReadDir(filepath.Join(home, sessionGitConfigCopiesDir))
+		if err != nil || len(copies) == 0 {
+			t.Fatalf("session git config copies = %v (%v), want the rewritten config", copies, err)
+		}
+		keptContinuation := false
+		for _, entry := range copies {
+			contents, err := os.ReadFile(filepath.Join(home, sessionGitConfigCopiesDir, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(contents), "~/") {
+				t.Fatalf("copy %s still uses a home-relative include: %q", entry.Name(), contents)
+			}
+			if strings.Contains(string(contents), "one\\\ntwo") {
+				keptContinuation = true
+			}
+		}
+		if !keptContinuation {
+			t.Fatalf("copies = %v, want the untouched continued value to keep its original spelling", copies)
+		}
+	})
+
+	t.Run("crlf config", func(t *testing.T) {
+		realHome := isolatedHome(t)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("APPDATA", t.TempDir())
+		path := filepath.Join(realHome, ".gitconfig")
+		contents := "[user]\r\n\tname = Real Name\r\n[include]\r\n\tpath = ~/.gitconfig-work\r\n"
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(realHome, ".gitconfig-work"), []byte("[user]\r\n\temail = work@example.com\r\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		home, err := PrepareSessionHome(t.TempDir(), domain.SessionID("mer-1"), "worker role")
+		if err != nil {
+			t.Fatalf("PrepareSessionHome: %v", err)
+		}
+		values := effectiveGitConfig(t, home, "")
+		if got := values["user.name"]; got != "Real Name" {
+			t.Fatalf("user.name = %q, want a CRLF config to parse like git does", got)
+		}
+		if got := values["user.email"]; got != "work@example.com" {
+			t.Fatalf("user.email = %q, want the CRLF include to resolve without a stray CR", got)
+		}
+	})
+}
+
 // Include values follow git's quoting and comment rules closely enough to
 // rewrite real-world dotfiles: quoted paths stay whole, and an inline comment is
 // not part of the path.
@@ -937,11 +1196,60 @@ func TestGitIncludePathParsing(t *testing.T) {
 	}{
 		{line: "[include]", want: "include"},
 		{line: "[includeIf \"gitdir:~/work/\"]", want: "includeif"},
+		{line: "[includeIf \"gitdir:weird]dir/\"]", want: "includeif"},
 		{line: "  [core] # comment", want: "core"},
 		{line: "# [user]", want: ""},
 	} {
 		if got := gitSectionName(test.line); got != test.want {
 			t.Fatalf("gitSectionName(%q) = %q, want %q", test.line, got, test.want)
+		}
+	}
+	for _, test := range []struct {
+		line string
+		want string
+	}{
+		{line: "[includeIf \"gitdir:~/work/**\"]", want: "gitdir:~/work/**"},
+		{line: "[includeIf \"gitdir/i:./\"]", want: "gitdir/i:./"},
+		{line: "[includeIf \"onbranch:topic\"]", want: "onbranch:topic"},
+		{line: "[include]", want: ""},
+	} {
+		if _, got, ok := gitSectionHeader(test.line); !ok || got != test.want {
+			t.Fatalf("gitSectionHeader(%q) = (%q, %v), want (%q, true)", test.line, got, ok, test.want)
+		}
+	}
+}
+
+// A gitdir condition is a path pattern, so the same rebasing rules apply to it:
+// anchor the base that moves, keep the glob suffix and the keyword's case
+// sensitivity, and leave patterns that do not depend on a location alone.
+func TestGitConditionPatternAnchoring(t *testing.T) {
+	sourceDir := filepath.FromSlash("/home/user/configs")
+	realHome := filepath.FromSlash("/home/user")
+	for _, test := range []struct {
+		condition string
+		want      string
+		ok        bool
+	}{
+		{condition: "gitdir:./", want: "gitdir:/home/user/configs/", ok: true},
+		{condition: "gitdir:./work/", want: "gitdir:/home/user/configs/work/", ok: true},
+		{condition: "gitdir/i:~/projects/**", want: "gitdir/i:/home/user/projects/**", ok: true},
+		{condition: "gitdir:~/", want: "gitdir:/home/user/", ok: true},
+		{condition: "gitdir:/absolute/", ok: false},
+		{condition: "gitdir:bare-glob/", ok: false},
+		{condition: "gitdir:~other/work/", ok: false},
+		{condition: "onbranch:topic", ok: false},
+	} {
+		prefix, pattern, ok := gitConditionPattern(test.condition)
+		anchored, anchoredOK := "", false
+		if ok {
+			anchored, anchoredOK = anchorConfigPattern(pattern, sourceDir, realHome)
+		}
+		got, gotOK := "", false
+		if ok && anchoredOK {
+			got, gotOK = prefix+anchored, true
+		}
+		if got != test.want || gotOK != test.ok {
+			t.Fatalf("anchor %q -> (%q, %v), want (%q, %v)", test.condition, got, gotOK, test.want, test.ok)
 		}
 	}
 }
