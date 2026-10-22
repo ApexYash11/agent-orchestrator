@@ -433,6 +433,93 @@ func TestPrepareSessionHomeLinksRealSSHDirectory(t *testing.T) {
 	}
 }
 
+func TestPrepareSessionHomeLinksDeveloperCredentials(t *testing.T) {
+	realHome := isolatedHome(t)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	files := []string{
+		".npmrc", ".netrc", ".docker/config.json", ".aws/credentials",
+		".config/example-tool/config.json", ".config/example-token",
+		".config/git/config",
+	}
+	for _, name := range files {
+		path := filepath.Join(realHome, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Detect platforms without symlink privilege explicitly, rather than
+	// treating a missing credential link as a passing test.
+	if err := os.Symlink(filepath.Join(realHome, ".npmrc"), filepath.Join(t.TempDir(), "probe")); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlink privilege unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	home, err := PrepareSessionHome(t.TempDir(), domain.SessionID("mer-1"), "worker role")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range files {
+		path := filepath.FromSlash(name)
+		source := filepath.Join(realHome, path)
+		destination := filepath.Join(home, path)
+		got, err := os.ReadFile(destination)
+		if err != nil || string(got) != "original" {
+			t.Fatalf("session %s = %q (%v), want original", name, got, err)
+		}
+		if err := os.WriteFile(source, []byte("rotated"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err = os.ReadFile(destination)
+		want := "rotated"
+		if name == ".config/git/config" {
+			want = "original" // Git's session copy must stay separate.
+		}
+		if err != nil || string(got) != want {
+			t.Fatalf("session %s after rotation = %q (%v), want %q", name, got, err, want)
+		}
+	}
+	for _, name := range []string{".config", ".config/git"} {
+		info, err := os.Lstat(filepath.Join(home, filepath.FromSlash(name)))
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("session %s = %v (%v), want a session-owned directory", name, info, err)
+		}
+	}
+}
+
+func TestPrepareSessionHomeKeepsExistingDeveloperConfig(t *testing.T) {
+	realHome := isolatedHome(t)
+	dataDir := t.TempDir()
+	home := SessionHomeDir(dataDir, domain.SessionID("mer-1"))
+	for _, root := range []string{realHome, home} {
+		for _, name := range []string{".npmrc", ".config/example-tool/config.json"} {
+			path := filepath.Join(root, filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			contents := "real config"
+			if root == home {
+				contents = "session config"
+			}
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".npmrc", ".config/example-tool/config.json"} {
+		got, err := os.ReadFile(filepath.Join(home, filepath.FromSlash(name)))
+		if err != nil || string(got) != "session config" {
+			t.Fatalf("session %s = %q (%v), want existing session config", name, got, err)
+		}
+	}
+}
+
 // Explicitly configured values always win over the passthrough: a caller that
 // already set GH_CONFIG_DIR keeps its account, including through different
 // key casing on Windows. Git is never repointed at all, so an explicit

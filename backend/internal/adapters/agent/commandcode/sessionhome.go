@@ -51,16 +51,16 @@ var mirroredProfileFiles = []string{"auth.json", "config.json", "providers.json"
 
 // linkedHomeEntries are real-home dotfiles exposed inside the session home as
 // links rather than copies. They cover developer tooling that must resolve
-// under HOME and offers no environment redirect: SSH reads keys, config and
-// known_hosts from ~/.ssh, so git-over-SSH and ssh-based tooling would
-// otherwise break behind the redirect. Links keep a single source of truth --
+// under HOME: SSH keys, registry credentials, netrc credentials, and AWS
+// profiles would otherwise disappear behind the redirect. Links keep a single
+// source of truth --
 // a copied key would silently go stale on rotation -- and cross no privilege
 // boundary since the session already runs as the same user.
 //
 // Linking is best-effort per entry: platforms without symlink privilege (stock
 // Windows) skip the link and the session proceeds without it, exactly as
 // before. Nothing is ever overwritten: an existing session-side entry wins.
-var linkedHomeEntries = []string{".ssh"}
+var linkedHomeEntries = []string{".ssh", ".npmrc", ".netrc", ".docker", ".aws"}
 
 // SessionHomeDir returns the per-session home directory for a Command Code
 // process, or "" when AO has no data directory to build it under.
@@ -347,7 +347,27 @@ func isDirectory(path string) bool {
 // key would leave a stale copy behind -- and private keys must never be
 // duplicated onto disk by an agent launcher.
 func linkRealDotfiles(realHome, sessionHome string) {
-	for _, name := range linkedHomeEntries {
+	entries := append([]string(nil), linkedHomeEntries...)
+	// Keep .config itself session-owned: preserveGitConfiguration rewrites its
+	// git child and must never write through a link into the real git config.
+	// Other tools' configuration stays live-linked, including credential files.
+	if configs, err := os.ReadDir(filepath.Join(realHome, ".config")); err == nil {
+		sessionConfig := filepath.Join(sessionHome, ".config")
+		info, statErr := os.Lstat(sessionConfig)
+		if os.IsNotExist(statErr) {
+			if err := os.MkdirAll(sessionConfig, 0o700); err == nil {
+				info, statErr = os.Lstat(sessionConfig)
+			}
+		}
+		if statErr == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			for _, config := range configs {
+				if !strings.EqualFold(config.Name(), "git") {
+					entries = append(entries, filepath.Join(".config", config.Name()))
+				}
+			}
+		}
+	}
+	for _, name := range entries {
 		source := filepath.Join(realHome, name)
 		if !isDirectory(source) && !isRegularFile(source) {
 			continue
