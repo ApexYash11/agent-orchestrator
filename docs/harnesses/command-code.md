@@ -139,8 +139,8 @@ a user who splits identity or credentials between `~/.gitconfig` and
 `$XDG_CONFIG_HOME/git/config` keeps both, in the same order git resolves them
 outside a session. When `$XDG_CONFIG_HOME` is unset, so that path would resolve
 inside the session home, the real `~/.config/git` is mirrored there instead.
-`GIT_CONFIG_GLOBAL` is deliberately not set: it would replace both native global
-files and hide the XDG half.
+`GIT_CONFIG_GLOBAL` is deliberately not set in the ordinary case: it would
+replace both native global files and hide the XDG half.
 
 Git expands a `~/` include path and a `gitdir:~/` condition against `HOME`, not
 against the file containing the directive, and resolves `./` bases against that
@@ -155,6 +155,16 @@ the mirrored `~/.config/git`. A config whose bases already resolve correctly
 from where it lives is used in place. Backslash-continued values are parsed as
 the single logical line git sees, so a rewritten include never leaves half a
 path behind.
+
+Each source is read exactly once. With an absolute `$XDG_CONFIG_HOME`, native
+discovery would still read the real file while the session included its anchored
+copy, applying the whole file twice; most settings tolerate that, but multivalued
+ones do not (`http.extraHeader` would send two `Authorization` headers). For that
+session only, the session home's `.gitconfig` -- which already includes both
+sources in native order -- becomes the child's global file, and the mark is
+dropped again on the first launch whose XDG chain needs no anchoring. A user who
+sets `GIT_CONFIG_GLOBAL` themselves keeps their choice, and git then reads only
+their file, so nothing is duplicated either.
 
 `GH_CONFIG_DIR` points at the real gh config whenever no
 `$XDG_CONFIG_HOME` redirect covers it, and `~/.ssh` is linked through so

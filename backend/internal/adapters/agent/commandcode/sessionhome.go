@@ -241,6 +241,16 @@ func SessionHomeEnv(home string) map[string]string {
 // .gitconfig, which keeps both sources and their normal ordering (XDG first,
 // ~/.gitconfig last) exactly as git resolves them outside a session.
 //
+// The one exception is a session whose XDG file needed anchoring (its include or
+// gitdir bases point at HOME): native discovery would then apply the real XDG
+// file *and* its anchored copy, duplicating multivalued settings such as
+// http.extraHeader. For that session only, PrepareSessionHome marks its
+// .gitconfig and this overlay makes it the child's global file. That file
+// already includes both sources in native order, so each is still read exactly
+// once, and the mark is dropped again as soon as the XDG chain needs no
+// anchoring. A user who set GIT_CONFIG_GLOBAL themselves keeps their choice; git
+// then reads only their file, so nothing is duplicated either.
+//
 // Decisions are made against the environment the child actually starts from:
 // the daemon's ambient environment overlaid by the caller's session
 // environment. An explicit GH_CONFIG_DIR, whether configured per project or
@@ -249,21 +259,32 @@ func SessionHomeEnv(home string) map[string]string {
 // filled in only when it is not. Comparison is case-insensitive because
 // Windows folds environment keys.
 func SessionProcessEnv(dataDir string, sessionID domain.SessionID, base map[string]string) map[string]string {
-	env := SessionHomeEnv(SessionHomeDir(dataDir, sessionID))
+	home := SessionHomeDir(dataDir, sessionID)
+	env := SessionHomeEnv(home)
 	if env == nil {
 		return nil
+	}
+	effective := effectiveEnv(base)
+	if !hasEnvKey(effective, "GIT_CONFIG_GLOBAL") && gitConfigGlobalScope(home) {
+		env["GIT_CONFIG_GLOBAL"] = filepath.Join(home, ".gitconfig")
 	}
 	realHome, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(realHome) == "" {
 		return env
 	}
-	effective := effectiveEnv(base)
 	if !hasEnvKey(effective, "GH_CONFIG_DIR") && strings.TrimSpace(effective["XDG_CONFIG_HOME"]) == "" {
 		if dir := ghConfigDir(realHome); dir != "" {
 			env["GH_CONFIG_DIR"] = dir
 		}
 	}
 	return env
+}
+
+// gitConfigGlobalScope reports whether this session's .gitconfig has to be the
+// child's global file: PrepareSessionHome marks it when the anchored XDG copy is
+// the only place the XDG source may be read from.
+func gitConfigGlobalScope(home string) bool {
+	return isRegularFile(filepath.Join(home, sessionGitConfigCopiesDir, gitConfigGlobalScopeMarker))
 }
 
 // effectiveEnv merges the daemon's ambient environment with the caller's
@@ -362,14 +383,20 @@ const (
 	sessionGitConfigIncludeEnd   = "# AO: end of the real user git configuration"
 	sessionGitConfigCopiesDir    = ".ao-gitconfig"
 	gitConfigIncludeMaxDepth     = 8
+
+	// gitConfigGlobalScopeMarker records that git must read the session
+	// .gitconfig as its global file, because the anchored XDG copy is the only
+	// place the XDG source may be read from. Its presence, not its contents,
+	// carries the decision; SessionProcessEnv turns it into GIT_CONFIG_GLOBAL.
+	gitConfigGlobalScopeMarker = "global-scope"
 )
 
 // preserveGitConfiguration makes both of git's native global config files apply
-// inside the session home, in their native order.
+// inside the session home, in their native order, each read exactly once.
 //
 // The redirect moves HOME, so git's own lookups of ~/.gitconfig and
-// $HOME/.config/git/config resolve inside the generated home. The XDG file is
-// read natively whenever $XDG_CONFIG_HOME is absolute; otherwise the real
+// $HOME/.config/git/config resolve inside the generated home. The XDG file keeps
+// its native path whenever $XDG_CONFIG_HOME is absolute; otherwise the real
 // directory is mirrored into the session home. ~/.gitconfig is included from the
 // session's own ~/.gitconfig. Native discovery therefore stays in charge, which
 // matters because GIT_CONFIG_GLOBAL would replace *both* files: a user whose
@@ -382,6 +409,14 @@ const (
 // to the real filesystem; the originals are only read. A config that needs no
 // anchoring is used where it already lives.
 //
+// One case needs more than an include. When an absolute $XDG_CONFIG_HOME file
+// needs anchoring, git would still read the real file through native discovery
+// and the session would include its copy, applying the file twice. Most settings
+// tolerate that, but multivalued ones do not: two http.extraHeader entries send
+// two Authorization headers. For that case only, the session marks its own
+// .gitconfig as the child's global file, which holds exactly the two sources in
+// native order, so git reads each one once.
+//
 // An existing session .gitconfig keeps its content and precedence: AO's block is
 // only replaced in place, or placed ahead of it when the session wrote its own
 // file first, so a value the session set later still wins.
@@ -392,20 +427,24 @@ func preserveGitConfiguration(realHome, sessionHome string) {
 		copies:      map[string]string{},
 	}
 	var includes []string
+	xdgRebased := false
 
 	// Git reads the XDG file before ~/.gitconfig; keep that order.
 	if xdg := absoluteXDGConfigHome(); xdg != "" {
 		if source := filepath.Join(xdg, "git", "config"); isRegularFile(source) && rewriter.rebaseNeeded(source, 0) {
 			// The real file stays readable at its own path, but a home-relative
 			// include inside it cannot resolve. Re-apply it later from the copy,
-			// ahead of ~/.gitconfig, so precedence is unchanged.
+			// ahead of ~/.gitconfig, so precedence is unchanged. The copy is the
+			// only place git may read this file from; see xdgRebased below.
 			includes = append(includes, rewriter.materialize(source))
+			xdgRebased = true
 		}
 	} else {
 		// $HOME/.config/git/config resolves inside the session home. Mirror the
 		// directory, then relocate the mirrored config: it now lives somewhere
 		// else, so its own relative and home-relative bases must be anchored to
-		// the real files.
+		// the real files. The mirror is the file git reads, so nothing is read
+		// twice.
 		sourceDir := filepath.Join(realHome, ".config", "git")
 		mirrored := filepath.Join(sessionHome, ".config", "git")
 		mirrorDirectoryTree(sourceDir, mirrored)
@@ -417,7 +456,11 @@ func preserveGitConfiguration(realHome, sessionHome string) {
 	if source := filepath.Join(realHome, ".gitconfig"); isRegularFile(source) {
 		includes = append(includes, rewriter.reference(source))
 	}
+
+	path := filepath.Join(sessionHome, ".gitconfig")
+	marker := filepath.Join(sessionHome, sessionGitConfigCopiesDir, gitConfigGlobalScopeMarker)
 	if len(includes) == 0 {
+		_ = os.Remove(marker)
 		return
 	}
 
@@ -428,17 +471,28 @@ func preserveGitConfiguration(realHome, sessionHome string) {
 	}
 	block.WriteString(sessionGitConfigIncludeEnd + "\n")
 
-	path := filepath.Join(sessionHome, ".gitconfig")
 	existing, err := os.ReadFile(path)
 	existed := err == nil
 	if err != nil && !os.IsNotExist(err) {
 		return
 	}
 	updated := replaceGitConfigIncludeBlock(string(existing), block.String())
-	if existed && updated == string(existing) {
+	if !existed || updated != string(existing) {
+		if err := writePrivateFile(path, []byte(updated)); err != nil {
+			// Without the file, pointing git's global scope here would drop the
+			// user's configuration entirely.
+			_ = os.Remove(marker)
+			return
+		}
+	}
+	if !xdgRebased {
+		_ = os.Remove(marker)
 		return
 	}
-	_ = writePrivateFile(path, []byte(updated))
+	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+		return
+	}
+	_ = writePrivateFile(marker, nil)
 }
 
 // replaceGitConfigIncludeBlock swaps AO's include block in an existing

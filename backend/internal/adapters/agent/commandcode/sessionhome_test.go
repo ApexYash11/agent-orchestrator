@@ -798,6 +798,56 @@ func TestPrepareSessionHomePreservesBothGlobalGitSources(t *testing.T) {
 	}
 }
 
+// The global-scope mark lasts only as long as it is needed. Once the XDG chain
+// stops depending on HOME, a restore must drop it so the child goes back to
+// native discovery rather than staying pinned to the session file.
+func TestPrepareSessionHomeDropsGitGlobalScopeWhenNoLongerNeeded(t *testing.T) {
+	realHome := isolatedHome(t)
+	xdg := t.TempDir()
+	write := func(path, contents string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(realHome, ".gitconfig"), "[user]\n\tname = Real Name\n")
+	second := filepath.Join(xdg, "git", "config")
+	write(second, "[user]\n\temail = split@example.com\n[include]\n\tpath = ~/.gitconfig-work\n")
+	write(filepath.Join(realHome, ".gitconfig-work"), "[core]\n\tpager = cat\n")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("APPDATA", t.TempDir())
+
+	sessionID := domain.SessionID("mer-1")
+	dataDir := t.TempDir()
+	if _, err := PrepareSessionHome(dataDir, sessionID, "worker role"); err != nil {
+		t.Fatalf("PrepareSessionHome: %v", err)
+	}
+	if got := SessionProcessEnv(dataDir, sessionID, nil)["GIT_CONFIG_GLOBAL"]; got == "" {
+		t.Fatalf("GIT_CONFIG_GLOBAL empty, want the global scope while the XDG chain is home-relative")
+	}
+
+	// The user folds the include into the file itself, so nothing needs anchoring.
+	write(second, "[user]\n\temail = split@example.com\n[core]\n\tpager = cat\n")
+	home, err := PrepareSessionHome(dataDir, sessionID, "worker role")
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	env := SessionProcessEnv(dataDir, sessionID, nil)
+	if got := env["GIT_CONFIG_GLOBAL"]; got != "" {
+		t.Fatalf("GIT_CONFIG_GLOBAL = %q after restore, want native discovery", got)
+	}
+	env["XDG_CONFIG_HOME"] = xdg
+	if gitConfigGlobalScope(home) {
+		t.Fatalf("global-scope mark survived a restore that no longer needs it")
+	}
+	values := effectiveGitConfigEnv(t, env, t.TempDir())
+	if values["core.pager"] != "cat" || values["user.email"] != "split@example.com" {
+		t.Fatalf("values = %v, want the XDG file read natively again", values)
+	}
+}
+
 // effectiveGitConfig reports what git resolves for the session home, using the
 // same environment the child would receive plus a clean config environment so
 // the developer's own machine cannot answer the question. It runs in a directory
@@ -811,11 +861,44 @@ func effectiveGitConfig(t *testing.T, home, xdg string) map[string]string {
 // put a repository where a gitdir condition expects one.
 func effectiveGitConfigIn(t *testing.T, home, xdg, dir string) map[string]string {
 	t.Helper()
+	env := map[string]string{"HOME": home, "USERPROFILE": home}
+	if xdg != "" {
+		env["XDG_CONFIG_HOME"] = xdg
+	}
+	return effectiveGitConfigEnv(t, env, dir)
+}
+
+// effectiveGitConfigEnv is effectiveGitConfig with the exact child environment,
+// so an entry SessionProcessEnv adds (such as GIT_CONFIG_GLOBAL) is part of the
+// answer. Map semantics keep the last value, which is what the scalar assertions
+// want; use effectiveGitConfigAll for multivalued keys.
+func effectiveGitConfigEnv(t *testing.T, env map[string]string, dir string) map[string]string {
+	t.Helper()
+	values := make(map[string]string)
+	for _, line := range gitConfigOutput(t, env, dir, "config", "--list") {
+		if key, value, ok := strings.Cut(line, "="); ok {
+			values[key] = value
+		}
+	}
+	return values
+}
+
+// effectiveGitConfigAll reports every value git resolves for a multivalued key,
+// which is where reading a config twice becomes visible.
+func effectiveGitConfigAll(t *testing.T, env map[string]string, dir, key string) []string {
+	t.Helper()
+	return gitConfigOutput(t, env, dir, "config", "--get-all", key)
+}
+
+// gitConfigOutput runs git with the child's environment plus a clean config
+// environment so the developer's own machine cannot answer the question.
+func gitConfigOutput(t *testing.T, env map[string]string, dir string, args ...string) []string {
+	t.Helper()
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("git is unavailable")
 	}
-	cmd := exec.Command(git, "config", "--list")
+	cmd := exec.Command(git, args...)
 	cmd.Dir = dir
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
@@ -825,21 +908,21 @@ func effectiveGitConfigIn(t *testing.T, home, xdg, dir string) map[string]string
 		}
 		cmd.Env = append(cmd.Env, entry)
 	}
-	cmd.Env = append(cmd.Env, "HOME="+home, "USERPROFILE="+home, "GIT_CONFIG_NOSYSTEM=1")
-	if xdg != "" {
-		cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME="+xdg)
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1")
+	for key, value := range env {
+		cmd.Env = append(cmd.Env, key+"="+value)
 	}
 	output, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("git config --list: %v", err)
+		t.Fatalf("%v: %v", args, err)
 	}
-	values := make(map[string]string)
-	for _, line := range strings.Split(string(output), "\n") {
-		if key, value, ok := strings.Cut(line, "="); ok {
-			values[key] = value
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSuffix(string(output), "\n"), "\n") {
+		if line = strings.TrimSuffix(line, "\r"); line != "" {
+			lines = append(lines, line)
 		}
 	}
-	return values
+	return lines
 }
 
 // A layered config must survive the redirect too: git expands a `~/` include
@@ -1003,8 +1086,10 @@ func TestPrepareSessionHomeAnchorsConditionalIncludeHeaders(t *testing.T) {
 
 // The second global file goes through the same treatment, whether git reads it
 // natively from an absolute $XDG_CONFIG_HOME or from the directory mirrored into
-// the session home. Its includes must keep resolving, and its values must keep
-// losing to ~/.gitconfig, which is git's native order.
+// the session home. Its includes must keep resolving, its values must keep
+// losing to ~/.gitconfig, which is git's native order, and the file must be read
+// exactly once: an XDG file that needs anchoring is applied from the copy alone,
+// so multivalued settings are not doubled.
 func TestPrepareSessionHomeAnchorsXDGGlobalIncludes(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -1031,19 +1116,33 @@ func TestPrepareSessionHomeAnchorsXDGGlobalIncludes(t *testing.T) {
 				xdg = t.TempDir()
 				secondDir = filepath.Join(xdg, "git")
 			}
+			// The extraHeader is multivalued in git: a second copy of this file
+			// means a second Authorization header, not a replaced value.
 			write(filepath.Join(secondDir, "config"), "[user]\n\temail = split@example.com\n[core]\n\tpager = xdg\n"+
+				"[http]\n\textraHeader = Authorization: Bearer token\n"+
 				"[include]\n\tpath = ~/.gitconfig-xdg\n[include]\n\tpath = extra.gitconfig\n")
 			write(filepath.Join(realHome, ".gitconfig-xdg"), "[commit]\n\ttemplate = xdg-template\n")
 			write(filepath.Join(secondDir, "extra.gitconfig"), "[core]\n\texcludesfile = extra-excludes\n")
 			t.Setenv("XDG_CONFIG_HOME", xdg)
 			t.Setenv("APPDATA", t.TempDir())
 
-			home, err := PrepareSessionHome(t.TempDir(), domain.SessionID("mer-1"), "worker role")
+			sessionID := domain.SessionID("mer-1")
+			dataDir := t.TempDir()
+			home, err := PrepareSessionHome(dataDir, sessionID, "worker role")
 			if err != nil {
 				t.Fatalf("PrepareSessionHome: %v", err)
 			}
 
-			values := effectiveGitConfig(t, home, xdg)
+			env := SessionProcessEnv(dataDir, sessionID, nil)
+			if env["HOME"] != home {
+				t.Fatalf("child HOME = %q, want %q", env["HOME"], home)
+			}
+			// The child inherits the daemon's XDG layer; only the global-scope
+			// decision is ours to make.
+			if xdg != "" {
+				env["XDG_CONFIG_HOME"] = xdg
+			}
+			values := effectiveGitConfigEnv(t, env, t.TempDir())
 			for key, want := range map[string]string{
 				"user.name":         "Real Name",
 				"user.email":        "split@example.com",
@@ -1057,9 +1156,23 @@ func TestPrepareSessionHomeAnchorsXDGGlobalIncludes(t *testing.T) {
 			if got := values["core.pager"]; got != "global" {
 				t.Fatalf("core.pager = %q, want ~/.gitconfig to override the XDG file as it does natively", got)
 			}
+			headers := effectiveGitConfigAll(t, env, t.TempDir(), "http.extraHeader")
+			if len(headers) != 1 || headers[0] != "Authorization: Bearer token" {
+				t.Fatalf("http.extraHeader = %q, want the XDG file applied exactly once", headers)
+			}
+
+			// Only a rebased XDG chain needs git to read the session file as its
+			// global scope; otherwise native discovery stays in charge.
+			if got, want := env["GIT_CONFIG_GLOBAL"], filepath.Join(home, ".gitconfig"); test.xdg {
+				if got != want {
+					t.Fatalf("GIT_CONFIG_GLOBAL = %q, want %q so the XDG file is read once", got, want)
+				}
+			} else if got != "" {
+				t.Fatalf("GIT_CONFIG_GLOBAL = %q, want native discovery for an XDG-free layout", got)
+			}
 
 			// Whatever git reads has to be anchored: the mirrored file when XDG
-			// is unset, the session copy when the real XDG file is read in place.
+			// is unset, the session copy when the XDG file needed one.
 			for _, dir := range []string{filepath.Join(home, ".config", "git"), filepath.Join(home, sessionGitConfigCopiesDir)} {
 				entries, err := os.ReadDir(dir)
 				if err != nil {
