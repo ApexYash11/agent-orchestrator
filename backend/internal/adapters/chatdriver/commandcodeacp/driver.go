@@ -69,26 +69,8 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 	}, log)
 }
 
-// configure builds `cmd acp [flags]`.
-//
-// The model and permission mode are ALSO passed as launch flags so the initial
-// posture survives an agent that rejects the runtime setters with -32601; see
-// the same reasoning in kimchiacp. `cmd acp` accepts the same global flags as
-// the TUI, so this is one vocabulary, not two.
-//
-// Standing instructions are NOT passed as a flag: `cmd acp` accepts none
-// (v1.79.x rejects `--append-system-prompt` with "unknown option", which kills
-// the provider before the host publishes host.json and surfaces as a
-// missing-descriptor startup failure). They are delivered as the session's memory
-// instead -- see prepareSessionHome below.
-//
-// Mods are NOT passed here either: `cmd acp` accepts `--mod`/`--mod-option`
-// (and reads settings `mods.paths` / `.commandcode/mods/`) but silently never
-// loads them — verified on v1.82.4/v1.83.0, where the same sentinel mod logs
-// `factory:ran` under `cmd -p --mod` and logs nothing under `cmd acp --mod`
-// after initialize + session/new (issue #6784). Passing --mod would look
-// configured while staying inert, so this binding deliberately omits it and
-// delivers standing context via prepareSessionHome instead.
+// configure passes model/permission flags for agents that reject runtime setters.
+// Standing instructions use memory; ACP ignores mods (upstream issue #6784).
 func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[string]string, error) {
 	env, err := prepareSessionHome(cfg)
 	if err != nil {
@@ -109,31 +91,11 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 	return args, env, nil
 }
 
-// prepareSessionHome builds the per-session Command Code home and returns the
-// environment that points `cmd acp` at it.
-//
-// This is how Chat receives AO's standing instructions. `cmd acp` builds no mod
-// host, so `appendSystemPrompt` is unreachable there, and SessionStart is the one
-// hook the ACP path never fires. The other three do run, but their
-// `additionalContext` lands as tool-result context -- a PreToolUse note arrives
-// wrapped in `<hook_context>`, only once a tool runs, and Command Code's own model
-// discounts it as injected rather than authoritative. A role prompt has to be the
-// system prompt.
-//
-// Memory is the one surface Command Code reads in both modes, and its own
-// documentation places memory in the system prompt rather than the conversation,
-// so the instructions survive compaction.
-//
-// The user tier is used rather than the project tier because it is additive: a
-// repository's own AGENTS.md still loads alongside AO's, instead of silently
-// shadowing it.
+// prepareSessionHome shares Terminal's durable memory and native restore catalog.
 func prepareSessionHome(cfg acpdriver.LaunchConfig) (map[string]string, error) {
 	if _, err := commandcode.PrepareSessionHome(cfg.DataDir, cfg.SessionID, cfg.SystemPrompt); err != nil {
 		return nil, err
 	}
-	// A Chat session created before per-session homes existed keeps its native
-	// transcript under the real home; session/load on the fresh process needs it
-	// in the isolated catalog.
 	commandcode.MigrateNativeHistory(cfg.DataDir, cfg.SessionID, cfg.ProviderConversationID)
 	return commandcode.SessionProcessEnv(cfg.DataDir, cfg.SessionID, cfg.Env), nil
 }

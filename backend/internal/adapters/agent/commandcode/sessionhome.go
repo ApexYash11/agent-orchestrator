@@ -12,60 +12,18 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-// Command Code accepts no system-prompt launch flag, and neither the ACP path's
-// `_meta` nor its mod loader is a usable channel: `cmd acp` accepts `--mod`,
-// ignores it, and starts normally.
-//
-// The shell hooks do run under ACP, but they cannot carry standing instructions
-// either. SessionStart is the one hook the ACP path never fires, and the other
-// three reach the model as tool-result context: a PreToolUse `additionalContext`
-// arrives wrapped in a `<hook_context>` tag, only once a tool runs, and Command
-// Code's own model discounts it -- asked to repeat a token delivered that way, it
-// answered that the note was "injected content from tool output, not a note I
-// was ever given". A role prompt needs to be authoritative, not advice attached
-// to a tool result.
-//
-// Memory is the one surface Command Code reads in every mode, and its own
-// documentation places it in the system prompt rather than the conversation:
-//
-//	Memory is part of the system prompt, not the conversation.
-//	  - It's re-read every request.
-//	  - It survives compaction.
-//
-// The project tier is first-existing-wins, so a repository's own root AGENTS.md
-// would silently shadow ours. The user tier is additive and relocatable through
-// the documented HOME / USERPROFILE override, which is what this file uses: each
-// AO session gets its own home, so concurrent sessions never share a memory file
-// and a repo's own memory still loads alongside AO's. The user's existing
-// user-tier file is composed into that home instead of being replaced, since the
-// redirect would otherwise hide it; see composeSessionMemory.
+// Command Code reads user-tier memory in both Terminal and Chat, including after
+// compaction. Each session gets an isolated home so AO roles cannot overwrite
+// each other; repository memory still loads alongside the composed user memory.
 
-// mirroredProfileFiles are copied from the user's real ~/.commandcode into the
-// session home so the session can authenticate and keep its preferences,
-// including the user's own permission rules, hooks and MCP servers. settings.json
-// and mcp.json are separate supported inputs from config.json, not fields of it,
-// so omitting them would silently drop user policy once HOME is redirected. Each
-// file is independent: one missing or unreadable file must not stop the session
-// from launching.
+// Profile inputs are mirrored independently; missing files are allowed.
 var mirroredProfileFiles = []string{"auth.json", "config.json", "providers.json", "settings.json", "mcp.json"}
 
-// linkedHomeEntries are real-home dotfiles exposed inside the session home as
-// links rather than copies, so developer tooling (SSH keys, registry/netrc/AWS
-// credentials) resolves under the redirected HOME. Links keep a single source of
-// truth and cross no privilege boundary. Linking is best-effort (platforms
-// without symlink privilege skip it); existing session-side entries are never
-// overwritten.
+// Link real credentials without copying secrets; existing session entries win.
+// Links are best-effort on platforms without symlink privilege.
 var linkedHomeEntries = []string{".ssh", ".npmrc", ".netrc", ".docker", ".aws"}
 
-// SessionHomeDir returns the per-session home directory for a Command Code
-// process, or "" when AO has no data directory to build it under.
-//
-// The home lives under dataDir/harnesses/command-code, alongside the other
-// harness-owned state, and deliberately outside the disposable prompts/<id>
-// directory: relaunchSessionWithPolicyAndGeneration wipes that whole directory
-// through cleanupSystemPromptDir on ordinary restore failures, and a failed
-// restore of a session created by this change must not permanently delete its
-// previous conversation.
+// SessionHomeDir returns durable harness state outside disposable prompts/<id>.
 func SessionHomeDir(dataDir string, sessionID domain.SessionID) string {
 	dataDir = strings.TrimSpace(dataDir)
 	sessionID = domain.SessionID(strings.TrimSpace(string(sessionID)))
@@ -85,19 +43,8 @@ func realCommandCodeDir() string {
 	return filepath.Join(home, ".commandcode")
 }
 
-// PrepareSessionHome builds the per-session home and writes AO's standing
-// instructions into its user-tier AGENTS.md, composed with the user's own
-// user-tier memory. It returns the home directory to point HOME / USERPROFILE
-// at.
-//
-// Mirroring is best-effort per file: a user who has never logged in has no
-// auth.json, and Command Code can still start for an explicitly configured
-// provider. Only a failure to write the memory file itself is fatal, because a
-// session whose memory is empty would run with no AO role at all.
-//
-// Re-preparing an existing home rewrites only AO's own files (AGENTS.md, the
-// include block in .gitconfig, and the mirrored profile inputs). Native
-// transcripts the session has already written there are left untouched.
+// PrepareSessionHome mirrors the profile and composes user memory with AO's role.
+// Memory writes are required; profile mirroring is best-effort and preserves history.
 func PrepareSessionHome(dataDir string, sessionID domain.SessionID, systemPrompt string) (string, error) {
 	home := SessionHomeDir(dataDir, sessionID)
 	if home == "" {
@@ -113,22 +60,13 @@ func PrepareSessionHome(dataDir string, sessionID domain.SessionID, systemPrompt
 	source := realCommandCodeDir()
 	if source != "" && source != profile {
 		mirrorProfileFiles(source, profile)
-		// Command Code resolves the user's own mods from $HOME/.commandcode/
-		// mods, npm installs there as well, and relative configured mod paths
-		// resolve against the home: mirroring the real directory is what keeps
-		// the user's mods loading under the redirected HOME. Refreshed on
-		// every launch, so a change made to the real mods tree, including a
-		// `mods update` run inside an earlier session, lands next launch.
+		// Refresh installed mods without disturbing native transcripts.
 		mirrorDirectoryTree(filepath.Join(source, "mods"), filepath.Join(profile, "mods"))
 	}
 	if realHome, err := os.UserHomeDir(); err == nil && strings.TrimSpace(realHome) != "" && realHome != home {
 		linkRealDotfiles(realHome, home)
 		preserveGitConfiguration(realHome, home)
 	}
-	// The user tier is where Command Code reads memory from, so redirecting HOME
-	// hides whatever the user put there. Compose the real file with AO's prompt
-	// instead of replacing it, reading always from the real home: re-preparing
-	// on restore therefore never folds a previous session copy into the new one.
 	memory := composeSessionMemory(systemPrompt, source, profile)
 	if err := writePrivateFile(filepath.Join(profile, "AGENTS.md"), memory); err != nil {
 		return "", fmt.Errorf("command-code: write session memory: %w", err)
@@ -136,15 +74,7 @@ func PrepareSessionHome(dataDir string, sessionID domain.SessionID, systemPrompt
 	return home, nil
 }
 
-// composeSessionMemory returns the session's user-tier memory: the user's own
-// ~/.commandcode/AGENTS.md, when they have one, followed by AO's standing
-// instructions.
-//
-// The user's memory is kept verbatim and ahead of AO's role, mirroring the tier
-// it came from: their global preferences first, the session's role last. The
-// original file is only ever read, and the composition starts from it on every
-// launch rather than from the session's previous copy, so a restore neither
-// duplicates the user's text nor loses AO's.
+// composeSessionMemory reads the real user memory afresh so restore never duplicates it.
 func composeSessionMemory(systemPrompt, sourceProfile, sessionProfile string) []byte {
 	instructions := strings.TrimRight(systemPrompt, "\n") + "\n"
 	if sourceProfile == "" || sourceProfile == sessionProfile {
@@ -161,18 +91,8 @@ func composeSessionMemory(systemPrompt, sourceProfile, sessionProfile string) []
 	return []byte(userMemory + "\n\n" + instructions)
 }
 
-// MigrateNativeHistory copies a captured native conversation into the session
-// home so `--resume` and `session/load` keep working after AO switches the
-// session's HOME.
-//
-// Sessions created before this change wrote their transcripts under the real
-// user's ~/.commandcode/projects/<slug>/, and Command Code resolves resume
-// targets inside the home-scoped project catalog. Without migration, restoring
-// such a session from its new isolated home searches an empty catalog and the
-// conversation is unreachable. Only files belonging to this exact conversation
-// id are copied, only when the destination does not already have them, and a
-// missing or unreadable source is not an error: there may simply be nothing to
-// migrate, for example on a fresh launch.
+// MigrateNativeHistory copies only the captured conversation and sidecars.
+// Existing destination files win; missing source history is allowed.
 func MigrateNativeHistory(dataDir string, sessionID domain.SessionID, agentSessionID string) {
 	agentSessionID = strings.TrimSpace(agentSessionID)
 	home := SessionHomeDir(dataDir, sessionID)
@@ -204,9 +124,7 @@ func MigrateNativeHistory(dataDir string, sessionID domain.SessionID, agentSessi
 	}
 }
 
-// SessionHomeEnv returns the environment overlay that points a Command Code
-// process at its per-session home. HOME and USERPROFILE are both set because
-// Command Code resolves ~/.commandcode through either one.
+// SessionHomeEnv points both supported home variables at the isolated profile.
 func SessionHomeEnv(home string) map[string]string {
 	if strings.TrimSpace(home) == "" {
 		return nil
@@ -217,42 +135,8 @@ func SessionHomeEnv(home string) map[string]string {
 	}
 }
 
-// SessionProcessEnv returns the full environment overlay for a Command Code
-// process: the per-session home plus passthroughs that keep the worker's own
-// developer tooling working under the redirected HOME.
-//
-// The overlay is inherited by Command Code's shell commands and hooks, not just
-// its memory loader, and the generated home contains only mirrors and links,
-// never the real profile itself. Without a passthrough, gh would lose its login;
-// GH_CONFIG_DIR repoints it at the real config directory. Each is set only when
-// its target exists, so users without either are unaffected.
-//
-// Git is deliberately left on native discovery. Pointing GIT_CONFIG_GLOBAL at
-// the real ~/.gitconfig would suppress both of git's native global files, so a
-// user whose identity or credentials are split between ~/.gitconfig and
-// $XDG_CONFIG_HOME/git/config would silently lose the half that lives in the
-// other file. Instead PrepareSessionHome mirrors the XDG file when HOME supplies
-// that path, and includes the real ~/.gitconfig from the session home's own
-// .gitconfig, which keeps both sources and their normal ordering (XDG first,
-// ~/.gitconfig last) exactly as git resolves them outside a session.
-//
-// The one exception is a session whose XDG file needed anchoring (its include or
-// gitdir bases point at HOME): native discovery would then apply the real XDG
-// file *and* its anchored copy, duplicating multivalued settings such as
-// http.extraHeader. For that session only, PrepareSessionHome marks its
-// .gitconfig and this overlay makes it the child's global file. That file
-// already includes both sources in native order, so each is still read exactly
-// once, and the mark is dropped again as soon as the XDG chain needs no
-// anchoring. A user who set GIT_CONFIG_GLOBAL themselves keeps their choice; git
-// then reads only their file, so nothing is duplicated either.
-//
-// Decisions are made against the environment the child actually starts from:
-// the daemon's ambient environment overlaid by the caller's session
-// environment. An explicit GH_CONFIG_DIR, whether configured per project or
-// simply inherited by the daemon, is therefore never overwritten. gh resolves
-// to $XDG_CONFIG_HOME/gh the moment that variable is set, so GH_CONFIG_DIR is
-// filled in only when it is not. Comparison is case-insensitive because
-// Windows folds environment keys.
+// SessionProcessEnv preserves explicit daemon/project overrides and gh's XDG lookup.
+// An anchored XDG chain uses the session global config to avoid reading it twice.
 func SessionProcessEnv(dataDir string, sessionID domain.SessionID, base map[string]string) map[string]string {
 	home := SessionHomeDir(dataDir, sessionID)
 	env := SessionHomeEnv(home)
@@ -275,17 +159,12 @@ func SessionProcessEnv(dataDir string, sessionID domain.SessionID, base map[stri
 	return env
 }
 
-// gitConfigGlobalScope reports whether this session's .gitconfig has to be the
-// child's global file: PrepareSessionHome marks it when the anchored XDG copy is
-// the only place the XDG source may be read from.
+// gitConfigGlobalScope reports whether only the anchored XDG copy should be read.
 func gitConfigGlobalScope(home string) bool {
 	return isRegularFile(filepath.Join(home, sessionGitConfigCopiesDir, gitConfigGlobalScopeMarker))
 }
 
-// effectiveEnv merges the daemon's ambient environment with the caller's
-// session overlay, which is what the child resolves before our additions are
-// applied on either launch path. The overlay wins case-insensitively, matching
-// how the flat environment behaves after Windows key folding.
+// effectiveEnv overlays session variables onto the daemon environment.
 func effectiveEnv(base map[string]string) map[string]string {
 	effective := make(map[string]string)
 	for _, entry := range os.Environ() {
@@ -312,9 +191,7 @@ func hasEnvKey(env map[string]string, key string) bool {
 	return false
 }
 
-// ghConfigDir locates the user's gh configuration without moving it: the
-// platform default (%APPDATA%\GitHub CLI on Windows, ~/.config/gh elsewhere),
-// used only when no XDG layer exists. Callers check XDG first.
+// ghConfigDir finds the default gh profile when no explicit or XDG override applies.
 func ghConfigDir(realHome string) string {
 	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
 		if dir := filepath.Join(appData, "GitHub CLI"); isDirectory(dir) {
@@ -337,10 +214,7 @@ func isDirectory(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// linkRealDotfiles exposes entries from the real home inside the session home
-// without copying them. Copying would fork the source of truth -- a rotated
-// key would leave a stale copy behind -- and private keys must never be
-// duplicated onto disk by an agent launcher.
+// linkRealDotfiles keeps developer credentials live without overwriting session entries.
 func linkRealDotfiles(realHome, sessionHome string) {
 	entries := append([]string(nil), linkedHomeEntries...)
 	// Keep .config itself session-owned: preserveGitConfiguration rewrites its
@@ -375,9 +249,7 @@ func linkRealDotfiles(realHome, sessionHome string) {
 	}
 }
 
-// absoluteXDGConfigHome returns the XDG config home git will actually use, or ""
-// when git falls back to $HOME/.config for its second global file. A relative
-// value is ignored by git, exactly as it is here.
+// absoluteXDGConfigHome returns an absolute XDG override, or the native HOME fallback.
 func absoluteXDGConfigHome() string {
 	xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
 	if xdg == "" || !filepath.IsAbs(xdg) {
@@ -386,13 +258,7 @@ func absoluteXDGConfigHome() string {
 	return xdg
 }
 
-// sessionGitConfigIncludeBegin and sessionGitConfigIncludeEnd delimit the block
-// AO owns inside the session home's .gitconfig. Markers let a later launch
-// replace the block in place instead of appending a second copy, while leaving
-// anything the session wrote there itself untouched.
-//
-// sessionGitConfigCopiesDir holds session-owned rewrites of real config files
-// that rely on a HOME-relative or file-relative base; see gitConfigRewriter.
+// Markers bound AO's block; copies retain includes whose HOME bases move.
 const (
 	sessionGitConfigIncludeBegin = "# AO: the real user git configuration, included so it applies inside this session"
 	sessionGitConfigIncludeEnd   = "# AO: end of the real user git configuration"
@@ -406,22 +272,9 @@ const (
 	gitConfigGlobalScopeMarker = "global-scope"
 )
 
-// preserveGitConfiguration makes both of git's native global config files apply
-// inside the session home, in their native order, each read exactly once. HOME
-// moves into the session home, so ~/.gitconfig and ~/.config/git/config resolve
-// there. An absolute XDG_CONFIG_HOME keeps its native path; otherwise the real
-// ~/.config/git directory is mirrored. ~/.gitconfig is included from the
-// session's own ~/.gitconfig, so native discovery stays in charge; GIT_CONFIG_GLOBAL
-// would replace both files and hide the XDG half. Home-relative and file-relative
-// bases that break after the redirect are anchored into session-owned copies
-// under .ao-gitconfig (see gitConfigRewriter); configs that already resolve are
-// used in place. Multivalued settings are applied once: when an XDG file needs
-// anchoring, the session .gitconfig becomes the child's global file for that
-// launch, marked under .ao-gitconfig and dropped once anchoring is no longer
-// needed. An existing session .gitconfig keeps its content and precedence, with
-// AO's block replaced in place (or placed ahead when the session wrote first).
-// When nothing needs including, the block is removed and the session returns to
-// native discovery, keeping whatever the session wrote itself.
+// preserveGitConfiguration retains XDG-before-global precedence and session settings.
+// Read an anchored XDG source exactly once by selecting the combined session config.
+// Remove stale includes before returning to native discovery on restore.
 func preserveGitConfiguration(realHome, sessionHome string) {
 	rewriter := &gitConfigRewriter{
 		realHome:    realHome,
@@ -434,24 +287,14 @@ func preserveGitConfiguration(realHome, sessionHome string) {
 	// Git reads the XDG file before ~/.gitconfig; keep that order.
 	if xdg := absoluteXDGConfigHome(); xdg != "" {
 		if source := filepath.Join(xdg, "git", "config"); isRegularFile(source) && rewriter.rebaseNeeded(source, 0) {
-			// The real file stays readable at its own path, but a home-relative
-			// include inside it cannot resolve. Re-apply it later from the copy,
-			// ahead of ~/.gitconfig, so precedence is unchanged. The copy is the
-			// only place git may read this file from; see xdgRebased below. If the
-			// copy cannot be written, leave the file to native discovery: that
-			// keeps working settings and merely skips the unresolvable includes,
-			// which is better than applying a part of it twice.
+			// If anchoring fails, retain native discovery without duplicating the source.
 			if copyPath := rewriter.materialize(source); copyPath != source {
 				includes = append(includes, copyPath)
 				xdgRebased = true
 			}
 		}
 	} else {
-		// $HOME/.config/git/config resolves inside the session home. Mirror the
-		// directory, then relocate the mirrored config: it now lives somewhere
-		// else, so its own relative and home-relative bases must be anchored to
-		// the real files. The mirror is the file git reads, so nothing is read
-		// twice.
+		// Anchor the mirrored XDG config against its real source directory.
 		sourceDir := filepath.Join(realHome, ".config", "git")
 		mirrored := filepath.Join(sessionHome, ".config", "git")
 		mirrorDirectoryTree(sourceDir, mirrored)
@@ -467,11 +310,7 @@ func preserveGitConfiguration(realHome, sessionHome string) {
 	path := filepath.Join(sessionHome, ".gitconfig")
 	marker := filepath.Join(sessionHome, sessionGitConfigCopiesDir, gitConfigGlobalScopeMarker)
 	if len(includes) == 0 {
-		// Nothing needs including any more, so git resolves both native files
-		// itself. Drop AO's block first: leaving it would keep reading the old
-		// copy next to the live XDG file, duplicating multivalued settings and
-		// pinning values the user has since changed. Anything the session wrote
-		// itself stays.
+		// Clear the stale copy reference before restoring native discovery.
 		dropGitConfigIncludeBlock(path)
 		_ = os.Remove(marker)
 		return
@@ -527,10 +366,7 @@ func replaceGitConfigIncludeBlock(existing, block string) string {
 	return block + "\n" + existing
 }
 
-// dropGitConfigIncludeBlock removes AO's include block from the session
-// .gitconfig, which is what returns a session to native discovery, while keeping
-// anything the session wrote there itself. A file that held nothing else is
-// removed, since git would find nothing in it.
+// dropGitConfigIncludeBlock preserves session settings and removes an AO-only file.
 func dropGitConfigIncludeBlock(path string) {
 	existing, err := os.ReadFile(path)
 	if err != nil {
@@ -547,10 +383,7 @@ func dropGitConfigIncludeBlock(path string) {
 	_ = writePrivateFile(path, []byte(updated))
 }
 
-// gitConfigRewriter rebases home-relative include paths in real git config
-// files into session-owned copies, so layered configs keep resolving after HOME
-// moves. Copies are keyed by their real source path and regenerated on every
-// launch.
+// gitConfigRewriter anchors include chains in session-owned copies.
 type gitConfigRewriter struct {
 	realHome    string
 	sessionHome string
@@ -558,9 +391,7 @@ type gitConfigRewriter struct {
 	depth       int
 }
 
-// reference returns the path the session config should include for target: the
-// real file when nothing beneath it depends on HOME, otherwise a session-owned
-// copy whose includes point at the real filesystem.
+// reference selects the real config or its anchored session copy.
 func (r *gitConfigRewriter) reference(target string) string {
 	target = filepath.Clean(target)
 	if copyPath, ok := r.copies[target]; ok {
@@ -572,11 +403,7 @@ func (r *gitConfigRewriter) reference(target string) string {
 	return r.materialize(target)
 }
 
-// rebaseNeeded reports whether target, or any config it includes, relies on a
-// base that changes when the file is read from a different location: a `~/`
-// include path or a `~/` gitdir condition, both of which git expands against
-// HOME. Relative includes and `./` conditions resolve against the file itself
-// and stay correct where it lives, so only a relocation requires anchoring them.
+// rebaseNeeded checks whether this include chain depends on the original HOME.
 func (r *gitConfigRewriter) rebaseNeeded(target string, depth int) bool {
 	if depth > gitConfigIncludeMaxDepth {
 		return false
@@ -596,7 +423,7 @@ func (r *gitConfigRewriter) rebaseNeeded(target string, depth int) bool {
 	return false
 }
 
-// materialize writes a rewritten copy of target and returns its path.
+// materialize writes an anchored copy, retaining the real path on failure.
 func (r *gitConfigRewriter) materialize(target string) string {
 	if copyPath, ok := r.copies[target]; ok {
 		return copyPath
@@ -622,8 +449,7 @@ func (r *gitConfigRewriter) materialize(target string) string {
 	return dest
 }
 
-// relocate writes a session-owned copy of a config file whose location changes,
-// anchoring every include and condition base to the real filesystem.
+// relocate anchors includes and conditions to their original directory and home.
 func (r *gitConfigRewriter) relocate(source, dest string) error {
 	contents, err := os.ReadFile(source)
 	if err != nil {
@@ -632,11 +458,7 @@ func (r *gitConfigRewriter) relocate(source, dest string) error {
 	return writePrivateFile(dest, []byte(r.rewrite(string(contents), filepath.Dir(source))))
 }
 
-// rewrite anchors every include path and gitdir condition in contents: `~/`
-// against the real home, `./` and other relative paths against the real config's
-// directory. Absolute values are left alone. Nested files that need the same
-// treatment become further copies; everything else keeps pointing at the real
-// file.
+// rewrite changes include paths and gitdir conditions while retaining other raw lines.
 func (r *gitConfigRewriter) rewrite(contents, sourceDir string) string {
 	var out strings.Builder
 	section := ""
@@ -667,9 +489,7 @@ func (r *gitConfigRewriter) rewrite(contents, sourceDir string) string {
 	return out.String()
 }
 
-// anchorCondition rewrites a path-based includeIf condition so that its base no
-// longer depends on HOME or on the file's own directory. Other conditions
-// (onbranch) and already absolute or base-independent patterns are left alone.
+// anchorCondition rebases gitdir and gitdir/i patterns only.
 func (r *gitConfigRewriter) anchorCondition(condition, sourceDir string) (string, bool) {
 	prefix, pattern, ok := gitConditionPattern(condition)
 	if !ok {
@@ -682,8 +502,7 @@ func (r *gitConfigRewriter) anchorCondition(condition, sourceDir string) (string
 	return prefix + anchored, true
 }
 
-// gitConditionPattern splits an includeIf condition into its keyword and the
-// pattern that follows it, preserving `gitdir` versus `gitdir/i` semantics.
+// gitConditionPattern preserves the condition keyword and its case sensitivity.
 func gitConditionPattern(condition string) (string, string, bool) {
 	lower := strings.ToLower(condition)
 	for _, keyword := range []string{"gitdir/i:", "gitdir:"} {
@@ -694,10 +513,7 @@ func gitConditionPattern(condition string) (string, string, bool) {
 	return "", "", false
 }
 
-// anchorConfigPattern turns a gitdir pattern whose base depends on HOME or on the
-// file's own directory into an absolute pattern. Wildcards and a trailing
-// separator are preserved: only the base before them changes, because git
-// matches the separator literally.
+// anchorConfigPattern changes the base while preserving wildcards and trailing slashes.
 func anchorConfigPattern(pattern, sourceDir, realHome string) (string, bool) {
 	var base, rest string
 	switch {
@@ -744,8 +560,7 @@ func gitIncludeTargets(contents, sourceDir, realHome string) []string {
 	return targets
 }
 
-// needsGitConfigAnchoring reports whether contents depends on a base that moves
-// with HOME: a `~/` include path or a `~/` gitdir condition.
+// needsGitConfigAnchoring detects HOME-relative includes and gitdir conditions.
 func needsGitConfigAnchoring(contents string) bool {
 	section := ""
 	for _, line := range splitGitConfigLines(contents) {
@@ -779,10 +594,7 @@ type gitConfigLine struct {
 	text string
 }
 
-// splitGitConfigLines splits contents into logical lines. Git joins a line that
-// ends in an unescaped backslash with the next physical line, dropping the
-// backslash and newline, so parsing has to see the joined value; untouched lines
-// keep their original bytes, continuations included.
+// splitGitConfigLines joins unescaped continuations for parsing and keeps original bytes.
 func splitGitConfigLines(contents string) []gitConfigLine {
 	var lines []gitConfigLine
 	for contents != "" {
@@ -830,9 +642,7 @@ func gitSectionName(line string) string {
 	return name
 }
 
-// gitSectionHeader parses a section header into its lowercased name and, when
-// present, its unquoted subsection. A `]` inside the quoted subsection does not
-// end the header.
+// gitSectionHeader handles quoted subsections, including embedded closing brackets.
 func gitSectionHeader(line string) (string, string, bool) {
 	line = strings.TrimLeft(line, " \t")
 	if !strings.HasPrefix(line, "[") {
@@ -874,9 +684,7 @@ func gitSectionHeader(line string) (string, string, bool) {
 	return strings.ToLower(name), subsection, true
 }
 
-// gitExpandConfigPath resolves a config path value: `~/` against the real home,
-// anything relative against the directory of the file that contains it.
-// Another user's home and an empty value are left for git to interpret.
+// gitExpandConfigPath resolves real-home and file-relative paths; ~user stays native.
 func gitExpandConfigPath(value, sourceDir, realHome string) (string, bool) {
 	switch {
 	case value == "":
@@ -970,11 +778,7 @@ func gitConfigCopyName(target string) string {
 	return hex.EncodeToString(sum[:8]) + ".gitconfig"
 }
 
-// mirrorDirectoryTree recursively copies a real directory into a mirrored
-// one, overwriting existing files so each launch refreshes the session's
-// copy. Nothing is ever deleted: session-side additions survive. Best-effort
-// per entry, like every other mirror input; a single unreadable file must not
-// stop the session from launching.
+// mirrorDirectoryTree refreshes regular files without following links or deleting additions.
 func mirrorDirectoryTree(source, destination string) {
 	if !isDirectory(source) {
 		return
@@ -1011,9 +815,7 @@ func mirrorDirectoryTree(source, destination string) {
 	}
 }
 
-// mirrorProfileFiles copies the user's Command Code profile into the session
-// home. Each file is independent: one missing or unreadable file must not stop
-// the session from launching.
+// mirrorProfileFiles refreshes each available profile input independently.
 func mirrorProfileFiles(source, destination string) {
 	for _, name := range mirroredProfileFiles {
 		contents, err := os.ReadFile(filepath.Join(source, name)) //nolint:gosec // name is a fixed allowlist
@@ -1027,23 +829,8 @@ func mirrorProfileFiles(source, destination string) {
 	}
 }
 
-// rebaseSettingsHomeRefs rewrites home-relative asset paths in a mirrored
-// settings.json to absolute real-home paths.
-//
-// Copying the JSON alone leaves home-relative references broken: a skill entry
-// like "~/.commandcode/custom-skills", a hook running
-// `bash "$HOME/.commandcode/hooks/guard.sh"`, or a configured mod path all
-// resolve inside the isolated home, where none of them exists, so configured
-// skills disappear, user hooks cannot execute, and the user's mods stop
-// loading. Command Code expands `~/` in configured skill and mod paths, so
-// these references unambiguously mean the real home. Rewriting happens on AO's
-// copy only; the user's file is never touched.
-//
-// Only `~/` and `$HOME` prefixes are rewritten, and only inside the `skills`
-// list, the `mods.paths` list, and hook `command` strings -- permission rule
-// patterns and other free text keep their literal form. Anything that fails to
-// parse as JSON is returned unchanged rather than dropping the user's
-// settings.
+// rebaseSettingsHomeRefs anchors skill/mod paths and hook commands on the session copy.
+// Permission rules and malformed JSON remain untouched.
 func rebaseSettingsHomeRefs(contents []byte, realHome string) []byte {
 	realHome = strings.TrimSpace(realHome)
 	if realHome == "" {
@@ -1123,9 +910,7 @@ func rebaseSettingsHomeRefs(contents []byte, realHome string) []byte {
 	return encoded
 }
 
-// rebaseHomeRef resolves a single configured path against the real home,
-// reporting whether it changed. Absolute paths and non-home references pass
-// through untouched.
+// rebaseHomeRef resolves a configured home prefix without changing other paths.
 func rebaseHomeRef(path, realHome string) (string, bool) {
 	if strings.HasPrefix(path, "~/") {
 		return filepath.Join(realHome, strings.TrimPrefix(path, "~/")), true
@@ -1152,9 +937,7 @@ func isShellDelimiter(char byte) bool {
 	return false
 }
 
-// homeVarEnd reports the position just past a $HOME reference at index, or -1
-// when the reference is not followed by a real variable boundary: $HOMEBREW
-// and similar identifiers share the $HOME prefix and must stay untouched.
+// homeVarEnd matches HOME at a variable boundary, excluding HOMEBREW-style names.
 func homeVarEnd(command string, index int) int {
 	if !strings.HasPrefix(command[index:], "$HOME") {
 		return -1
@@ -1169,22 +952,8 @@ func homeVarEnd(command string, index int) int {
 	return end
 }
 
-// rebaseHookCommand rewrites home-relative references in a shell command so
-// they keep resolving to the real home while it runs under the session home.
-// Shell semantics are preserved rather than guessed at:
-//
-//   - $HOME expands, and is rewritten, outside single quotes only; inside
-//     single quotes it is intentionally literal. $HOMEBREW-style identifiers
-//     that merely share the $HOME prefix are left alone.
-//   - A leading ~ expands only when unquoted at the start of a word; inside
-//     quotes it stays a literal character.
-//   - A home whose path contains whitespace would split into two arguments
-//     after naive substitution, so only the substituted home is double-quoted.
-//     The suffix is copied unchanged into the same word, so its own quoting,
-//     variables and wildcards keep working: `~/hooks/*.json` still globs.
-//
-// Anything ambiguous is left as written; a hook command that cannot be
-// rewritten safely keeps running with its original source.
+// rebaseHookCommand preserves shell quoting and variable boundaries.
+// Quote only the replaced home prefix, keeping wildcard suffixes expandable.
 func rebaseHookCommand(command, realHome string) (string, bool) {
 	realHome = strings.TrimSpace(realHome)
 	if realHome == "" {
@@ -1276,9 +1045,7 @@ func rebaseHookCommand(command, realHome string) (string, bool) {
 	return out.String(), true
 }
 
-// writeExpandedHome writes the substituted home as a single word. Only the home
-// itself is quoted, so a suffix such as `/.commandcode/hooks/*.json` stays
-// outside the quotes and the shell still expands its wildcard.
+// writeExpandedHome quotes only the prefix so suffix expansions remain active.
 func writeExpandedHome(out *strings.Builder, realHome string, needsQuote bool) {
 	if !needsQuote {
 		out.WriteString(realHome)

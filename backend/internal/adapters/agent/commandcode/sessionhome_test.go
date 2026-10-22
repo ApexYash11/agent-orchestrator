@@ -12,9 +12,39 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-// isolatedHome points os.UserHomeDir at a fresh directory, so a test never
-// composes the developer's own ~/.commandcode memory or git configuration into
-// its expectations.
+func makeHomeDir(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeHomeFile(t *testing.T, path string, contents []byte) {
+	t.Helper()
+	makeHomeDir(t, filepath.Dir(path))
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readHomeFile(t *testing.T, path string) []byte {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return contents
+}
+
+func prepareHome(t *testing.T, dataDir string, id domain.SessionID, prompt string) string {
+	t.Helper()
+	home, err := PrepareSessionHome(dataDir, id, prompt)
+	if err != nil {
+		t.Fatalf("prepare %s: %v", id, err)
+	}
+	return home
+}
+
 func isolatedHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
@@ -23,100 +53,57 @@ func isolatedHome(t *testing.T) string {
 	return home
 }
 
-// The user tier is used instead of the project tier precisely because it is
-// additive: a repository that already carries its own AGENTS.md must keep it,
-// and AO's instructions must load alongside it rather than being shadowed.
 func TestPrepareSessionHomeWritesStandingInstructionsToTheUserTier(t *testing.T) {
 	isolatedHome(t)
 	dataDir := t.TempDir()
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "You are an AO worker.")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "You are an AO worker.")
 	if want := filepath.Join(dataDir, "harnesses", "command-code", "mer-1"); home != want {
 		t.Fatalf("home = %q, want %q", home, want)
 	}
 	memory := filepath.Join(home, ".commandcode", "AGENTS.md")
-	contents, err := os.ReadFile(memory)
-	if err != nil {
-		t.Fatalf("read memory: %v", err)
-	}
+	contents := readHomeFile(t, memory)
 	if string(contents) != "You are an AO worker.\n" {
 		t.Fatalf("memory = %q", contents)
 	}
 }
 
-// Two AO sessions on the same machine must not overwrite each other's role
-// prompt. Each owns a distinct home under its own session id.
 func TestPrepareSessionHomeIsolatesConcurrentSessions(t *testing.T) {
 	isolatedHome(t)
 	dataDir := t.TempDir()
-	first, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "orchestrator role")
-	if err != nil {
-		t.Fatalf("first: %v", err)
-	}
-	second, err := PrepareSessionHome(dataDir, domain.SessionID("mer-2"), "worker role")
-	if err != nil {
-		t.Fatalf("second: %v", err)
-	}
+	first := prepareHome(t, dataDir, domain.SessionID("mer-1"), "orchestrator role")
+	second := prepareHome(t, dataDir, domain.SessionID("mer-2"), "worker role")
 	if first == second {
 		t.Fatalf("both sessions share home %q", first)
 	}
 	for home, want := range map[string]string{first: "orchestrator role", second: "worker role"} {
-		contents, err := os.ReadFile(filepath.Join(home, ".commandcode", "AGENTS.md"))
-		if err != nil {
-			t.Fatalf("read %q: %v", home, err)
-		}
+		contents := readHomeFile(t, filepath.Join(home, ".commandcode", "AGENTS.md"))
 		if !strings.Contains(string(contents), want) {
 			t.Fatalf("%q memory = %q, want %q", home, contents, want)
 		}
 	}
 }
 
-// Command Code reloads memory on every request, so re-preparing a session must
-// update the file in place rather than fail on the existing one.
 func TestPrepareSessionHomeRewritesOnRestore(t *testing.T) {
 	isolatedHome(t)
 	dataDir := t.TempDir()
-	if _, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "first role"); err != nil {
-		t.Fatalf("first: %v", err)
-	}
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "recomputed role")
-	if err != nil {
-		t.Fatalf("restore: %v", err)
-	}
-	contents, err := os.ReadFile(filepath.Join(home, ".commandcode", "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("read memory: %v", err)
-	}
+	prepareHome(t, dataDir, domain.SessionID("mer-1"), "first role")
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "recomputed role")
+	contents := readHomeFile(t, filepath.Join(home, ".commandcode", "AGENTS.md"))
 	if string(contents) != "recomputed role\n" {
 		t.Fatalf("memory = %q, want the recomputed instructions", contents)
 	}
 }
 
-// The user tier is where Command Code reads memory, so redirecting HOME must not
-// hide the user's own global instructions: the session file carries both, with
-// the user's memory first and AO's role last.
 func TestPrepareSessionHomeKeepsTheUsersOwnMemory(t *testing.T) {
 	userHome := isolatedHome(t)
 	realProfile := filepath.Join(userHome, ".commandcode")
-	if err := os.MkdirAll(realProfile, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, realProfile)
 	userMemory := "# My preferences\n\nAlways run gofmt.\n"
-	if err := os.WriteFile(filepath.Join(realProfile, "AGENTS.md"), []byte(userMemory), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeHomeFile(t, filepath.Join(realProfile, "AGENTS.md"), []byte(userMemory))
 
 	dataDir := t.TempDir()
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "You are an AO worker.")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
-	contents, err := os.ReadFile(filepath.Join(home, ".commandcode", "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("read memory: %v", err)
-	}
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "You are an AO worker.")
+	contents := readHomeFile(t, filepath.Join(home, ".commandcode", "AGENTS.md"))
 	want := userMemory + "\nYou are an AO worker.\n"
 	if string(contents) != want {
 		t.Fatalf("memory = %q, want the user's memory followed by AO's role", contents)
@@ -128,13 +115,8 @@ func TestPrepareSessionHomeKeepsTheUsersOwnMemory(t *testing.T) {
 
 	// Restoring re-prepares from the real file, so the user's text is composed
 	// once rather than folded into the session copy again.
-	if _, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "You are an AO worker."); err != nil {
-		t.Fatalf("restore: %v", err)
-	}
-	restored, err := os.ReadFile(filepath.Join(home, ".commandcode", "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("read restored memory: %v", err)
-	}
+	prepareHome(t, dataDir, domain.SessionID("mer-1"), "You are an AO worker.")
+	restored := readHomeFile(t, filepath.Join(home, ".commandcode", "AGENTS.md"))
 	if string(restored) != want {
 		t.Fatalf("restored memory = %q, want it composed once", restored)
 	}
@@ -143,15 +125,10 @@ func TestPrepareSessionHomeKeepsTheUsersOwnMemory(t *testing.T) {
 	}
 }
 
-// A session with no instructions must not get an empty memory file, which
-// Command Code would load as an empty block ahead of its own system prompt.
 func TestPrepareSessionHomeSkipsEmptyInstructions(t *testing.T) {
 	dataDir := t.TempDir()
 	for _, prompt := range []string{"", "   ", "\n\t"} {
-		home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-empty"), prompt)
-		if err != nil {
-			t.Fatalf("PrepareSessionHome(%q): %v", prompt, err)
-		}
+		home := prepareHome(t, dataDir, domain.SessionID("mer-empty"), prompt)
 		if home != "" {
 			t.Fatalf("PrepareSessionHome(%q) = %q, want no home", prompt, home)
 		}
@@ -161,31 +138,17 @@ func TestPrepareSessionHomeSkipsEmptyInstructions(t *testing.T) {
 	}
 }
 
-// A mirrored credential must never be briefly world-readable. Go's os.Chmod
-// only toggles the read-only bit on Windows, where access is governed by ACLs
-// rather than the POSIX mode bits, so the mode assertion runs where it is
-// meaningful and the copy itself is checked everywhere.
 func TestPrepareSessionHomeKeepsMirroredFilesPrivate(t *testing.T) {
 	dataDir := t.TempDir()
 	source := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(source, ".commandcode"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, filepath.Join(source, ".commandcode"))
 	secret := filepath.Join(source, ".commandcode", "auth.json")
-	if err := os.WriteFile(secret, []byte(`{"token":"secret"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeHomeFile(t, secret, []byte(`{"token":"secret"}`))
 	t.Setenv("HOME", source)
 	t.Setenv("USERPROFILE", source)
 
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
-	mirrored, err := os.ReadFile(filepath.Join(home, ".commandcode", "auth.json"))
-	if err != nil {
-		t.Fatalf("read mirrored auth.json: %v", err)
-	}
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
+	mirrored := readHomeFile(t, filepath.Join(home, ".commandcode", "auth.json"))
 	if !strings.Contains(string(mirrored), "secret") {
 		t.Fatalf("mirrored auth.json = %q, want the user's credential", mirrored)
 	}
@@ -201,8 +164,6 @@ func TestPrepareSessionHomeKeepsMirroredFilesPrivate(t *testing.T) {
 	}
 }
 
-// The terminal side points HOME / USERPROFILE at the same directory the Chat
-// binding does, so both surfaces resolve the same memory.
 func TestAugmentRuntimeLaunchEnvPointsAtTheSessionHome(t *testing.T) {
 	dataDir := t.TempDir()
 	env := map[string]string{}
@@ -213,8 +174,6 @@ func TestAugmentRuntimeLaunchEnvPointsAtTheSessionHome(t *testing.T) {
 	}
 }
 
-// A session with no data directory has nowhere to put a home, so AO must leave
-// the environment alone rather than point Command Code at an empty path.
 func TestSessionHomeDirNeedsBothInputs(t *testing.T) {
 	if got := SessionHomeDir("", domain.SessionID("mer-1")); got != "" {
 		t.Fatalf("SessionHomeDir with no dataDir = %q", got)
@@ -227,11 +186,6 @@ func TestSessionHomeDirNeedsBothInputs(t *testing.T) {
 	}
 }
 
-// The session home follows prompts/ retention: it is never removed on spawn or
-// restore failures, and no workspace-cleanup hook deletes it, because every
-// one of those paths can precede a retry that needs the native history. Only
-// the disposable prompts/<id> tree is wiped there, and the home deliberately
-// lives outside it.
 func TestSessionHomeSurvivesOutsideThePromptsDirectory(t *testing.T) {
 	home := SessionHomeDir(filepath.Join("data"), domain.SessionID("mer-1"))
 	if strings.Contains(filepath.ToSlash(home), "prompts/") {
@@ -239,75 +193,47 @@ func TestSessionHomeSurvivesOutsideThePromptsDirectory(t *testing.T) {
 	}
 }
 
-// settings.json and mcp.json are separate supported inputs from config.json --
-// user deny rules, hooks and MCP servers -- so they must ride along into the
-// session home rather than silently disappearing behind the redirect.
 func TestPrepareSessionHomeMirrorsUserSettingsAndMCP(t *testing.T) {
 	dataDir := t.TempDir()
 	source := t.TempDir()
 	profile := filepath.Join(source, ".commandcode")
-	if err := os.MkdirAll(profile, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, profile)
 	for name, body := range map[string]string{
 		"settings.json": `{"permissions":{"deny":["Bash(rm -rf:*)"]}}`,
 		"mcp.json":      `{"mcpServers":{"tools":{"command":"tools"}}}`,
 	} {
-		if err := os.WriteFile(filepath.Join(profile, name), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		writeHomeFile(t, filepath.Join(profile, name), []byte(body))
 	}
 	t.Setenv("HOME", source)
 	t.Setenv("USERPROFILE", source)
 
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
 	for name, want := range map[string]string{
 		"settings.json": "rm -rf",
 		"mcp.json":      "mcpServers",
 	} {
-		contents, err := os.ReadFile(filepath.Join(home, ".commandcode", name))
-		if err != nil {
-			t.Fatalf("read mirrored %s: %v", name, err)
-		}
+		contents := readHomeFile(t, filepath.Join(home, ".commandcode", name))
 		if !strings.Contains(string(contents), want) {
 			t.Fatalf("mirrored %s = %q, want %q", name, contents, want)
 		}
 	}
 }
 
-// Sessions created before per-session homes existed keep their native transcript
-// under the real home's project catalog. Restoring one must bring that
-// conversation into the isolated home first, or --resume searches an empty
-// catalog. Only this conversation's own files move; the rest of the catalog is
-// untouched, and an existing destination is never overwritten.
 func TestMigrateNativeHistoryBringsTheCapturedConversationHome(t *testing.T) {
 	dataDir := t.TempDir()
 	source := t.TempDir()
 	slug := filepath.Join(source, ".commandcode", "projects", "c-users-work")
-	if err := os.MkdirAll(slug, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, slug)
 	for _, name := range []string{"native-1.jsonl", "native-1.meta.json", "other.jsonl"} {
-		if err := os.WriteFile(filepath.Join(slug, name), []byte("contents of "+name), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		writeHomeFile(t, filepath.Join(slug, name), []byte("contents of "+name))
 	}
 	t.Setenv("HOME", source)
 	t.Setenv("USERPROFILE", source)
 
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
 	MigrateNativeHistory(dataDir, domain.SessionID("mer-1"), "native-1")
 	for _, name := range []string{"native-1.jsonl", "native-1.meta.json"} {
-		contents, err := os.ReadFile(filepath.Join(home, ".commandcode", "projects", "c-users-work", name))
-		if err != nil {
-			t.Fatalf("migrated %s missing: %v", name, err)
-		}
+		contents := readHomeFile(t, filepath.Join(home, ".commandcode", "projects", "c-users-work", name))
 		if string(contents) != "contents of "+name {
 			t.Fatalf("migrated %s = %q", name, contents)
 		}
@@ -318,21 +244,14 @@ func TestMigrateNativeHistoryBringsTheCapturedConversationHome(t *testing.T) {
 
 	// A second restore must not clobber the session's own newer copy.
 	migrated := filepath.Join(home, ".commandcode", "projects", "c-users-work", "native-1.jsonl")
-	if err := os.WriteFile(migrated, []byte("session's own newer copy"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeHomeFile(t, migrated, []byte("session's own newer copy"))
 	MigrateNativeHistory(dataDir, domain.SessionID("mer-1"), "native-1")
-	contents, err := os.ReadFile(migrated)
-	if err != nil {
-		t.Fatal(err)
-	}
+	contents := readHomeFile(t, migrated)
 	if string(contents) != "session's own newer copy" {
 		t.Fatalf("restore overwrote the session copy: %q", contents)
 	}
 }
 
-// With no captured native id there is nothing to migrate, and the restore must
-// proceed as a fresh start rather than fail.
 func TestMigrateNativeHistoryWithoutAnIdentityIsANoOp(t *testing.T) {
 	dataDir := t.TempDir()
 	MigrateNativeHistory(dataDir, domain.SessionID("mer-1"), "")
@@ -342,20 +261,11 @@ func TestMigrateNativeHistoryWithoutAnIdentityIsANoOp(t *testing.T) {
 	}
 }
 
-// The redirected HOME is inherited by the agent's shell children, so the real
-// developer tooling has to be reachable without copying secrets: gh through its
-// config directory, and git through native discovery (the session home includes
-// the real ~/.gitconfig rather than repointing GIT_CONFIG_GLOBAL, which would
-// hide git's XDG file). Each is set only when its target exists.
 func TestSessionProcessEnvPreservesRealDeveloperTooling(t *testing.T) {
 	dataDir := t.TempDir()
 	userHome := t.TempDir()
-	if err := os.WriteFile(filepath.Join(userHome, ".gitconfig"), []byte("[user]\n\tname = dev\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(userHome, ".config", "gh"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeHomeFile(t, filepath.Join(userHome, ".gitconfig"), []byte("[user]\n\tname = dev\n"))
+	makeHomeDir(t, filepath.Join(userHome, ".config", "gh"))
 	t.Setenv("HOME", userHome)
 	t.Setenv("USERPROFILE", userHome)
 	t.Setenv("APPDATA", t.TempDir())
@@ -374,8 +284,6 @@ func TestSessionProcessEnvPreservesRealDeveloperTooling(t *testing.T) {
 	}
 }
 
-// A machine without either tool configured gets neither variable, rather than
-// pointers at paths that do not exist.
 func TestSessionProcessEnvOmitsMissingTooling(t *testing.T) {
 	dataDir := t.TempDir()
 	userHome := t.TempDir()
@@ -393,38 +301,23 @@ func TestSessionProcessEnvOmitsMissingTooling(t *testing.T) {
 	}
 }
 
-// SSH has no environment redirect, so the session home links the real ~/.ssh
-// rather than copying it: a copied key would silently go stale on rotation,
-// and private keys must never be duplicated by an agent launcher. Linking needs
-// symlink privilege, which stock Windows lacks, so there the session proceeds
-// without it -- exactly as before this change.
 func TestPrepareSessionHomeLinksRealSSHDirectory(t *testing.T) {
 	dataDir := t.TempDir()
 	source := t.TempDir()
 	sshDir := filepath.Join(source, ".ssh")
-	if err := os.MkdirAll(sshDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sshDir, "config"), []byte("Host example\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, sshDir)
+	writeHomeFile(t, filepath.Join(sshDir, "config"), []byte("Host example\n"))
 	t.Setenv("HOME", source)
 	t.Setenv("USERPROFILE", source)
 
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
 	link := filepath.Join(home, ".ssh")
 	if runtime.GOOS == "windows" {
 		if _, err := os.Lstat(link); os.IsNotExist(err) {
 			t.Skip("no symlink privilege: session proceeds without the ssh link")
 		}
 	}
-	contents, err := os.ReadFile(filepath.Join(link, "config"))
-	if err != nil {
-		t.Fatalf("read through ssh link: %v", err)
-	}
+	contents := readHomeFile(t, filepath.Join(link, "config"))
 	if string(contents) != "Host example\n" {
 		t.Fatalf("ssh config through link = %q", contents)
 	}
@@ -443,12 +336,8 @@ func TestPrepareSessionHomeLinksDeveloperCredentials(t *testing.T) {
 	}
 	for _, name := range files {
 		path := filepath.Join(realHome, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		makeHomeDir(t, filepath.Dir(path))
+		writeHomeFile(t, path, []byte("original"))
 	}
 	// Detect platforms without symlink privilege explicitly, rather than
 	// treating a missing credential link as a passing test.
@@ -458,10 +347,7 @@ func TestPrepareSessionHomeLinksDeveloperCredentials(t *testing.T) {
 		}
 		t.Fatal(err)
 	}
-	home, err := PrepareSessionHome(t.TempDir(), domain.SessionID("mer-1"), "worker role")
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := prepareHome(t, t.TempDir(), domain.SessionID("mer-1"), "worker role")
 	for _, name := range files {
 		path := filepath.FromSlash(name)
 		source := filepath.Join(realHome, path)
@@ -470,9 +356,7 @@ func TestPrepareSessionHomeLinksDeveloperCredentials(t *testing.T) {
 		if err != nil || string(got) != "original" {
 			t.Fatalf("session %s = %q (%v), want original", name, got, err)
 		}
-		if err := os.WriteFile(source, []byte("rotated"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		writeHomeFile(t, source, []byte("rotated"))
 		got, err = os.ReadFile(destination)
 		want := "rotated"
 		if name == ".config/git/config" {
@@ -497,21 +381,15 @@ func TestPrepareSessionHomeKeepsExistingDeveloperConfig(t *testing.T) {
 	for _, root := range []string{realHome, home} {
 		for _, name := range []string{".npmrc", ".config/example-tool/config.json"} {
 			path := filepath.Join(root, filepath.FromSlash(name))
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			makeHomeDir(t, filepath.Dir(path))
 			contents := "real config"
 			if root == home {
 				contents = "session config"
 			}
-			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeHomeFile(t, path, []byte(contents))
 		}
 	}
-	if _, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role"); err != nil {
-		t.Fatal(err)
-	}
+	prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
 	for _, name := range []string{".npmrc", ".config/example-tool/config.json"} {
 		got, err := os.ReadFile(filepath.Join(home, filepath.FromSlash(name)))
 		if err != nil || string(got) != "session config" {
@@ -520,16 +398,10 @@ func TestPrepareSessionHomeKeepsExistingDeveloperConfig(t *testing.T) {
 	}
 }
 
-// Explicitly configured values always win over the passthrough: a caller that
-// already set GH_CONFIG_DIR keeps its account, including through different
-// key casing on Windows. Git is never repointed at all, so an explicit
-// GIT_CONFIG_GLOBAL is likewise left exactly as the caller supplied it.
 func TestSessionProcessEnvRespectsExplicitConfiguration(t *testing.T) {
 	dataDir := t.TempDir()
 	userHome := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(userHome, ".config", "gh"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, filepath.Join(userHome, ".config", "gh"))
 	t.Setenv("HOME", userHome)
 	t.Setenv("USERPROFILE", userHome)
 	t.Setenv("APPDATA", t.TempDir())
@@ -546,21 +418,12 @@ func TestSessionProcessEnvRespectsExplicitConfiguration(t *testing.T) {
 	}
 }
 
-// Native lookup order wins over our defaults: with $XDG_CONFIG_HOME set, gh
-// already resolves its config to $XDG/gh, and git reads the real XDG file
-// directly, so pointing either at a different path would actively downgrade
-// those users. Git especially must not get GIT_CONFIG_GLOBAL here: that would
-// suppress the very XDG file the user relies on.
 func TestSessionProcessEnvDefersToNativeXDGLayout(t *testing.T) {
 	dataDir := t.TempDir()
 	userHome := t.TempDir()
 	xdg := t.TempDir()
-	if err := os.WriteFile(filepath.Join(userHome, ".gitconfig"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(userHome, ".config", "gh"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeHomeFile(t, filepath.Join(userHome, ".gitconfig"), []byte("x"))
+	makeHomeDir(t, filepath.Join(userHome, ".config", "gh"))
 	t.Setenv("HOME", userHome)
 	t.Setenv("USERPROFILE", userHome)
 	t.Setenv("XDG_CONFIG_HOME", xdg)
@@ -580,31 +443,18 @@ func TestSessionProcessEnvDefersToNativeXDGLayout(t *testing.T) {
 	}
 }
 
-// Home-relative asset paths in mirrored settings must keep working: a skill
-// entry or hook command that says ~/... means the real home, and inside the
-// isolated home that directory does not exist.
 func TestPrepareSessionHomeRebasesSettingsHomeReferences(t *testing.T) {
 	dataDir := t.TempDir()
 	source := t.TempDir()
 	profile := filepath.Join(source, ".commandcode")
-	if err := os.MkdirAll(profile, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, profile)
 	settings := `{"skills": ["~/.commandcode/custom-skills", "/opt/shared"], "mods": {"paths": ["~/mods", "/opt/m"]}, "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$HOME/.commandcode/hooks/guard.sh\""}]}]}, "permissions": {"deny": ["Bash(rm -rf ~/*)"]}}`
-	if err := os.WriteFile(filepath.Join(profile, "settings.json"), []byte(settings), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeHomeFile(t, filepath.Join(profile, "settings.json"), []byte(settings))
 	t.Setenv("HOME", source)
 	t.Setenv("USERPROFILE", source)
 
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
-	contents, err := os.ReadFile(filepath.Join(home, ".commandcode", "settings.json"))
-	if err != nil {
-		t.Fatalf("read mirrored settings: %v", err)
-	}
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
+	contents := readHomeFile(t, filepath.Join(home, ".commandcode", "settings.json"))
 	// Compare parsed values: JSON encoding doubles Windows backslashes, so
 	// raw text matching would never agree with filepath.Join.
 	var mirrored struct {
@@ -652,9 +502,6 @@ func TestPrepareSessionHomeRebasesSettingsHomeReferences(t *testing.T) {
 	}
 }
 
-// The overlay is not the whole environment: the daemon's ambient environment
-// joins in on every launch path. An inherited git or gh pointer must survive
-// our defaults, and a project-configured XDG must count for the gh decision.
 func TestSessionProcessEnvRespectsInheritedTooling(t *testing.T) {
 	dataDir := t.TempDir()
 	// When the caller or the inherited environment already carries a pointer,
@@ -678,12 +525,8 @@ func TestSessionProcessEnvRespectsInheritedTooling(t *testing.T) {
 	// call: both defaults exist in the fake real home, so without the ambient
 	// values below both defaults would have been emitted.
 	userHome := t.TempDir()
-	if err := os.WriteFile(filepath.Join(userHome, ".gitconfig"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(userHome, ".config", "gh"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeHomeFile(t, filepath.Join(userHome, ".gitconfig"), []byte("x"))
+	makeHomeDir(t, filepath.Join(userHome, ".config", "gh"))
 	t.Setenv("HOME", userHome)
 	t.Setenv("USERPROFILE", userHome)
 	t.Setenv("APPDATA", t.TempDir())
@@ -712,32 +555,18 @@ func TestSessionProcessEnvRespectsInheritedTooling(t *testing.T) {
 	}
 }
 
-// The user's mods live in $HOME/.commandcode/mods at runtime: drop-ins and
-// npm-installed packages under .store alike. Mirroring the real directory
-// keeps the user's mods loading once HOME is redirected.
 func TestPrepareSessionHomeMirrorsUserMods(t *testing.T) {
 	dataDir := t.TempDir()
 	source := t.TempDir()
 	mods := filepath.Join(source, ".commandcode", "mods", "weather-mod")
-	if err := os.MkdirAll(mods, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(mods, "index.js"), []byte("export const name = 'weather';\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(source, ".commandcode", "mods", ".store", "pkg"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, ".commandcode", "mods", ".store", "pkg", "index.js"), []byte("// installed package\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, mods)
+	writeHomeFile(t, filepath.Join(mods, "index.js"), []byte("export const name = 'weather';\n"))
+	makeHomeDir(t, filepath.Join(source, ".commandcode", "mods", ".store", "pkg"))
+	writeHomeFile(t, filepath.Join(source, ".commandcode", "mods", ".store", "pkg", "index.js"), []byte("// installed package\n"))
 	t.Setenv("HOME", source)
 	t.Setenv("USERPROFILE", source)
 
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
 	mirrored, err := os.ReadFile(filepath.Join(home, ".commandcode", "mods", "weather-mod", "index.js"))
 	if err != nil || string(mirrored) != "export const name = 'weather';\n" {
 		t.Fatalf("mirrored drop-in: v = %q, err = %v", mirrored, err)
@@ -749,12 +578,8 @@ func TestPrepareSessionHomeMirrorsUserMods(t *testing.T) {
 
 	// A later change to the real mods tree, including `mods update` run
 	// inside an earlier session, must land on the next launch refresh.
-	if err := os.WriteFile(filepath.Join(mods, "index.js"), []byte("export const name = 'weather-2';\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role"); err != nil {
-		t.Fatalf("re-PrepareSessionHome: %v", err)
-	}
+	writeHomeFile(t, filepath.Join(mods, "index.js"), []byte("export const name = 'weather-2';\n"))
+	prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
 	refreshed, err := os.ReadFile(filepath.Join(home, ".commandcode", "mods", "weather-mod", "index.js"))
 	if err != nil || string(refreshed) != "export const name = 'weather-2';\n" {
 		t.Fatalf("refreshed drop-in: v = %q, err = %v", refreshed, err)
@@ -763,63 +588,39 @@ func TestPrepareSessionHomeMirrorsUserMods(t *testing.T) {
 	// Nothing session-side is ever deleted: a file the session itself wrote
 	// into its own mods tree survives the refresh.
 	sessionSide := filepath.Join(home, ".commandcode", "mods", "session-out.log")
-	if err := os.WriteFile(sessionSide, []byte("log"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role"); err != nil {
-		t.Fatalf("re-PrepareSessionHome: %v", err)
-	}
+	writeHomeFile(t, sessionSide, []byte("log"))
+	prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
 	if _, err := os.Stat(sessionSide); err != nil {
 		t.Fatalf("session-side mod file removed by the refresh: %v", err)
 	}
 }
 
-// When no XDG layer is set, git computes its second user config path from
-// HOME, so the real ~/.config/git disappears behind the redirect unless the
-// real one is mirrored. With XDG set the real path stays directly readable
-// and mirroring would be redundant.
 func TestPrepareSessionHomeMirrorsUserGitConfig(t *testing.T) {
 	dataDir := t.TempDir()
 	source := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(source, ".config", "git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, ".config", "git", "config"), []byte("[user]\n\tname = dev\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, filepath.Join(source, ".config", "git"))
+	writeHomeFile(t, filepath.Join(source, ".config", "git", "config"), []byte("[user]\n\tname = dev\n"))
 	t.Setenv("HOME", source)
 	t.Setenv("USERPROFILE", source)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("APPDATA", t.TempDir())
 
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
 	copied, err := os.ReadFile(filepath.Join(home, ".config", "git", "config"))
 	if err != nil || string(copied) != "[user]\n\tname = dev\n" {
 		t.Fatalf("mirrored git config: v = %q, err = %v", copied, err)
 	}
 
 	xdg := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(xdg, "git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, filepath.Join(xdg, "git"))
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 
-	if _, err := PrepareSessionHome(dataDir, domain.SessionID("edge-2"), "other role"); err != nil {
-		t.Fatalf("PrepareSessionHome with XDG set: %v", err)
-	}
+	prepareHome(t, dataDir, domain.SessionID("edge-2"), "other role")
 	if _, err := os.Stat(filepath.Join(dataDir, "harnesses", "command-code", "edge-2", ".config", "git")); err == nil {
 		t.Fatalf("git config mirrored although XDG already redirects the real path")
 	}
 }
 
-// Both of git's global files must keep applying inside the session, in their
-// native order, whichever way XDG is configured. The check runs real git
-// against the generated home rather than asserting on the environment or the
-// copy: GIT_CONFIG_GLOBAL used to make git skip the XDG file, and only the
-// effective values catch that.
 func TestPrepareSessionHomePreservesBothGlobalGitSources(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -830,41 +631,27 @@ func TestPrepareSessionHomePreservesBothGlobalGitSources(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			realHome := isolatedHome(t)
-			if err := os.WriteFile(filepath.Join(realHome, ".gitconfig"), []byte("[user]\n\tname = Real Name\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeHomeFile(t, filepath.Join(realHome, ".gitconfig"), []byte("[user]\n\tname = Real Name\n"))
 			xdg := ""
 			second := filepath.Join(realHome, ".config", "git", "config")
 			if test.xdg {
 				xdg = t.TempDir()
 				second = filepath.Join(xdg, "git", "config")
 			}
-			if err := os.MkdirAll(filepath.Dir(second), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(second, []byte("[user]\n\temail = real@example.com\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			makeHomeDir(t, filepath.Dir(second))
+			writeHomeFile(t, second, []byte("[user]\n\temail = real@example.com\n"))
 			t.Setenv("XDG_CONFIG_HOME", xdg)
 			t.Setenv("APPDATA", t.TempDir())
 
 			dataDir := t.TempDir()
-			home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
-			if err != nil {
-				t.Fatalf("PrepareSessionHome: %v", err)
-			}
+			home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
 			if value, ok := SessionProcessEnv(dataDir, domain.SessionID("mer-1"), nil)["GIT_CONFIG_GLOBAL"]; ok {
 				t.Fatalf("GIT_CONFIG_GLOBAL = %q, want native discovery", value)
 			}
 
 			// A restore rewrites the include rather than stacking another one.
-			if _, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role"); err != nil {
-				t.Fatalf("restore: %v", err)
-			}
-			sessionConfig, err := os.ReadFile(filepath.Join(home, ".gitconfig"))
-			if err != nil {
-				t.Fatalf("read session gitconfig: %v", err)
-			}
+			prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
+			sessionConfig := readHomeFile(t, filepath.Join(home, ".gitconfig"))
 			if count := strings.Count(string(sessionConfig), sessionGitConfigIncludeBegin); count != 1 {
 				t.Fatalf("include block appears %d times: %q", count, sessionConfig)
 			}
@@ -885,13 +672,6 @@ func TestPrepareSessionHomePreservesBothGlobalGitSources(t *testing.T) {
 	}
 }
 
-// The global-scope mark lasts only as long as it is needed. Once the XDG chain
-// stops depending on HOME, a restore must drop both the mark and AO's include
-// block: a leftover block would keep reading the old copy next to the live XDG
-// file, duplicating multivalued settings and pinning values the user has since
-// changed. The block is dropped whether or not a real ~/.gitconfig is left to
-// fall back on, the session's own settings survive, and a session file that held
-// nothing else is removed.
 func TestPrepareSessionHomeDropsGitGlobalScopeWhenNoLongerNeeded(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -906,12 +686,8 @@ func TestPrepareSessionHomeDropsGitGlobalScopeWhenNoLongerNeeded(t *testing.T) {
 			realHome := isolatedHome(t)
 			xdg := t.TempDir()
 			write := func(path, contents string) {
-				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				makeHomeDir(t, filepath.Dir(path))
+				writeHomeFile(t, path, []byte(contents))
 			}
 			if test.global {
 				write(filepath.Join(realHome, ".gitconfig"), "[user]\n\tname = Real Name\n")
@@ -926,10 +702,7 @@ func TestPrepareSessionHomeDropsGitGlobalScopeWhenNoLongerNeeded(t *testing.T) {
 
 			sessionID := domain.SessionID("mer-1")
 			dataDir := t.TempDir()
-			home, err := PrepareSessionHome(dataDir, sessionID, "worker role")
-			if err != nil {
-				t.Fatalf("PrepareSessionHome: %v", err)
-			}
+			home := prepareHome(t, dataDir, sessionID, "worker role")
 			sessionConfig := filepath.Join(home, ".gitconfig")
 			env := SessionProcessEnv(dataDir, sessionID, nil)
 			env["XDG_CONFIG_HOME"] = xdg
@@ -943,21 +716,13 @@ func TestPrepareSessionHomeDropsGitGlobalScopeWhenNoLongerNeeded(t *testing.T) {
 			// The session writes a setting of its own, then the user folds the
 			// include into the XDG file so nothing needs anchoring any more.
 			if test.sessionSetting {
-				existing, err := os.ReadFile(sessionConfig)
-				if err != nil {
-					t.Fatal(err)
-				}
+				existing := readHomeFile(t, sessionConfig)
 				sessionOwned := append(existing, []byte("[user]\n\tname = Session Name\n")...)
-				if err := os.WriteFile(sessionConfig, sessionOwned, 0o600); err != nil {
-					t.Fatal(err)
-				}
+				writeHomeFile(t, sessionConfig, sessionOwned)
 			}
 			write(second, "[user]\n\temail = split@example.com\n[http]\n\textraHeader = Authorization: Bearer token\n")
 
-			home, err = PrepareSessionHome(dataDir, sessionID, "worker role")
-			if err != nil {
-				t.Fatalf("restore: %v", err)
-			}
+			home = prepareHome(t, dataDir, sessionID, "worker role")
 			if gitConfigGlobalScope(home) {
 				t.Fatalf("global-scope mark survived a restore that no longer needs it")
 			}
@@ -985,10 +750,7 @@ func TestPrepareSessionHomeDropsGitGlobalScopeWhenNoLongerNeeded(t *testing.T) {
 				}
 				return
 			}
-			contents, err := os.ReadFile(sessionConfig)
-			if err != nil {
-				t.Fatalf("read session .gitconfig: %v", err)
-			}
+			contents := readHomeFile(t, sessionConfig)
 			if strings.Contains(string(contents), sessionGitConfigCopiesDir) {
 				t.Fatalf("session .gitconfig still includes the removed XDG copy: %q", contents)
 			}
@@ -1076,10 +838,6 @@ func gitConfigOutput(t *testing.T, env map[string]string, dir string, args ...st
 	return lines
 }
 
-// A layered config must survive the redirect too: git expands a `~/` include
-// path against HOME rather than against the file holding the directive, so
-// including the real ~/.gitconfig alone would silently drop everything it
-// chains to -- including a split user.name / user.email identity.
 func TestPrepareSessionHomeRebasesNestedGitIncludes(t *testing.T) {
 	realHome := isolatedHome(t)
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -1094,19 +852,12 @@ func TestPrepareSessionHomeRebasesNestedGitIncludes(t *testing.T) {
 	}
 	for name, contents := range originals {
 		path := filepath.Join(realHome, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		makeHomeDir(t, filepath.Dir(path))
+		writeHomeFile(t, path, []byte(contents))
 	}
 
 	dataDir := t.TempDir()
-	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
+	home := prepareHome(t, dataDir, domain.SessionID("mer-1"), "worker role")
 
 	values := effectiveGitConfig(t, home, "")
 	for key, want := range map[string]string{
@@ -1133,28 +884,17 @@ func TestPrepareSessionHomeRebasesNestedGitIncludes(t *testing.T) {
 		t.Fatalf("session git config copies = %v (%v), want the rewritten chain", copies, err)
 	}
 	for _, entry := range copies {
-		contents, err := os.ReadFile(filepath.Join(home, sessionGitConfigCopiesDir, entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
+		contents := readHomeFile(t, filepath.Join(home, sessionGitConfigCopiesDir, entry.Name()))
 		if strings.Contains(string(contents), "~/") {
 			t.Fatalf("copy %s still uses a home-relative include: %q", entry.Name(), contents)
 		}
 	}
-	sessionConfig, err := os.ReadFile(filepath.Join(home, ".gitconfig"))
-	if err != nil {
-		t.Fatalf("read session gitconfig: %v", err)
-	}
+	sessionConfig := readHomeFile(t, filepath.Join(home, ".gitconfig"))
 	if !strings.Contains(string(sessionConfig), sessionGitConfigCopiesDir) {
 		t.Fatalf("session .gitconfig = %q, want it to include the rebased copy", sessionConfig)
 	}
 }
 
-// Git expands `~/` in a gitdir condition against HOME and resolves `./` against
-// the directory holding the config. A relocated config would therefore point
-// them at the session home and at the copy directory, silently stopping them
-// from matching, so every copied condition has to be anchored like an include
-// path.
 func TestPrepareSessionHomeAnchorsConditionalIncludeHeaders(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
@@ -1165,12 +905,8 @@ func TestPrepareSessionHomeAnchorsConditionalIncludeHeaders(t *testing.T) {
 	t.Setenv("APPDATA", t.TempDir())
 
 	write := func(path, contents string) {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		makeHomeDir(t, filepath.Dir(path))
+		writeHomeFile(t, path, []byte(contents))
 	}
 	at := func(name string) string { return filepath.Join(realHome, filepath.FromSlash(name)) }
 	write(at(".gitconfig"), "[user]\n\tname = Real Name\n"+
@@ -1184,18 +920,13 @@ func TestPrepareSessionHomeAnchorsConditionalIncludeHeaders(t *testing.T) {
 	work := at("work-repo")
 	project := at("projects/app")
 	for _, repo := range []string{work, project} {
-		if err := os.MkdirAll(repo, 0o700); err != nil {
-			t.Fatal(err)
-		}
+		makeHomeDir(t, repo)
 		if output, err := exec.Command(git, "init", "-q", repo).CombinedOutput(); err != nil {
 			t.Fatalf("git init %s: %v: %s", repo, err, output)
 		}
 	}
 
-	home, err := PrepareSessionHome(t.TempDir(), domain.SessionID("mer-1"), "worker role")
-	if err != nil {
-		t.Fatalf("PrepareSessionHome: %v", err)
-	}
+	home := prepareHome(t, t.TempDir(), domain.SessionID("mer-1"), "worker role")
 
 	workConfig := effectiveGitConfigIn(t, home, "", work)
 	if got := workConfig["user.email"]; got != "home@example.com" {
@@ -1220,10 +951,7 @@ func TestPrepareSessionHomeAnchorsConditionalIncludeHeaders(t *testing.T) {
 	}
 	anchored := "gitdir:" + filepath.ToSlash(realHome) + "/"
 	for _, entry := range copies {
-		contents, err := os.ReadFile(filepath.Join(home, sessionGitConfigCopiesDir, entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
+		contents := readHomeFile(t, filepath.Join(home, sessionGitConfigCopiesDir, entry.Name()))
 		for _, stale := range []string{"~/", "gitdir:./", "gitdir/i:./"} {
 			if strings.Contains(string(contents), stale) {
 				t.Fatalf("copy %s still contains %q: %q", entry.Name(), stale, contents)
@@ -1235,12 +963,6 @@ func TestPrepareSessionHomeAnchorsConditionalIncludeHeaders(t *testing.T) {
 	}
 }
 
-// The second global file goes through the same treatment, whether git reads it
-// natively from an absolute $XDG_CONFIG_HOME or from the directory mirrored into
-// the session home. Its includes must keep resolving, its values must keep
-// losing to ~/.gitconfig, which is git's native order, and the file must be read
-// exactly once: an XDG file that needs anchoring is applied from the copy alone,
-// so multivalued settings are not doubled.
 func TestPrepareSessionHomeAnchorsXDGGlobalIncludes(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -1252,12 +974,8 @@ func TestPrepareSessionHomeAnchorsXDGGlobalIncludes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			realHome := isolatedHome(t)
 			write := func(path, contents string) {
-				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				makeHomeDir(t, filepath.Dir(path))
+				writeHomeFile(t, path, []byte(contents))
 			}
 			write(filepath.Join(realHome, ".gitconfig"), "[user]\n\tname = Real Name\n[core]\n\tpager = global\n")
 
@@ -1279,10 +997,7 @@ func TestPrepareSessionHomeAnchorsXDGGlobalIncludes(t *testing.T) {
 
 			sessionID := domain.SessionID("mer-1")
 			dataDir := t.TempDir()
-			home, err := PrepareSessionHome(dataDir, sessionID, "worker role")
-			if err != nil {
-				t.Fatalf("PrepareSessionHome: %v", err)
-			}
+			home := prepareHome(t, dataDir, sessionID, "worker role")
 
 			env := SessionProcessEnv(dataDir, sessionID, nil)
 			if env["HOME"] != home {
@@ -1333,10 +1048,7 @@ func TestPrepareSessionHomeAnchorsXDGGlobalIncludes(t *testing.T) {
 					if entry.IsDir() {
 						continue
 					}
-					contents, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-					if err != nil {
-						t.Fatal(err)
-					}
+					contents := readHomeFile(t, filepath.Join(dir, entry.Name()))
 					if strings.Contains(string(contents), "~/") {
 						t.Fatalf("%s still uses a home-relative include: %q", filepath.Join(dir, entry.Name()), contents)
 					}
@@ -1346,10 +1058,6 @@ func TestPrepareSessionHomeAnchorsXDGGlobalIncludes(t *testing.T) {
 	}
 }
 
-// Git joins a physical line ending in an unescaped backslash with the next one.
-// Parsing the halves separately would rewrite only the first and leave a stray
-// path fragment behind, which makes the rewritten config unreadable. CRLF files
-// have to parse the same way, otherwise the CR would end up inside the path.
 func TestPrepareSessionHomeJoinsContinuedIncludeValues(t *testing.T) {
 	t.Run("continued include", func(t *testing.T) {
 		realHome := isolatedHome(t)
@@ -1358,22 +1066,15 @@ func TestPrepareSessionHomeJoinsContinuedIncludeValues(t *testing.T) {
 
 		write := func(name, contents string) {
 			path := filepath.Join(realHome, filepath.FromSlash(name))
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			makeHomeDir(t, filepath.Dir(path))
+			writeHomeFile(t, path, []byte(contents))
 		}
 		write(".gitconfig", "[user]\n\tname = Real Name\n"+
 			"[include]\n\tpath = ~/\\\n.gitconfig-work\n"+
 			"[alias]\n\tlong = one\\\ntwo\n")
 		write(".gitconfig-work", "[user]\n\temail = work@example.com\n")
 
-		home, err := PrepareSessionHome(t.TempDir(), domain.SessionID("mer-1"), "worker role")
-		if err != nil {
-			t.Fatalf("PrepareSessionHome: %v", err)
-		}
+		home := prepareHome(t, t.TempDir(), domain.SessionID("mer-1"), "worker role")
 
 		values := effectiveGitConfig(t, home, "")
 		if got := values["user.email"]; got != "work@example.com" {
@@ -1389,10 +1090,7 @@ func TestPrepareSessionHomeJoinsContinuedIncludeValues(t *testing.T) {
 		}
 		keptContinuation := false
 		for _, entry := range copies {
-			contents, err := os.ReadFile(filepath.Join(home, sessionGitConfigCopiesDir, entry.Name()))
-			if err != nil {
-				t.Fatal(err)
-			}
+			contents := readHomeFile(t, filepath.Join(home, sessionGitConfigCopiesDir, entry.Name()))
 			if strings.Contains(string(contents), "~/") {
 				t.Fatalf("copy %s still uses a home-relative include: %q", entry.Name(), contents)
 			}
@@ -1411,17 +1109,10 @@ func TestPrepareSessionHomeJoinsContinuedIncludeValues(t *testing.T) {
 		t.Setenv("APPDATA", t.TempDir())
 		path := filepath.Join(realHome, ".gitconfig")
 		contents := "[user]\r\n\tname = Real Name\r\n[include]\r\n\tpath = ~/.gitconfig-work\r\n"
-		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(realHome, ".gitconfig-work"), []byte("[user]\r\n\temail = work@example.com\r\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		writeHomeFile(t, path, []byte(contents))
+		writeHomeFile(t, filepath.Join(realHome, ".gitconfig-work"), []byte("[user]\r\n\temail = work@example.com\r\n"))
 
-		home, err := PrepareSessionHome(t.TempDir(), domain.SessionID("mer-1"), "worker role")
-		if err != nil {
-			t.Fatalf("PrepareSessionHome: %v", err)
-		}
+		home := prepareHome(t, t.TempDir(), domain.SessionID("mer-1"), "worker role")
 		values := effectiveGitConfig(t, home, "")
 		if got := values["user.name"]; got != "Real Name" {
 			t.Fatalf("user.name = %q, want a CRLF config to parse like git does", got)
@@ -1432,9 +1123,6 @@ func TestPrepareSessionHomeJoinsContinuedIncludeValues(t *testing.T) {
 	})
 }
 
-// Include values follow git's quoting and comment rules closely enough to
-// rewrite real-world dotfiles: quoted paths stay whole, and an inline comment is
-// not part of the path.
 func TestGitIncludePathParsing(t *testing.T) {
 	for _, test := range []struct {
 		line string
@@ -1483,9 +1171,6 @@ func TestGitIncludePathParsing(t *testing.T) {
 	}
 }
 
-// A gitdir condition is a path pattern, so the same rebasing rules apply to it:
-// anchor the base that moves, keep the glob suffix and the keyword's case
-// sensitivity, and leave patterns that do not depend on a location alone.
 func TestGitConditionPatternAnchoring(t *testing.T) {
 	sourceDir := filepath.FromSlash("/home/user/configs")
 	realHome := filepath.FromSlash("/home/user")
@@ -1518,10 +1203,6 @@ func TestGitConditionPatternAnchoring(t *testing.T) {
 	}
 }
 
-// The hook rewriter must preserve shell semantics rather than substitute
-// blindly: $HOMEBREW-style identifiers sharing the $HOME prefix stay
-// untouched, single-quoted references are deliberately literal, and a home
-// containing spaces must come out as one word again.
 func TestRebaseHookCommandPreservesShellSemantics(t *testing.T) {
 	spaced := "Users/Jane Doe"
 	unspaced := `Users/flat`
@@ -1532,78 +1213,18 @@ func TestRebaseHookCommandPreservesShellSemantics(t *testing.T) {
 		home    string
 		want    string
 	}{
-		{
-			name:    "shared prefix identifiers are left alone",
-			command: `"$HOMEBREW_PREFIX/bin/check"`,
-			home:    spaced,
-			want:    `"$HOMEBREW_PREFIX/bin/check"`,
-		},
-		{
-			name:    "unquoted tilde with spaced home stays one word",
-			command: "bash ~/.commandcode/hooks/guard.sh",
-			home:    spaced,
-			want:    `bash "Users/Jane Doe"/.commandcode/hooks/guard.sh`,
-		},
-		{
-			name:    "unquoted tilde keeps a wildcard outside the inserted quotes",
-			command: `cat ~/.commandcode/hooks/*.json`,
-			home:    spaced,
-			want:    `cat "Users/Jane Doe"/.commandcode/hooks/*.json`,
-		},
-		{
-			name:    "dollar home keeps a wildcard outside the inserted quotes",
-			command: `for f in $HOME/.commandcode/hooks/*.sh; do sh "$f"; done`,
-			home:    spaced,
-			want:    `for f in "Users/Jane Doe"/.commandcode/hooks/*.sh; do sh "$f"; done`,
-		},
-		{
-			name:    "quoted dollar home inside double quotes",
-			command: `bash "$HOME/g.sh"`,
-			home:    spaced,
-			want:    `bash "Users/Jane Doe/g.sh"`,
-		},
-		{
-			name:    "single quotes are deliberately literal",
-			command: `bash '$HOME/g.sh'`,
-			home:    spaced,
-			want:    `bash '$HOME/g.sh'`,
-		},
-		{
-			name:    "plain dollar home needs no quotes when home is clean",
-			command: "bash $HOME/x",
-			home:    unspaced,
-			want:    "bash Users/flat/x",
-		},
-		{
-			name:    "dollar home becomes one quoted word when home has spaces",
-			command: "cp $HOME/notes.txt .",
-			home:    spaced,
-			want:    `cp "Users/Jane Doe"/notes.txt .`,
-		},
-		{
-			name:    "a quoted suffix keeps its own quoting",
-			command: `bash ~/"a b"/x`,
-			home:    spaced,
-			want:    `bash "Users/Jane Doe"/"a b"/x`,
-		},
-		{
-			name:    "bare tilde expands with quotes when needed",
-			command: "cd ~",
-			home:    spaced,
-			want:    `cd "Users/Jane Doe"`,
-		},
-		{
-			name:    "tilde inside double quotes is a literal",
-			command: `echo "~/static"`,
-			home:    spaced,
-			want:    `echo "~/static"`,
-		},
-		{
-			name:    "homework lowercase variables are untouched",
-			command: "check $homework",
-			home:    spaced,
-			want:    "check $homework",
-		},
+		{"shared prefix identifiers are left alone", `"$HOMEBREW_PREFIX/bin/check"`, spaced, `"$HOMEBREW_PREFIX/bin/check"`},
+		{"unquoted tilde with spaced home stays one word", "bash ~/.commandcode/hooks/guard.sh", spaced, `bash "Users/Jane Doe"/.commandcode/hooks/guard.sh`},
+		{"unquoted tilde keeps a wildcard outside the inserted quotes", `cat ~/.commandcode/hooks/*.json`, spaced, `cat "Users/Jane Doe"/.commandcode/hooks/*.json`},
+		{"dollar home keeps a wildcard outside the inserted quotes", `for f in $HOME/.commandcode/hooks/*.sh; do sh "$f"; done`, spaced, `for f in "Users/Jane Doe"/.commandcode/hooks/*.sh; do sh "$f"; done`},
+		{"quoted dollar home inside double quotes", `bash "$HOME/g.sh"`, spaced, `bash "Users/Jane Doe/g.sh"`},
+		{"single quotes are deliberately literal", `bash '$HOME/g.sh'`, spaced, `bash '$HOME/g.sh'`},
+		{"plain dollar home needs no quotes when home is clean", "bash $HOME/x", unspaced, "bash Users/flat/x"},
+		{"dollar home becomes one quoted word when home has spaces", "cp $HOME/notes.txt .", spaced, `cp "Users/Jane Doe"/notes.txt .`},
+		{"a quoted suffix keeps its own quoting", `bash ~/"a b"/x`, spaced, `bash "Users/Jane Doe"/"a b"/x`},
+		{"bare tilde expands with quotes when needed", "cd ~", spaced, `cd "Users/Jane Doe"`},
+		{"tilde inside double quotes is a literal", `echo "~/static"`, spaced, `echo "~/static"`},
+		{"homework lowercase variables are untouched", "check $homework", spaced, "check $homework"},
 	}
 	for _, test := range cases {
 		got, changed := rebaseHookCommand(test.command, test.home)
@@ -1616,8 +1237,6 @@ func TestRebaseHookCommandPreservesShellSemantics(t *testing.T) {
 	}
 }
 
-// A rewritten hook keeps working in a real shell: a glob under a home whose
-// path contains a space must still expand to the files it matched before.
 func TestRebaseHookCommandKeepsGlobsExpandable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the shell glob check needs a POSIX sh with POSIX paths")
@@ -1629,13 +1248,9 @@ func TestRebaseHookCommandKeepsGlobsExpandable(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "Jane Doe")
 	hooks := filepath.Join(home, ".commandcode", "hooks")
-	if err := os.MkdirAll(hooks, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	makeHomeDir(t, hooks)
 	for _, name := range []string{"a.json", "b.json"} {
-		if err := os.WriteFile(filepath.Join(hooks, name), []byte("{}"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		writeHomeFile(t, filepath.Join(hooks, name), []byte("{}"))
 	}
 
 	rewritten, changed := rebaseHookCommand(`printf '%s\n' ~/.commandcode/hooks/*.json`, home)
