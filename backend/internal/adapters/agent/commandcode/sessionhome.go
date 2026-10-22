@@ -50,16 +50,11 @@ import (
 var mirroredProfileFiles = []string{"auth.json", "config.json", "providers.json", "settings.json", "mcp.json"}
 
 // linkedHomeEntries are real-home dotfiles exposed inside the session home as
-// links rather than copies. They cover developer tooling that must resolve
-// under HOME: SSH keys, registry credentials, netrc credentials, and AWS
-// profiles would otherwise disappear behind the redirect. Links keep a single
-// source of truth --
-// a copied key would silently go stale on rotation -- and cross no privilege
-// boundary since the session already runs as the same user.
-//
-// Linking is best-effort per entry: platforms without symlink privilege (stock
-// Windows) skip the link and the session proceeds without it, exactly as
-// before. Nothing is ever overwritten: an existing session-side entry wins.
+// links rather than copies, so developer tooling (SSH keys, registry/netrc/AWS
+// credentials) resolves under the redirected HOME. Links keep a single source of
+// truth and cross no privilege boundary. Linking is best-effort (platforms
+// without symlink privilege skip it); existing session-side entries are never
+// overwritten.
 var linkedHomeEntries = []string{".ssh", ".npmrc", ".netrc", ".docker", ".aws"}
 
 // SessionHomeDir returns the per-session home directory for a Command Code
@@ -412,36 +407,21 @@ const (
 )
 
 // preserveGitConfiguration makes both of git's native global config files apply
-// inside the session home, in their native order, each read exactly once.
-//
-// The redirect moves HOME, so git's own lookups of ~/.gitconfig and
-// $HOME/.config/git/config resolve inside the generated home. The XDG file keeps
-// its native path whenever $XDG_CONFIG_HOME is absolute; otherwise the real
-// directory is mirrored into the session home. ~/.gitconfig is included from the
-// session's own ~/.gitconfig. Native discovery therefore stays in charge, which
-// matters because GIT_CONFIG_GLOBAL would replace *both* files: a user whose
-// identity or credentials are split between them would lose half.
-//
-// Git expands `~/` in include paths and in gitdir conditions against HOME, not
-// against the file holding the directive, and resolves `./` bases against that
-// file's directory. Any config whose meaning depends on those bases is rewritten
-// into a session-owned copy (sessionGitConfigCopiesDir) with each base anchored
-// to the real filesystem; the originals are only read. A config that needs no
-// anchoring is used where it already lives.
-//
-// One case needs more than an include. When an absolute $XDG_CONFIG_HOME file
-// needs anchoring, git would still read the real file through native discovery
-// and the session would include its copy, applying the file twice. Most settings
-// tolerate that, but multivalued ones do not: two http.extraHeader entries send
-// two Authorization headers. For that case only, the session marks its own
-// .gitconfig as the child's global file, which holds exactly the two sources in
-// native order, so git reads each one once.
-//
-// An existing session .gitconfig keeps its content and precedence: AO's block is
-// only replaced in place, or placed ahead of it when the session wrote its own
-// file first, so a value the session set later still wins. When nothing needs
-// including any more, the block is removed and the session returns to native
-// discovery, with the session's own settings left in place.
+// inside the session home, in their native order, each read exactly once. HOME
+// moves into the session home, so ~/.gitconfig and ~/.config/git/config resolve
+// there. An absolute XDG_CONFIG_HOME keeps its native path; otherwise the real
+// ~/.config/git directory is mirrored. ~/.gitconfig is included from the
+// session's own ~/.gitconfig, so native discovery stays in charge; GIT_CONFIG_GLOBAL
+// would replace both files and hide the XDG half. Home-relative and file-relative
+// bases that break after the redirect are anchored into session-owned copies
+// under .ao-gitconfig (see gitConfigRewriter); configs that already resolve are
+// used in place. Multivalued settings are applied once: when an XDG file needs
+// anchoring, the session .gitconfig becomes the child's global file for that
+// launch, marked under .ao-gitconfig and dropped once anchoring is no longer
+// needed. An existing session .gitconfig keeps its content and precedence, with
+// AO's block replaced in place (or placed ahead when the session wrote first).
+// When nothing needs including, the block is removed and the session returns to
+// native discovery, keeping whatever the session wrote itself.
 func preserveGitConfiguration(realHome, sessionHome string) {
 	rewriter := &gitConfigRewriter{
 		realHome:    realHome,
