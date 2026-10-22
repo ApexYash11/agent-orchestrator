@@ -435,9 +435,14 @@ func preserveGitConfiguration(realHome, sessionHome string) {
 			// The real file stays readable at its own path, but a home-relative
 			// include inside it cannot resolve. Re-apply it later from the copy,
 			// ahead of ~/.gitconfig, so precedence is unchanged. The copy is the
-			// only place git may read this file from; see xdgRebased below.
-			includes = append(includes, rewriter.materialize(source))
-			xdgRebased = true
+			// only place git may read this file from; see xdgRebased below. If the
+			// copy cannot be written, leave the file to native discovery: that
+			// keeps working settings and merely skips the unresolvable includes,
+			// which is better than applying a part of it twice.
+			if copyPath := rewriter.materialize(source); copyPath != source {
+				includes = append(includes, copyPath)
+				xdgRebased = true
+			}
 		}
 	} else {
 		// $HOME/.config/git/config resolves inside the session home. Mirror the
