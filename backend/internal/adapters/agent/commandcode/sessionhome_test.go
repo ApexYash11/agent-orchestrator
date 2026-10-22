@@ -835,6 +835,117 @@ func effectiveGitConfig(t *testing.T, home, xdg string) map[string]string {
 	return values
 }
 
+// A layered config must survive the redirect too: git expands a `~/` include
+// path against HOME rather than against the file holding the directive, so
+// including the real ~/.gitconfig alone would silently drop everything it
+// chains to -- including a split user.name / user.email identity.
+func TestPrepareSessionHomeRebasesNestedGitIncludes(t *testing.T) {
+	realHome := isolatedHome(t)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("APPDATA", t.TempDir())
+
+	originals := map[string]string{
+		".gitconfig": "[user]\n\tname = Real Name\n[include]\n\tpath = ~/.gitconfig-work\n" +
+			"[includeIf \"gitdir:/nonexistent/\"]\n\tpath = ~/\"space dir\"/work.gitconfig\n",
+		".gitconfig-work":          "[user]\n\temail = work@example.com\n[include]\n\tpath = dotfiles/extra.gitconfig\n",
+		"dotfiles/extra.gitconfig": "[core]\n\tpager = cat\n",
+		"space dir/work.gitconfig": "[commit]\n\tgpgsign = true\n",
+	}
+	for name, contents := range originals {
+		path := filepath.Join(realHome, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dataDir := t.TempDir()
+	home, err := PrepareSessionHome(dataDir, domain.SessionID("mer-1"), "worker role")
+	if err != nil {
+		t.Fatalf("PrepareSessionHome: %v", err)
+	}
+
+	values := effectiveGitConfig(t, home, "")
+	for key, want := range map[string]string{
+		"user.name":  "Real Name",
+		"user.email": "work@example.com",
+		"core.pager": "cat",
+	} {
+		if values[key] != want {
+			t.Fatalf("%s = %q, want %q (nested include lost)", key, values[key], want)
+		}
+	}
+
+	for name, contents := range originals {
+		got, err := os.ReadFile(filepath.Join(realHome, filepath.FromSlash(name)))
+		if err != nil || string(got) != contents {
+			t.Fatalf("original %s = %q (%v), want it untouched", name, got, err)
+		}
+	}
+
+	// Every session-owned copy is anchored to the real filesystem, so nothing
+	// still depends on HOME, and the session config points at the copies.
+	copies, err := os.ReadDir(filepath.Join(home, sessionGitConfigCopiesDir))
+	if err != nil || len(copies) == 0 {
+		t.Fatalf("session git config copies = %v (%v), want the rewritten chain", copies, err)
+	}
+	for _, entry := range copies {
+		contents, err := os.ReadFile(filepath.Join(home, sessionGitConfigCopiesDir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(contents), "~/") {
+			t.Fatalf("copy %s still uses a home-relative include: %q", entry.Name(), contents)
+		}
+	}
+	sessionConfig, err := os.ReadFile(filepath.Join(home, ".gitconfig"))
+	if err != nil {
+		t.Fatalf("read session gitconfig: %v", err)
+	}
+	if !strings.Contains(string(sessionConfig), sessionGitConfigCopiesDir) {
+		t.Fatalf("session .gitconfig = %q, want it to include the rebased copy", sessionConfig)
+	}
+}
+
+// Include values follow git's quoting and comment rules closely enough to
+// rewrite real-world dotfiles: quoted paths stay whole, and an inline comment is
+// not part of the path.
+func TestGitIncludePathParsing(t *testing.T) {
+	for _, test := range []struct {
+		line string
+		want string
+		ok   bool
+	}{
+		{line: "\tpath = ~/.gitconfig-work", want: "~/.gitconfig-work", ok: true},
+		{line: "path = ~/\"space dir\"/work.gitconfig", want: "~/space dir/work.gitconfig", ok: true},
+		{line: "path = /abs/gitconfig # trailing comment", want: "/abs/gitconfig", ok: true},
+		{line: "path = ~/.x ; comment", want: "~/.x", ok: true},
+		{line: "  # path = ~/ignored"},
+		{line: "value = ~/not-a-path"},
+		{line: "path ="},
+	} {
+		got, ok := gitIncludePathValue(test.line)
+		if got != test.want || ok != test.ok {
+			t.Fatalf("%q -> (%q, %v), want (%q, %v)", test.line, got, ok, test.want, test.ok)
+		}
+	}
+	for _, test := range []struct {
+		line string
+		want string
+	}{
+		{line: "[include]", want: "include"},
+		{line: "[includeIf \"gitdir:~/work/\"]", want: "includeif"},
+		{line: "  [core] # comment", want: "core"},
+		{line: "# [user]", want: ""},
+	} {
+		if got := gitSectionName(test.line); got != test.want {
+			t.Fatalf("gitSectionName(%q) = %q, want %q", test.line, got, test.want)
+		}
+	}
+}
+
 // The hook rewriter must preserve shell semantics rather than substitute
 // blindly: $HOMEBREW-style identifiers sharing the $HOME prefix stay
 // untouched, single-quoted references are deliberately literal, and a home

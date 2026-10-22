@@ -134,14 +134,24 @@ user's real `.commandcode/AGENTS.md` are only read.
 
 The redirected `HOME` is inherited by the agent's shell children, so the real
 developer's tooling is kept reachable rather than moved. Git stays on its native
-discovery: the session home's `~/.gitconfig` includes the real `~/.gitconfig`
-(only the `[include]` is written; nothing is copied), so a user who splits
-identity or credentials between `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config`
-keeps both, in the same order git resolves them outside a session. When
-`$XDG_CONFIG_HOME` is unset, so that path would resolve inside the session home,
-the real `~/.config/git` is mirrored there instead. `GIT_CONFIG_GLOBAL` is
-deliberately not set: it would replace both native global files and hide the XDG
-half. `GH_CONFIG_DIR` points at the real gh config whenever no
+discovery: the session home's `~/.gitconfig` includes the real `~/.gitconfig`, so
+a user who splits identity or credentials between `~/.gitconfig` and
+`$XDG_CONFIG_HOME/git/config` keeps both, in the same order git resolves them
+outside a session. When `$XDG_CONFIG_HOME` is unset, so that path would resolve
+inside the session home, the real `~/.config/git` is mirrored there instead.
+`GIT_CONFIG_GLOBAL` is deliberately not set: it would replace both native global
+files and hide the XDG half.
+
+Git expands a `~/` include path against `HOME`, not against the file containing
+the directive, so a layered config (`~/.gitconfig` chaining to
+`~/.gitconfig-work`, optionally further) would lose everything it references.
+Those files are rewritten into a session-owned copy under
+`~/.ao-gitconfig/` with every include anchored to its real absolute path, and the
+copies are regenerated on each launch; the originals are only read. A config
+whose includes are already absolute or relative needs no rewrite and is included
+in place.
+
+`GH_CONFIG_DIR` points at the real gh config whenever no
 `$XDG_CONFIG_HOME` redirect covers it, and `~/.ssh` is linked through so
 git-over-SSH keeps working -- each only when its target exists, and the link is
 skipped where the platform denies symlink privilege. The decision about what is

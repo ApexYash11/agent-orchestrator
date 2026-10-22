@@ -1,6 +1,8 @@
 package commandcode
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -360,9 +362,14 @@ func mirrorUserGitConfig(realHome, sessionHome string) {
 // AO owns inside the session home's .gitconfig. Markers let a later launch
 // replace the block in place instead of appending a second copy, while leaving
 // anything the session wrote there itself untouched.
+//
+// sessionGitConfigCopiesDir holds session-owned rewrites of real config files
+// that rely on home-relative includes; see gitConfigRewriter.
 const (
 	sessionGitConfigIncludeBegin = "# AO: the real user git configuration, included so it applies inside this session"
 	sessionGitConfigIncludeEnd   = "# AO: end of the real user git configuration"
+	sessionGitConfigCopiesDir    = ".ao-gitconfig"
+	gitConfigIncludeMaxDepth     = 8
 )
 
 // includeRealGitConfig makes the user's ~/.gitconfig reachable from the
@@ -370,11 +377,19 @@ const (
 //
 // The redirect moves HOME, so git's native lookup of ~/.gitconfig resolves to
 // the generated home. An include keeps a single source of truth -- a change to
-// the real file applies immediately, and nothing is copied -- while leaving
-// git's native discovery in charge. That matters because GIT_CONFIG_GLOBAL
-// would replace *both* native global files: with an include, the XDG file that
-// git already reads first still applies, and ~/.gitconfig still overrides it,
-// which is the same order as outside a session.
+// the real file applies immediately -- while leaving git's native discovery in
+// charge. That matters because GIT_CONFIG_GLOBAL would replace *both* native
+// global files: with an include, the XDG file that git already reads first still
+// applies, and ~/.gitconfig still overrides it, which is the same order as
+// outside a session.
+//
+// Git expands a `~/` include path against HOME, not against the file that
+// contains the directive, so a layered config such as
+// `~/.gitconfig -> ~/.gitconfig-work` would still lose the second file once
+// HOME moves. Those files are rewritten into sessionGitConfigCopiesDir with
+// every include anchored to its real path; the originals are only read. A file
+// whose includes are already absolute or relative needs no rewrite and is
+// included as-is.
 //
 // Nothing is written when the user has no ~/.gitconfig. An existing session
 // .gitconfig keeps its content and precedence: AO's block is only replaced in
@@ -385,8 +400,17 @@ func includeRealGitConfig(realHome, sessionHome string) {
 	if !isRegularFile(source) {
 		return
 	}
+	rewriter := &gitConfigRewriter{
+		realHome:    realHome,
+		sessionHome: sessionHome,
+		copies:      map[string]string{},
+	}
+	target := rewriter.reference(source)
+	if target == "" {
+		return
+	}
 	block := sessionGitConfigIncludeBegin + "\n[include]\n\tpath = " +
-		gitConfigValue(filepath.ToSlash(source)) + "\n" + sessionGitConfigIncludeEnd + "\n"
+		gitConfigString(filepath.ToSlash(target)) + "\n" + sessionGitConfigIncludeEnd + "\n"
 	path := filepath.Join(sessionHome, ".gitconfig")
 	existing, err := os.ReadFile(path)
 	existed := err == nil
@@ -419,12 +443,264 @@ func replaceGitConfigIncludeBlock(existing, block string) string {
 	return block + "\n" + existing
 }
 
-// gitConfigValue renders a value for a git config file. Backslashes are
+// gitConfigRewriter rebases home-relative include paths in real git config
+// files into session-owned copies, so layered configs keep resolving after HOME
+// moves. Copies are keyed by their real source path and regenerated on every
+// launch.
+type gitConfigRewriter struct {
+	realHome    string
+	sessionHome string
+	copies      map[string]string
+	depth       int
+}
+
+// reference returns the path the session config should include for target: the
+// real file when nothing beneath it depends on HOME, otherwise a session-owned
+// copy whose includes point at the real filesystem.
+func (r *gitConfigRewriter) reference(target string) string {
+	target = filepath.Clean(target)
+	if copyPath, ok := r.copies[target]; ok {
+		return copyPath
+	}
+	if !r.rebaseNeeded(target, 0) {
+		return target
+	}
+	return r.materialize(target)
+}
+
+// rebaseNeeded reports whether target, or any config it includes, uses a
+// home-relative include path that would resolve inside the session home.
+func (r *gitConfigRewriter) rebaseNeeded(target string, depth int) bool {
+	if depth > gitConfigIncludeMaxDepth {
+		return false
+	}
+	contents, err := os.ReadFile(target)
+	if err != nil {
+		return false
+	}
+	if hasHomeRelativeInclude(string(contents)) {
+		return true
+	}
+	for _, nested := range gitIncludeTargets(string(contents), filepath.Dir(target), r.realHome) {
+		if r.rebaseNeeded(nested, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
+// materialize writes a rewritten copy of target and returns its path.
+func (r *gitConfigRewriter) materialize(target string) string {
+	if copyPath, ok := r.copies[target]; ok {
+		return copyPath
+	}
+	contents, err := os.ReadFile(target)
+	if err != nil || r.depth >= gitConfigIncludeMaxDepth {
+		return target
+	}
+	r.depth++
+	rewritten := r.rewrite(string(contents), filepath.Dir(target))
+	r.depth--
+	directory := filepath.Join(r.sessionHome, sessionGitConfigCopiesDir)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return target
+	}
+	dest := filepath.Join(directory, gitConfigCopyName(target))
+	if err := writePrivateFile(dest, []byte(rewritten)); err != nil {
+		return target
+	}
+	r.copies[target] = dest
+	return dest
+}
+
+// rewrite anchors every include path in contents: home-relative ones against the
+// real home, relative ones against the real config's directory. Absolute values
+// are left alone. Nested files that need the same treatment become further
+// copies; everything else keeps pointing at the real file.
+func (r *gitConfigRewriter) rewrite(contents, sourceDir string) string {
+	var out strings.Builder
+	section := ""
+	for contents != "" {
+		line := contents
+		if end := strings.IndexByte(contents, '\n'); end >= 0 {
+			line, contents = contents[:end+1], contents[end+1:]
+		} else {
+			contents = ""
+		}
+		if name := gitSectionName(line); name != "" {
+			section = name
+			out.WriteString(line)
+			continue
+		}
+		if section == "include" || section == "includeif" {
+			if value, ok := gitIncludePathValue(line); ok {
+				if nested, ok := gitExpandConfigPath(value, sourceDir, r.realHome); ok {
+					indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+					out.WriteString(indent + "path = ")
+					out.WriteString(gitConfigString(filepath.ToSlash(r.reference(nested))))
+					out.WriteString("\n")
+					continue
+				}
+			}
+		}
+		out.WriteString(line)
+	}
+	return out.String()
+}
+
+// gitIncludeTargets resolves every include target in contents.
+func gitIncludeTargets(contents, sourceDir, realHome string) []string {
+	var targets []string
+	section := ""
+	for _, line := range strings.Split(contents, "\n") {
+		if name := gitSectionName(line); name != "" {
+			section = name
+			continue
+		}
+		if section != "include" && section != "includeif" {
+			continue
+		}
+		if value, ok := gitIncludePathValue(line); ok {
+			if target, ok := gitExpandConfigPath(value, sourceDir, realHome); ok {
+				targets = append(targets, target)
+			}
+		}
+	}
+	return targets
+}
+
+// hasHomeRelativeInclude reports whether any include path in contents starts at
+// the user's home. Those are the only ones the redirect breaks.
+func hasHomeRelativeInclude(contents string) bool {
+	section := ""
+	for _, line := range strings.Split(contents, "\n") {
+		if name := gitSectionName(line); name != "" {
+			section = name
+			continue
+		}
+		if section != "include" && section != "includeif" {
+			continue
+		}
+		value, ok := gitIncludePathValue(line)
+		if ok && (value == "~" || strings.HasPrefix(value, "~/")) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitExpandConfigPath resolves a config path value: `~/` against the real home,
+// anything relative against the directory of the file that contains it.
+// Another user's home and an empty value are left for git to interpret.
+func gitExpandConfigPath(value, sourceDir, realHome string) (string, bool) {
+	switch {
+	case value == "":
+		return "", false
+	case value == "~":
+		return realHome, true
+	case strings.HasPrefix(value, "~/"):
+		return filepath.Join(realHome, filepath.FromSlash(value[2:])), true
+	case strings.HasPrefix(value, "~"):
+		return "", false
+	case filepath.IsAbs(value):
+		return filepath.Clean(value), true
+	default:
+		return filepath.Join(sourceDir, filepath.FromSlash(value)), true
+	}
+}
+
+// gitSectionName returns the lowercased section name of a section header line,
+// or "" when the line is not one.
+func gitSectionName(line string) string {
+	line = strings.TrimLeft(line, " \t")
+	if !strings.HasPrefix(line, "[") {
+		return ""
+	}
+	end := strings.IndexByte(line, ']')
+	if end < 0 {
+		return ""
+	}
+	name := line[1:end]
+	if cut := strings.IndexAny(name, " \t\""); cut >= 0 {
+		name = name[:cut]
+	}
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// gitIncludePathValue returns the value of a `path` assignment on an include
+// line, following git's unquoting and comment rules.
+func gitIncludePathValue(line string) (string, bool) {
+	line = strings.TrimLeft(line, " \t")
+	if line == "" || line[0] == '#' || line[0] == ';' {
+		return "", false
+	}
+	equals := strings.IndexByte(line, '=')
+	if equals < 0 || !strings.EqualFold(strings.TrimSpace(line[:equals]), "path") {
+		return "", false
+	}
+	return gitConfigValue(line[equals+1:])
+}
+
+// gitConfigValue parses a config value, removing quotes and inline comments.
+func gitConfigValue(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	var value strings.Builder
+	quoted := false
+	for i := 0; i < len(raw); i++ {
+		char := raw[i]
+		if quoted {
+			if char == '\\' && i+1 < len(raw) {
+				i++
+				switch raw[i] {
+				case 'n':
+					value.WriteByte('\n')
+				case 't':
+					value.WriteByte('\t')
+				case 'b':
+					value.WriteByte('\b')
+				case '\\':
+					value.WriteByte('\\')
+				case '"':
+					value.WriteByte('"')
+				default:
+					value.WriteByte(raw[i])
+				}
+				continue
+			}
+			if char == '"' {
+				quoted = false
+				continue
+			}
+			value.WriteByte(char)
+			continue
+		}
+		switch char {
+		case '"':
+			quoted = true
+		case '#', ';':
+			return strings.TrimRight(value.String(), " \t"), true
+		default:
+			value.WriteByte(char)
+		}
+	}
+	return strings.TrimRight(value.String(), " \t"), true
+}
+
+// gitConfigString renders a value for a git config file. Backslashes are
 // escapes there, so a Windows path is written with forward slashes before it is
 // quoted, and quotes or backslashes that survive are escaped.
-func gitConfigValue(value string) string {
+func gitConfigString(value string) string {
 	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value)
 	return `"` + escaped + `"`
+}
+
+// gitConfigCopyName derives a stable, path-safe name for a materialized config.
+func gitConfigCopyName(target string) string {
+	sum := sha256.Sum256([]byte(target))
+	return hex.EncodeToString(sum[:8]) + ".gitconfig"
 }
 
 // mirrorDirectoryTree recursively copies a real directory into a mirrored
