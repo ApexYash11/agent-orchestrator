@@ -125,16 +125,70 @@ func TestPrepareSessionHomeKeepsTheUsersOwnMemory(t *testing.T) {
 	}
 }
 
-func TestPrepareSessionHomeSkipsEmptyInstructions(t *testing.T) {
+func TestPrepareSessionHomePreparesEmptyInstructions(t *testing.T) {
+	for _, userMemory := range []string{"", "User preferences.\n"} {
+		t.Run(userMemory, func(t *testing.T) {
+			source := filepath.Join(isolatedHome(t), ".commandcode")
+			writeHomeFile(t, filepath.Join(source, "auth.json"), []byte(`{"token":"test"}`))
+			if userMemory != "" {
+				writeHomeFile(t, filepath.Join(source, "AGENTS.md"), []byte(userMemory))
+			}
+			for _, prompt := range []string{"", "   ", "\n\t"} {
+				dataDir := t.TempDir()
+				for _, previousPrompt := range []string{"", "old AO instructions"} {
+					if previousPrompt != "" {
+						prepareHome(t, dataDir, "mer-empty", previousPrompt)
+					}
+					home := prepareHome(t, dataDir, "mer-empty", prompt)
+					if home != SessionHomeDir(dataDir, "mer-empty") {
+						t.Fatalf("empty prompt home = %q", home)
+					}
+					if got := string(readHomeFile(t, filepath.Join(home, ".commandcode", "AGENTS.md"))); got != userMemory {
+						t.Fatalf("memory = %q, want %q", got, userMemory)
+					}
+					if got := string(readHomeFile(t, filepath.Join(home, ".commandcode", "auth.json"))); got != `{"token":"test"}` {
+						t.Fatalf("profile = %q", got)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPrepareSessionHomeRemovesDeletedProfileFiles(t *testing.T) {
+	source := filepath.Join(isolatedHome(t), ".commandcode")
+	for _, name := range mirroredProfileFiles {
+		writeHomeFile(t, filepath.Join(source, name), []byte(`{}`))
+	}
 	dataDir := t.TempDir()
-	for _, prompt := range []string{"", "   ", "\n\t"} {
-		home := prepareHome(t, dataDir, domain.SessionID("mer-empty"), prompt)
-		if home != "" {
-			t.Fatalf("PrepareSessionHome(%q) = %q, want no home", prompt, home)
+	home := prepareHome(t, dataDir, "mer-1", "worker role")
+	transcript := filepath.Join(home, ".commandcode", "projects", "project", "native.jsonl")
+	writeHomeFile(t, transcript, []byte("native history"))
+	for _, name := range mirroredProfileFiles {
+		if err := os.Remove(filepath.Join(source, name)); err != nil {
+			t.Fatal(err)
 		}
-		if _, err := os.Stat(filepath.Join(dataDir, "harnesses", "command-code", "mer-empty")); !os.IsNotExist(err) {
-			t.Fatalf("PrepareSessionHome(%q) created storage", prompt)
+	}
+	for range 2 {
+		prepareHome(t, dataDir, "mer-1", "worker role")
+		for _, name := range mirroredProfileFiles {
+			if _, err := os.Stat(filepath.Join(home, ".commandcode", name)); !os.IsNotExist(err) {
+				t.Fatalf("deleted %s still mirrored: %v", name, err)
+			}
 		}
+		if got := string(readHomeFile(t, transcript)); got != "native history" {
+			t.Fatalf("transcript = %q", got)
+		}
+	}
+}
+
+func TestPrepareSessionHomeFailsWhenStaleProfileCannotBeRemoved(t *testing.T) {
+	isolatedHome(t)
+	dataDir := t.TempDir()
+	home := SessionHomeDir(dataDir, "mer-1")
+	writeHomeFile(t, filepath.Join(home, ".commandcode", "auth.json", "blocked"), []byte("stale"))
+	if _, err := PrepareSessionHome(dataDir, "mer-1", "worker role"); err == nil || !strings.Contains(err.Error(), "auth.json") {
+		t.Fatalf("prepare with unremovable stale auth: %v", err)
 	}
 }
 

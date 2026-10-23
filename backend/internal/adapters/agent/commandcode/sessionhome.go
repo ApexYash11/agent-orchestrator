@@ -44,13 +44,10 @@ func realCommandCodeDir() string {
 }
 
 // PrepareSessionHome mirrors the profile and composes user memory with AO's role.
-// Memory writes are required; profile mirroring is best-effort and preserves history.
+// Memory writes and stale-profile removal are required; native history is preserved.
 func PrepareSessionHome(dataDir string, sessionID domain.SessionID, systemPrompt string) (string, error) {
 	home := SessionHomeDir(dataDir, sessionID)
 	if home == "" {
-		return "", nil
-	}
-	if strings.TrimSpace(systemPrompt) == "" {
 		return "", nil
 	}
 	profile := filepath.Join(home, ".commandcode")
@@ -59,7 +56,9 @@ func PrepareSessionHome(dataDir string, sessionID domain.SessionID, systemPrompt
 	}
 	source := realCommandCodeDir()
 	if source != "" && source != profile {
-		mirrorProfileFiles(source, profile)
+		if err := mirrorProfileFiles(source, profile); err != nil {
+			return "", err
+		}
 		// Refresh installed mods without disturbing native transcripts.
 		mirrorDirectoryTree(filepath.Join(source, "mods"), filepath.Join(profile, "mods"))
 	}
@@ -77,6 +76,9 @@ func PrepareSessionHome(dataDir string, sessionID domain.SessionID, systemPrompt
 // composeSessionMemory reads the real user memory afresh so restore never duplicates it.
 func composeSessionMemory(systemPrompt, sourceProfile, sessionProfile string) []byte {
 	instructions := strings.TrimRight(systemPrompt, "\n") + "\n"
+	if strings.TrimSpace(systemPrompt) == "" {
+		instructions = ""
+	}
 	if sourceProfile == "" || sourceProfile == sessionProfile {
 		return []byte(instructions)
 	}
@@ -87,6 +89,9 @@ func composeSessionMemory(systemPrompt, sourceProfile, sessionProfile string) []
 	userMemory := strings.TrimRight(string(contents), "\n")
 	if strings.TrimSpace(userMemory) == "" {
 		return []byte(instructions)
+	}
+	if instructions == "" {
+		return []byte(userMemory + "\n")
 	}
 	return []byte(userMemory + "\n\n" + instructions)
 }
@@ -815,11 +820,17 @@ func mirrorDirectoryTree(source, destination string) {
 	}
 }
 
-// mirrorProfileFiles refreshes each available profile input independently.
-func mirrorProfileFiles(source, destination string) {
+// mirrorProfileFiles refreshes available inputs and removes mirrors of deleted ones.
+// A stale mirror that cannot be removed prevents launch.
+func mirrorProfileFiles(source, destination string) error {
 	for _, name := range mirroredProfileFiles {
 		contents, err := os.ReadFile(filepath.Join(source, name)) //nolint:gosec // name is a fixed allowlist
 		if err != nil {
+			if os.IsNotExist(err) {
+				if err := os.Remove(filepath.Join(destination, name)); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("command-code: remove stale profile %s: %w", name, err)
+				}
+			}
 			continue
 		}
 		if name == "settings.json" {
@@ -827,6 +838,7 @@ func mirrorProfileFiles(source, destination string) {
 		}
 		_ = writePrivateFile(filepath.Join(destination, name), contents)
 	}
+	return nil
 }
 
 // rebaseSettingsHomeRefs anchors skill/mod paths and hook commands on the session copy.
