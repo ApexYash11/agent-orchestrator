@@ -19,6 +19,11 @@ const (
 	envAgentBrowserURL   = "AO_AGENT_BROWSER_URL"
 	envAgentBrowserToken = "AO_AGENT_BROWSER_TOKEN"
 	remoteBrowserTimeout = 2 * time.Minute
+	// remoteBrowserMaxResponseBytes bounds one command response. The service
+	// itself allows 64 MiB per file; base64 inflates that by 4/3 (~85.4 MiB),
+	// and one response can carry several files plus output text, so the cap
+	// must exceed the encoded size of a maximum single file.
+	remoteBrowserMaxResponseBytes = 256 << 20
 )
 
 // remoteBrowserConfig carries the self-hosted agent-browser service endpoint.
@@ -83,7 +88,7 @@ func runRemoteBrowserCommand(ctx context.Context, deps Deps, cfg remoteBrowserCo
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cfg.token)
-	resp, err := deps.HTTPClient.Do(req)
+	resp, err := remoteBrowserHTTPClient(deps.HTTPClient).Do(req)
 	if err != nil {
 		return fmt.Errorf("remote browser service at %s is unreachable: %w", cfg.baseURL, err)
 	}
@@ -95,7 +100,7 @@ func runRemoteBrowserCommand(ctx context.Context, deps Deps, cfg remoteBrowserCo
 		return fmt.Errorf("remote browser service at %s answered %s", cfg.baseURL, resp.Status)
 	}
 	var out remoteBrowserResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, remoteBrowserMaxResponseBytes)).Decode(&out); err != nil {
 		return fmt.Errorf("decode remote browser response: %w", err)
 	}
 	if err := writeRemoteBrowserFiles(out.Files); err != nil {
@@ -171,4 +176,22 @@ func writeRemoteBrowserFiles(files map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// remoteBrowserHTTPClient returns the client used for one remote browser
+// command. The CLI's default HTTP client carries a 2-second probe timeout,
+// which cannot cover healthy navigation or waits; a context deadline cannot
+// extend a client timeout, so a shorter client timeout is raised to
+// remoteBrowserTimeout. A client with no timeout is left alone, and a client
+// already allowing longer than remoteBrowserTimeout keeps its own budget.
+func remoteBrowserHTTPClient(in *http.Client) *http.Client {
+	if in == nil {
+		return &http.Client{Timeout: remoteBrowserTimeout}
+	}
+	if in.Timeout == 0 || in.Timeout >= remoteBrowserTimeout {
+		return in
+	}
+	raised := *in
+	raised.Timeout = remoteBrowserTimeout
+	return &raised
 }
