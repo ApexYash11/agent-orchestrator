@@ -545,10 +545,42 @@ describe("browser runtime link", () => {
 		servers.splice(servers.indexOf(closed), 1);
 		await new Promise<void>((resolve) => closed.close(() => resolve()));
 		const states: BrowserRuntimeState[] = [];
-		const handle = connectBrowserRuntime(address, { execute: async () => ({}), onStateChange: (state) => states.push(state) });
+		const reasons: string[] = [];
+		const handle = connectBrowserRuntime(address, {
+			execute: async () => ({}),
+			onStateChange: (state) => states.push(state),
+			onHandshakeRejected: (reason) => reasons.push(reason),
+		});
 		handles.push(handle);
 
 		await vi.waitFor(() => expect(states).toEqual([CONNECTING, DISCONNECTED]));
+		expect(handle.state.rejected).toBe(false);
+		expect(reasons).toEqual([]);
+	});
+
+	it("retries a failed redial without reporting a legacy handshake refusal", async () => {
+		let serverSocket: net.Socket | null = null;
+		const server = net.createServer((socket) => {
+			serverSocket = socket;
+			ackHello(socket);
+		});
+		const address = await listen(server);
+		const reasons: string[] = [];
+		const logs: string[] = [];
+		const handle = connectBrowserRuntime(address, {
+			execute: async () => ({}),
+			log: (message) => logs.push(message),
+			onHandshakeRejected: (reason) => reasons.push(reason),
+		});
+		handles.push(handle);
+		await until(() => handle.state.connected, "the accepted handshake");
+		const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+		serverSocket!.destroy();
+		await closed;
+		await until(() => logs.some((message) => message.includes("ECONNREFUSED")), "the failed redial");
+		await until(() => !handle.state.connecting, "the failed redial teardown");
+
+		expect(reasons).toEqual([]);
 		expect(handle.state.rejected).toBe(false);
 	});
 

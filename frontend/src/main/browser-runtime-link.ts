@@ -300,6 +300,7 @@ export function connectBrowserRuntime(
 		const epoch = ++connectionEpoch;
 		const next = typeof address === "string" ? net.connect(address) : net.connect(address);
 		socket = next;
+		let opened = false;
 		let accepted = false;
 		let refused = false;
 		// A TCP connect is not an accepted link: only the daemon's answer to the
@@ -335,6 +336,7 @@ export function connectBrowserRuntime(
 				next.destroy();
 				return;
 			}
+			opened = true;
 			void send({ type: "hello", version: PROTOCOL_VERSION, token: options.token }, next, epoch).catch((error) => {
 				log(`browser-runtime-link: hello failed: ${String(error)}`);
 				next.destroy();
@@ -366,7 +368,7 @@ export function connectBrowserRuntime(
 				// hanging up, so this is the only signal the recovery path gets for it.
 				// An accepted link that drops is an ordinary disconnect, reported above
 				// instead, and must never retire a healthy daemon.
-				options.onHandshakeRejected?.(HANDSHAKE_CLOSED_BEFORE_ACCEPT);
+				if (opened) options.onHandshakeRejected?.(HANDSHAKE_CLOSED_BEFORE_ACCEPT);
 				setState(BROWSER_RUNTIME_DISCONNECTED);
 			}
 			if (!disposed) scheduleReconnect();
