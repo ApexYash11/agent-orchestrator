@@ -1029,6 +1029,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Search visible chat messages across conversations */
+        get: operations["searchConversations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cues/{cueId}": {
         parameters: {
             query?: never;
@@ -1329,7 +1346,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List paired mobile devices with their live/muted status */
+        /** List paired mobile devices with their live status */
         get: operations["listMobileDevices"];
         put?: never;
         post?: never;
@@ -1353,8 +1370,7 @@ export interface paths {
         delete: operations["removeMobileDevice"];
         options?: never;
         head?: never;
-        /** Mute or unmute push notifications for a paired device */
-        patch: operations["muteMobileDevice"];
+        patch?: never;
         trace?: never;
     };
     "/api/v1/mobile/disable": {
@@ -1696,7 +1712,8 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /** Forget remembered project permissions */
+        delete: operations["forgetProjectPermissions"];
         options?: never;
         head?: never;
         /** Remember project permissions for future sessions */
@@ -1749,6 +1766,23 @@ export interface paths {
         put?: never;
         /** Clone and register a project from a git repository URL */
         post: operations["cloneProject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/clone/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check a clone destination and normalize its repository URL without network access */
+        post: operations["checkCloneDestination"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3834,6 +3868,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/workspace/search/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Search the contents of visible workspace files */
+        get: operations["searchSessionWorkspaceContent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/workspace/tree": {
         parameters: {
             query?: never;
@@ -4854,6 +4905,12 @@ export interface components {
              */
             clearedCount: number;
         };
+        CloneDestination: {
+            canUseExisting: boolean;
+            exists: boolean;
+            path: string;
+            remoteUrl: string;
+        };
         ClonePreparationResult: {
             path: string;
             preparationId: string;
@@ -5136,6 +5193,7 @@ export interface components {
             autoInjectReview: boolean;
             autoReviewEnabled: boolean;
             branch?: string;
+            branchNaming?: boolean;
             branchState?: components["schemas"]["SessionBranchState"];
             chatProviderPreserved: boolean;
             /** Format: date-time */
@@ -5222,7 +5280,7 @@ export interface components {
         };
         ConversationActivityResponse: {
             /** @enum {string} */
-            activityKind: "command" | "file_change" | "plan" | "reasoning" | "approval" | "usage" | "error" | "system" | "mcp_tool" | "auto_review" | "user_input";
+            activityKind: "command" | "file_change" | "plan" | "reasoning" | "approval" | "usage" | "error" | "system" | "mcp_tool" | "auto_review" | "user_input" | "ao_action";
             createdAt: string;
             detail?: {
                 [key: string]: unknown;
@@ -5359,6 +5417,7 @@ export interface components {
         };
         ConversationPlanResponse: {
             explanation?: string;
+            spansTurns?: boolean;
             steps: components["schemas"]["ConversationPlanStepResponse"][];
         };
         ConversationPlanStepResponse: {
@@ -5390,6 +5449,18 @@ export interface components {
             name: string;
             text?: null | string;
             uri: string;
+        };
+        ConversationSearchHitResponse: {
+            messageId: string;
+            projectId: string;
+            reviewId?: string;
+            sessionId: string;
+            /** @description A passage of the message, with each match wrapped in U+0002 and U+0003. */
+            text: string;
+            title: string;
+        };
+        ConversationSearchResponse: {
+            results: components["schemas"]["ConversationSearchHitResponse"][];
         };
         ConversationSkillResponse: {
             description?: string;
@@ -5562,7 +5633,7 @@ export interface components {
         };
         DelegateTaskRequest: {
             /** @enum {string} */
-            agent?: "claude-code" | "codex" | "aider" | "opencode" | "opencode-v2" | "grok" | "droid" | "amp" | "agy" | "crush" | "cursor" | "qwen" | "gemini" | "copilot" | "goose" | "auggie" | "continue" | "devin" | "cline" | "kimi" | "muse" | "kiro" | "kilocode" | "vibe" | "pi" | "kimchi" | "omp" | "fx" | "prime-agent" | "autohand" | "unreal-agent" | "codewhale" | "mimo-code" | "deepseek-harness" | "openhands" | "command-code" | "memcode" | "fake";
+            agent?: "claude-code" | "codex" | "aider" | "opencode" | "opencode-v2" | "grok" | "droid" | "amp" | "agy" | "crush" | "cursor" | "qwen" | "gemini" | "copilot" | "goose" | "auggie" | "continue" | "devin" | "cline" | "kimi" | "muse" | "kiro" | "kilocode" | "vibe" | "pi" | "kimchi" | "omp" | "fx" | "prime-agent" | "autohand" | "unreal-agent" | "codewhale" | "mimo-code" | "deepseek-harness" | "openhands" | "command-code" | "memcode" | "hermes" | "fake";
             /** @enum {string} */
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
@@ -5822,7 +5893,7 @@ export interface components {
              * @description Fixed install target this job ran (or is running) for.
              * @enum {string}
              */
-            target: "tmux" | "gh" | "claude" | "claude-code" | "codex" | "cursor" | "opencode" | "opencode-v2" | "aider" | "copilot" | "grok" | "kimi" | "pi" | "amp" | "auggie" | "droid" | "crush" | "cline" | "goose" | "qwen" | "gemini" | "continue" | "devin" | "kiro" | "kilocode" | "vibe" | "muse" | "agy" | "autohand" | "kimchi" | "prime-agent" | "omp" | "fx" | "unreal-agent" | "codewhale" | "mimo-code" | "deepseek-harness" | "openhands" | "command-code" | "memcode" | "cloudflared";
+            target: "tmux" | "gh" | "claude" | "claude-code" | "codex" | "cursor" | "opencode" | "opencode-v2" | "aider" | "copilot" | "grok" | "kimi" | "pi" | "amp" | "auggie" | "droid" | "crush" | "cline" | "goose" | "qwen" | "gemini" | "continue" | "devin" | "kiro" | "kilocode" | "vibe" | "muse" | "agy" | "autohand" | "kimchi" | "prime-agent" | "omp" | "fx" | "unreal-agent" | "codewhale" | "mimo-code" | "deepseek-harness" | "openhands" | "command-code" | "memcode" | "hermes" | "cloudflared";
             /** Format: date-time */
             updatedAt?: null | string;
             /** @description While waiting_for_idle, the sessions the update still waits for and why. */
@@ -5947,6 +6018,8 @@ export interface components {
             sessionId: string;
         };
         ListSessionsResponse: {
+            archived?: components["schemas"]["SessionArchiveSummary"];
+            nextCursor?: string;
             sessions: components["schemas"]["ControllersSessionView"][];
         };
         ListShellTerminalsResponse: {
@@ -6027,7 +6100,6 @@ export interface components {
             lastSeenAt: string;
             /** @description True when the phone's app is open and polling. */
             live: boolean;
-            muted: boolean;
             /** @description True when this device has a push token registered. */
             notificationsEnabled: boolean;
             /** @enum {string} */
@@ -6066,10 +6138,6 @@ export interface components {
             ready: boolean;
             running: boolean;
             supported: boolean;
-        };
-        MuteDeviceRequest: {
-            /** @description True to stop sending push notifications to this device. */
-            muted: boolean;
         };
         NotificationEnvelope: {
             notification: components["schemas"]["NotificationResponse"];
@@ -6172,6 +6240,7 @@ export interface components {
             workspaceRepos?: components["schemas"]["WorkspaceRepo"][];
         };
         ProjectClonePreparationCleanupInput: {
+            keepCheckout?: boolean;
             path: string;
             preparationId: string;
         };
@@ -6514,6 +6583,12 @@ export interface components {
         SessionAgentAccountsResponse: {
             claude?: string;
             codex?: string;
+        };
+        SessionArchiveSummary: {
+            byProject: {
+                [key: string]: number;
+            } | null;
+            total: number;
         };
         SessionArtifact: {
             inlineUrl?: string;
@@ -7138,7 +7213,7 @@ export interface components {
             displayName?: string;
             effort?: string;
             /** @enum {string} */
-            harness?: "claude-code" | "codex" | "aider" | "opencode" | "opencode-v2" | "grok" | "droid" | "amp" | "agy" | "crush" | "cursor" | "qwen" | "gemini" | "copilot" | "goose" | "auggie" | "continue" | "devin" | "cline" | "kimi" | "muse" | "kiro" | "kilocode" | "vibe" | "pi" | "kimchi" | "omp" | "fx" | "prime-agent" | "autohand" | "unreal-agent" | "codewhale" | "mimo-code" | "deepseek-harness" | "openhands" | "command-code" | "memcode";
+            harness?: "claude-code" | "codex" | "aider" | "opencode" | "opencode-v2" | "grok" | "droid" | "amp" | "agy" | "crush" | "cursor" | "qwen" | "gemini" | "copilot" | "goose" | "auggie" | "continue" | "devin" | "cline" | "kimi" | "muse" | "kiro" | "kilocode" | "vibe" | "pi" | "kimchi" | "omp" | "fx" | "prime-agent" | "autohand" | "unreal-agent" | "codewhale" | "mimo-code" | "deepseek-harness" | "openhands" | "command-code" | "memcode" | "hermes";
             issueId?: string;
             /** @enum {string} */
             kind?: "worker" | "orchestrator";
@@ -7324,6 +7399,7 @@ export interface components {
             cloudUserId?: string;
             distinctId: string;
             githubLogin?: string;
+            installId?: string;
             optedOut: boolean;
         };
         TrackerIntakeConfig: {
@@ -7532,6 +7608,15 @@ export interface components {
             subject: string;
             /** Format: date-time */
             timestamp: string;
+        };
+        WorkspaceContentSearchHitResponse: {
+            line: number;
+            path: string;
+            /** @description The line, with each match wrapped in U+0002 and U+0003. */
+            text: string;
+        };
+        WorkspaceContentSearchResponse: {
+            results: components["schemas"]["WorkspaceContentSearchHitResponse"][];
         };
         WorkspaceDiffDeferredResponse: {
             path: string;
@@ -8077,7 +8162,7 @@ export interface operations {
             query?: {
                 /** @description Return catalog facts without reading session history for model recency. Cached catalogs are served while discovery refreshes in the background. */
                 catalogOnly?: boolean;
-                /** @description Optional project identifier used as the model-catalog cache scope. */
+                /** @description Optional cloud credential scope. Any other value, including a project identifier, is ignored: model catalogs are cached per device, not per project. */
                 projectId?: string;
             };
             header?: never;
@@ -8141,7 +8226,7 @@ export interface operations {
             query?: {
                 /** @description Refresh the Harness Settings browsing catalog without session-history enrichment; FX includes all connections in a separate cache. */
                 catalogOnly?: boolean;
-                /** @description Optional project identifier used as the model-catalog cache scope. */
+                /** @description Optional cloud credential scope. Any other value, including a project identifier, is ignored: model catalogs are cached per device, not per project. */
                 projectId?: string;
                 /** @description When true, compare executable and config metadata before running discovery. */
                 revalidate?: boolean;
@@ -10956,6 +11041,56 @@ export interface operations {
             };
         };
     };
+    searchConversations: {
+        parameters: {
+            query: {
+                /** @description Words to find in chat messages, matched by word form. */
+                query: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationSearchResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     getCue: {
         parameters: {
             query?: never;
@@ -12034,62 +12169,6 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Service Unavailable */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-        };
-    };
-    muteMobileDevice: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The device's stable install id. */
-                installId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MuteDeviceRequest"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: boolean;
-                    };
-                };
-            };
-            /** @description Bad Request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Not Found */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13260,6 +13339,56 @@ export interface operations {
             };
         };
     };
+    forgetProjectPermissions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project identifier (registry key). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     setProjectPermissions: {
         parameters: {
             query?: never;
@@ -13544,6 +13673,57 @@ export interface operations {
                     "application/json": components["schemas"]["APIError"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    checkCloneDestination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloneProjectInput"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloneDestination"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
         };
     };
     cleanupPreparedClone: {
@@ -13628,6 +13808,15 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14631,6 +14820,12 @@ export interface operations {
                 orchestratorOnly?: null | boolean;
                 /** @description When true, return only fresh non-terminated sessions. */
                 fresh?: null | boolean;
+                /** @description Session kind filter. worker keeps every session that is not an orchestrator. */
+                kind?: "worker" | "orchestrator";
+                /** @description Page size. When set, sessions are ordered pinned first, then most recently updated, and nextCursor resumes the list. When omitted, every match is returned. */
+                limit?: number;
+                /** @description Opaque cursor returned by the previous page. Requires limit. */
+                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -21852,6 +22047,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkspaceFileSearchResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    searchSessionWorkspaceContent: {
+        parameters: {
+            query: {
+                /** @description Words to find in file contents, case-insensitive and in any order. */
+                query: string;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceContentSearchResponse"];
                 };
             };
             /** @description Bad Request */

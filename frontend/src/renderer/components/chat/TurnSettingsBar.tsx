@@ -36,7 +36,7 @@ import { effortDisplayLabel, EffortMenuItems, EffortPicker, formatEffortLabel } 
 import { agentModelDisplayLabel, claudeChoiceModel, isDefaultPlaceholderLabel, splitClaudeModels } from "../../lib/agent-model-choices";
 import { Switch } from "../ui/switch";
 import { agentLabel } from "../../lib/agent-options";
-import { AgentModelPicker, AutoCompactRow, compactsEarly, type AgentSwitchProps, type PickerSource } from "./AgentSwitchPicker";
+import { AgentModelPicker, AutoCompactRow, compactsEarly, ToggleRow, type AgentSwitchProps, type PickerSource } from "./AgentSwitchPicker";
 import { ModelMenuChoices } from "./ModelMenuChoices";
 import { providerQualifiedChoice } from "../../lib/model-variants";
 import type {
@@ -86,6 +86,15 @@ const CODEX_APPROVAL_ORDER: ApprovalMode[] = [
 	"bypass-permissions",
 ];
 
+/** Approval modes the session allows that the selected model cannot run. */
+export interface ApprovalModeLimits {
+	/** The selected model's name, for the reason each unavailable mode shows. */
+	model: string;
+	unavailable: ApprovalMode[];
+	/** The mode asked for, when `settings.approvalMode` is the one that runs in its place. */
+	requested?: ApprovalMode;
+}
+
 const TRIGGER_CLASS =
 	"h-7 gap-1 bg-transparent rounded-lg px-3 text-xs! leading-none text-muted-foreground hover:bg-interactive-active hover:text-foreground data-[state=open]:bg-interactive-active data-[state=open]:text-foreground";
 const CHAT_MENU_CLASS = "chat-settings-menu text-xs!";
@@ -96,6 +105,7 @@ export function TurnSettingsBar({
 	harness,
 	showApprovalMode = true,
 	approvalModes,
+	approvalModeLimits,
 	reroute,
 	onChange,
 	onRememberPermissions,
@@ -111,7 +121,7 @@ export function TurnSettingsBar({
 	agentSwitch,
 	beforePicker,
 	modelsLoading,
-	afterPermissions,
+	lastModel,
 	children,
 }: {
 	models: ChatModel[];
@@ -122,6 +132,12 @@ export function TurnSettingsBar({
 	showApprovalMode?: boolean;
 	approvalModes?: ApprovalMode[];
 	/**
+	 * Modes shown disabled, with the reason, because the selected model cannot
+	 * run them. When the pick is one of them, settings.approvalMode is the mode
+	 * that runs instead and the menu says so.
+	 */
+	approvalModeLimits?: ApprovalModeLimits;
+	/**
 	 * The provider answered with a different model than the one chosen. Separate from
 	 * `settings` all the way down: settings are what the user asked for, this is what
 	 * replied, and folding them together is how the control ends up advertising a
@@ -130,7 +146,8 @@ export function TurnSettingsBar({
 	reroute?: ModelReroute;
 	/** `picked` is set when the user chose that setting from its own menu. */
 	onChange?: (next: TurnSettings, picked?: keyof TurnSettings) => void;
-	onRememberPermissions?: (mode: ApprovalMode) => Promise<unknown> | void;
+	/** `null` forgets the project's remembered mode. */
+	onRememberPermissions?: (mode: ApprovalMode | null) => Promise<unknown> | void;
 	rememberPermissionsPending?: boolean;
 	rememberPermissionsError?: string;
 	rememberedPermissionMode?: ApprovalMode;
@@ -157,8 +174,8 @@ export function TurnSettingsBar({
 	beforePicker?: ReactNode;
 	/** The agent is starting again; the picker names no model until it reports its own. */
 	modelsLoading?: boolean;
-	/** A control after the permission picker, such as the switch to the terminal view. */
-	afterPermissions?: ReactNode;
+	/** The model the chat's agent last reported running, when none is saved. */
+	lastModel?: string;
 	/** Inline controls on the right model row, before the mode/approval picker — queue vs steer. */
 	children?: ReactNode;
 }) {
@@ -205,6 +222,11 @@ export function TurnSettingsBar({
 	const approvalCopy = harness === "codex" ? CODEX_APPROVAL_COPY : harness === "agy" ? AGY_APPROVAL_COPY : APPROVAL_COPY;
 	const approvalOrder = harness === "codex" ? CODEX_APPROVAL_ORDER : harness === "agy" ? APPROVAL_ORDER.filter((mode) => mode !== "bypass-permissions") : APPROVAL_ORDER;
 	const approvalLabel = approvalCopy[settings.approvalMode ?? "default"].label;
+	const approvalUnavailable = (mode: ApprovalMode) =>
+		approvalModeLimits?.unavailable.includes(mode) ? `Not available for ${approvalModeLimits.model}` : undefined;
+	const approvalNote = approvalModeLimits?.requested
+		? `${approvalCopy[approvalModeLimits.requested].label} isn't available for ${approvalModeLimits.model}; using ${approvalLabel}.`
+		: undefined;
 	const modelGroupLabel = effortLabel
 		? `${modelLabel} ${formatEffortLabel(effortLabel, t)}`
 		: modelLabel;
@@ -260,16 +282,20 @@ export function TurnSettingsBar({
 	const rememberMode = modeOption
 		? modeOption.choices.find((choice) => choice.value === modeOption.currentValue)?.permissionMode
 		: settings.approvalMode ?? "default";
+	// Codex's default is Full access, which the project stores as bypass.
+	const remembered = rememberMode !== undefined && rememberedPermissionMode !== undefined && (
+		rememberedPermissionMode === rememberMode ||
+		(harness === "codex" && rememberMode === "default" && rememberedPermissionMode === "bypass-permissions")
+	);
 	const rememberAction = onRememberPermissions && rememberMode && !planning ? (
-		<OptionMenuItem
-			disabled={optionDisabled}
-			onSelect={() => {
-				void Promise.resolve(onRememberPermissions(rememberMode)).catch(() => {});
+		<ToggleRow
+			label="Remember for this project"
+			checked={remembered}
+			onChange={optionDisabled ? undefined : (on) => {
+				void Promise.resolve(onRememberPermissions(on ? rememberMode : null)).catch(() => {});
 			}}
-			className="mt-1 border-t border-border pt-2 text-xs"
-		>
-			Remember for this project
-		</OptionMenuItem>
+			className="mt-1 border-t border-border pt-2"
+		/>
 	) : null;
 	const unified = Boolean(agentSwitch && harness);
 	// The unified bar keeps the permission picker beside the Plan chip.
@@ -416,7 +442,7 @@ export function TurnSettingsBar({
 	return (
 		<div role="group" aria-label="Turn settings" className="flex min-w-0 flex-1 flex-col gap-0.5">
 			<div className="flex h-7 min-w-0 flex-1 items-center justify-between gap-2">
-				<div className="flex h-7 min-w-0 flex-wrap items-center gap-0.5">
+				<div className="flex h-7 min-w-0 flex-1 items-center gap-0.5">
 					{unified && agentSwitch && harness ? (
 						<>
 							{beforePicker}
@@ -428,6 +454,7 @@ export function TurnSettingsBar({
 								// Only an agent that sends back its own settings has any to load; AO's would just flicker.
 								loading={configPending && !nativeModelMenu}
 								loadingModels={modelsLoading}
+								savedModel={settings.model || lastModel}
 								title={reroute ? `The provider answered with ${rerouted} instead of ${reroute.fromModel ?? chosenLabel}` : undefined}
 								mark={reroute ? <Shuffle className="size-3 shrink-0 text-warning" aria-hidden="true" /> : undefined}
 								extras={pickerExtras}
@@ -481,7 +508,7 @@ export function TurnSettingsBar({
 					) : null}
 				</div>
 
-				{showRightDropdown || children || (unified && (planOn || afterPermissions)) ? (
+				{showRightDropdown || children || (unified && planOn) ? (
 					<div className="flex h-7 shrink-0 items-center gap-1">
 						{children}
 						{showPermissions && pending && agentSwitch ? (
@@ -526,14 +553,18 @@ export function TurnSettingsBar({
 													disabled={optionDisabled}
 								leadIcon={unified ? permissionIcon(permissionLook(harness, settings.approvalMode ?? "default")) : undefined}
 							>
-								{approvalOrder.filter((mode) => !approvalModes || approvalModes.includes(mode)).map((mode) => (
+								{approvalNote ? (
+									<p role="note" className="px-3 py-2 text-[11px] leading-snug text-muted-foreground">{approvalNote}</p>
+								) : null}
+								{approvalOrder.filter((mode) => !approvalModes || approvalModes.includes(mode) || approvalUnavailable(mode)).map((mode) => (
 									unified ? (
 										<PermissionRow
 											key={mode}
 											mode={permissionLook(harness, mode)}
 											title={approvalCopy[mode].label}
-											description={approvalCopy[mode].description}
+											description={approvalUnavailable(mode) ?? approvalCopy[mode].description}
 											active={mode === (settings.approvalMode ?? "default")}
+											disabled={Boolean(approvalUnavailable(mode))}
 											onSelect={() => onChange({ ...settings, approvalMode: mode })}
 										/>
 									) : (
@@ -541,6 +572,7 @@ export function TurnSettingsBar({
 										key={mode}
 										active={mode === (settings.approvalMode ?? "default")}
 										radio
+										disabled={Boolean(approvalUnavailable(mode))}
 										onSelect={() => onChange({ ...settings, approvalMode: mode }, "approvalMode")}
 										className={cn("text-xs")}
 									>
@@ -554,13 +586,15 @@ export function TurnSettingsBar({
 										>
 											{approvalCopy[mode].label}
 										</span>
+										{approvalUnavailable(mode) ? (
+											<span className="ml-auto pl-3 text-[11px] text-muted-foreground">{approvalUnavailable(mode)}</span>
+										) : null}
 									</OptionMenuItem>
 									)
 								))}
 								{rememberAction}
 							</Picker>
 						) : null}
-						{unified ? afterPermissions : null}
 						{unified && planOn ? (
 							<button
 								type="button"
@@ -577,11 +611,6 @@ export function TurnSettingsBar({
 					</div>
 				) : null}
 			</div>
-			{rememberPermissionsPending || (rememberedPermissionMode !== undefined && rememberedPermissionMode === rememberMode && !planning && !configPending) ? (
-				<p role="status" className="px-1 text-xs text-muted-foreground">
-					{rememberPermissionsPending ? "Saving project permissions…" : "Permission mode saved for new sessions in this project."}
-				</p>
-			) : null}
 			{rememberPermissionsError ? (
 				<p role="alert" className="px-1 text-xs text-destructive">{rememberPermissionsError}</p>
 			) : null}
@@ -1264,7 +1293,7 @@ function ConfigOptionChoices({
 				return (
 					<Fragment key={choice.value}>
 						{choice.group && choice.group !== previousGroup ? (
-							<OptionMenuLabel className="px-3 pb-1 pt-2 text-micro text-muted-foreground">
+							<OptionMenuLabel>
 								{choice.groupName || choice.group}
 							</OptionMenuLabel>
 						) : null}
@@ -1358,12 +1387,12 @@ function PermissionRow({
 	const Icon = permissionIcon(mode);
 	const unrestricted = mode === "bypass-permissions";
 	return (
-		<OptionMenuItem active={active} radio disabled={disabled} onSelect={onSelect} className="items-start gap-3 whitespace-normal px-3 py-2">
+		<OptionMenuItem active={active} radio disabled={disabled} onSelect={onSelect} className="items-start gap-3 whitespace-normal">
 			<Icon aria-hidden="true" className={cn("mt-0.5 size-4 shrink-0", unrestricted ? "text-warning" : "text-muted-foreground")} />
 			<span className="flex min-w-0 flex-1 flex-col gap-0.5">
 				<span className={cn("text-xs", unrestricted ? "text-warning" : "text-foreground")}>{title}</span>
 				{description ? (
-					<span className={cn("text-[11px] leading-snug", unrestricted ? "text-warning/80" : "text-muted-foreground")}>
+					<span className={cn("truncate text-[11px] leading-snug", unrestricted ? "text-warning/80" : "text-muted-foreground")}>
 						{description}
 					</span>
 				) : null}
@@ -1390,7 +1419,7 @@ export function ComposerMenuRow({
 	onSelect: () => void;
 }) {
 	return (
-		<OptionMenuItem disabled={disabled} onSelect={onSelect} className="gap-2 px-3 py-1.5 text-xs">
+		<OptionMenuItem disabled={disabled} onSelect={onSelect} className="gap-2">
 			<Icon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
 			<span className="shrink-0 text-foreground">{title}</span>
 			{description ? <span className="min-w-0 truncate text-muted-foreground">{description}</span> : null}
@@ -1515,7 +1544,8 @@ function Picker({
 				</OptionMenuTrigger>
 			<OptionMenuContent
 				align={LeadIcon ? "start" : "end"}
-				className={cn(CHAT_MENU_CLASS, LeadIcon ? "w-80" : undefined)}
+				// The permission menu fits every mode on one line each, plus the remember switch, without scrolling.
+				className={cn(CHAT_MENU_CLASS, LeadIcon ? "max-h-(--radix-dropdown-menu-content-available-height)! max-w-[calc(100vw-2rem)]!" : undefined)}
 				onFocus={onFocus}
 			>
 				{children}

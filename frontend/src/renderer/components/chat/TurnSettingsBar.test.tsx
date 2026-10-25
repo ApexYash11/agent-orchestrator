@@ -944,6 +944,23 @@ describe("remember project permissions", () => {
 		expect(screen.queryByRole("menuitemradio", { name: "Full access" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("menuitemradio", { name: "Bypass permissions" })).not.toBeInTheDocument();
 	});
+	it("shows a mode the selected model cannot run as unavailable, and says which mode runs instead", async () => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		render(<TurnSettingsBar models={[]} harness="claude-code" settings={{ approvalMode: "accept-edits" }}
+			approvalModes={["default", "accept-edits", "bypass-permissions"]}
+			approvalModeLimits={{ model: "Haiku", unavailable: ["auto"], requested: "auto" }} onChange={onChange} />);
+		const trigger = screen.getByRole("button", { name: "Approval policy for the next turn" });
+		expect(trigger).toHaveTextContent("Accept edits");
+		await user.click(trigger);
+		expect(screen.getByRole("note")).toHaveTextContent("Auto-approve isn't available for Haiku; using Accept edits.");
+		const auto = screen.getByRole("menuitemradio", { name: /Auto-approve/ });
+		expect(auto).toHaveTextContent("Not available for Haiku");
+		expect(auto).toHaveAttribute("aria-disabled", "true");
+		await user.click(auto);
+		expect(onChange).not.toHaveBeenCalled();
+		expect(screen.getByRole("menuitemradio", { name: "Accept edits" })).toHaveAttribute("aria-checked", "true");
+	});
 	it("keeps choosing a session policy separate from remembering the confirmed policy", async () => {
 		const user = userEvent.setup();
 		const onChange = vi.fn();
@@ -957,8 +974,30 @@ describe("remember project permissions", () => {
 		rerender(<TurnSettingsBar models={[]} harness="codex"
 			settings={{ approvalMode: "default" }} onChange={onChange} onRememberPermissions={remember} />);
 		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
-		await user.click(screen.getByRole("menuitem", { name: "Remember for this project" }));
+		await user.click(screen.getByRole("menuitem", { name: /Remember for this project/ }));
 		expect(remember).toHaveBeenCalledWith("default");
+	});
+
+	it("shows remembering as a switch that forgets when turned off", async () => {
+		const user = userEvent.setup();
+		const remember = vi.fn();
+		const props = { models: [], settings: { approvalMode: "auto" as const }, onChange: vi.fn(), onRememberPermissions: remember };
+		const { rerender } = render(<TurnSettingsBar {...props} rememberedPermissionMode="default" />);
+		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
+		expect(screen.getByRole("switch", { name: "Remember for this project" })).not.toBeChecked();
+		rerender(<TurnSettingsBar {...props} rememberedPermissionMode="auto" />);
+		expect(screen.getByRole("switch", { name: "Remember for this project" })).toBeChecked();
+		await user.click(screen.getByRole("menuitem", { name: /Remember for this project/ }));
+		expect(remember).toHaveBeenCalledWith(null);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("reads Codex Full access as remembered when the project stores it as bypass", async () => {
+		const user = userEvent.setup();
+		render(<TurnSettingsBar models={[]} harness="codex" settings={{ approvalMode: "default" }}
+			onChange={vi.fn()} onRememberPermissions={vi.fn()} rememberedPermissionMode="bypass-permissions" />);
+		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
+		expect(screen.getByRole("switch", { name: "Remember for this project" })).toBeChecked();
 	});
 
 	it("remembers a provider choice only through its daemon-supplied permission mapping", async () => {
@@ -969,7 +1008,7 @@ describe("remember project permissions", () => {
 				{ value: "bypass", name: "Bypass Permissions", permissionMode: "bypass-permissions" },
 			] }]} onChangeConfigOption={vi.fn()} onRememberPermissions={remember} />);
 		await user.click(screen.getByRole("button", { name: "Permission mode" }));
-		await user.click(screen.getByRole("menuitem", { name: "Remember for this project" }));
+		await user.click(screen.getByRole("menuitem", { name: /Remember for this project/ }));
 		expect(remember).toHaveBeenCalledWith("bypass-permissions");
 	});
 
@@ -978,44 +1017,30 @@ describe("remember project permissions", () => {
 		render(<TurnSettingsBar models={[]} settings={{ approvalMode: "auto" }}
 			configOptions={[OPTIONS[2]]} onChangeConfigOption={vi.fn()} onRememberPermissions={vi.fn()} />);
 		await user.click(screen.getByRole("button", { name: "Permission mode" }));
-		expect(screen.queryByRole("menuitem", { name: "Remember for this project" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("switch", { name: "Remember for this project" })).not.toBeInTheDocument();
 	});
 
-	it("disables overlapping writes and shows save results", () => {
+	it("disables overlapping writes and shows save errors", () => {
 		const props = { models: [], settings: {}, onChange: vi.fn(), onRememberPermissions: vi.fn() };
 		const { rerender } = render(<TurnSettingsBar {...props} rememberPermissionsPending />);
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toBeDisabled();
-		expect(screen.getByRole("status")).toHaveTextContent("Saving project permissions");
 		rerender(<TurnSettingsBar {...props} rememberPermissionsError="Could not save project default" />);
 		expect(screen.getByRole("alert")).toHaveTextContent("Could not save project default");
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toBeEnabled();
-		rerender(<TurnSettingsBar {...props} rememberedPermissionMode="default" />);
-		expect(screen.getByRole("status")).toHaveTextContent("saved for new sessions in this project");
 	});
 
-	it("shows success only for the exact saved native permission mode", () => {
-		const props = { models: [], onChange: vi.fn(), onRememberPermissions: vi.fn() };
-		const { rerender } = render(<TurnSettingsBar {...props} settings={{ approvalMode: "auto" }} rememberedPermissionMode="auto" />);
-		expect(screen.getByRole("status")).toHaveTextContent("saved for new sessions");
-		rerender(<TurnSettingsBar {...props} settings={{ approvalMode: "default" }} rememberedPermissionMode="auto" />);
-		expect(screen.queryByRole("status")).not.toBeInTheDocument();
-	});
-
-	it("matches saved success against the provider mode instead of stale native settings", () => {
+	it("matches the remembered mode against the provider mode instead of stale native settings", async () => {
+		const user = userEvent.setup();
 		const props = { models: [], settings: { approvalMode: "auto" as const }, onChangeConfigOption: vi.fn(), onRememberPermissions: vi.fn() };
-		const option: ChatConfigOption = { ...OPTIONS[2], currentValue: "auto", choices: [
+		const option: ChatConfigOption = { ...OPTIONS[2], currentValue: "manual", choices: [
 			{ value: "auto", name: "Auto", permissionMode: "auto" },
 			{ value: "manual", name: "Manual", permissionMode: "default" },
-			{ value: "unknown", name: "Unknown" },
 		] };
 		const { rerender } = render(<TurnSettingsBar {...props} configOptions={[option]} rememberedPermissionMode="auto" />);
-		expect(screen.getByRole("status")).toHaveTextContent("saved for new sessions");
-		rerender(<TurnSettingsBar {...props} configOptions={[option]} rememberedPermissionMode="auto" configPending />);
-		expect(screen.queryByRole("status")).not.toBeInTheDocument();
-		for (const currentValue of ["manual", "unknown"]) {
-			rerender(<TurnSettingsBar {...props} configOptions={[{ ...option, currentValue }]} rememberedPermissionMode="auto" />);
-			expect(screen.queryByRole("status")).not.toBeInTheDocument();
-		}
+		await user.click(screen.getByRole("button", { name: "Permission mode" }));
+		expect(screen.getByRole("switch", { name: "Remember for this project" })).not.toBeChecked();
+		rerender(<TurnSettingsBar {...props} configOptions={[{ ...option, currentValue: "auto" }]} rememberedPermissionMode="auto" />);
+		expect(screen.getByRole("switch", { name: "Remember for this project" })).toBeChecked();
 	});
 
 });

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Activity, Profiler, type ReactElement } from "react";
+import { Activity, Profiler } from "react";
 import { placeLexicalCaret, typeInLexicalEditor } from "../../test/lexical";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatWorkspace, promptSpacerHeight, promptTopInset } from "./ChatWorkspace";
@@ -32,7 +32,7 @@ import {
 	getChatDraftBoundaries,
 	getChatDraftBoundary,
 } from "../../lib/chat-draft-boundary";
-import { TooltipProvider } from "../ui/tooltip";
+import { renderChat as render } from "../../test/render-chat";
 
 const renameSessionMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 let restoreTimelineGeometry: (() => void) | undefined;
@@ -76,14 +76,6 @@ function stubVirtualTimelineGeometry(rowHeight: (index: number) => number = () =
 }
 
 vi.mock("../../lib/rename-session", () => ({ renameSession: renameSessionMock }));
-
-function render(ui: ReactElement) {
-	const result = rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
-	return {
-		...result,
-		rerender: (nextUi: ReactElement) => result.rerender(<TooltipProvider>{nextUi}</TooltipProvider>),
-	};
-}
 
 const writeText = vi.fn(async (_text: string) => undefined);
 const menuAction = vi.fn(async (_action: string) => undefined);
@@ -1087,7 +1079,48 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByText("I found the relevant component.")).toBeVisible();
 	});
 
-	it("keeps a mid-turn steer in order among the work instead of hoisting it with the prompt", () => {
+	it("keeps only the run the agent is working in open while the turn runs", () => {
+		const turnId = "live-turn-runs";
+		const at = "2026-08-11T10:01:00Z";
+		const call = (id: string, sequence: number, summary: string) => ({
+			kind: "activity" as const, id, turnId, sequence, revision: 0,
+			activityKind: "command" as const, status: "completed" as const, summary,
+			detail: { command: summary }, createdAt: at,
+		});
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureEmpty,
+			controller: { state: "busy" },
+			latestSequence: 7,
+			turns: [{ id: turnId, state: "running", requestedAt: at, startedAt: at }],
+			items: [
+				{
+					kind: "message", id: "prompt", turnId, sequence: 1, revision: 0,
+					role: "user", origin: "human", text: "Fix the build",
+					streaming: false, createdAt: at,
+				},
+				call("early-1", 2, "ls"),
+				call("early-2", 3, "cat go.mod"),
+				{
+					kind: "message", id: "between", turnId, sequence: 4, revision: 0,
+					role: "assistant", origin: "provider", text: "Found it, building now.",
+					streaming: false, createdAt: at,
+				},
+				call("late-1", 5, "go build ./..."),
+				call("late-2", 6, "go vet ./..."),
+			],
+		};
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		// The current run is open and shows each call; the earlier run is folded to
+		// its summary line.
+		const toggle = (name: RegExp) => screen.getByText(name).closest("button");
+		expect(toggle(/^Explored 2 tool calls$/)).toHaveAttribute("aria-expanded", "false");
+		expect(toggle(/^Ran 2 tool calls$/)).toHaveAttribute("aria-expanded", "true");
+		expect(screen.getAllByText("Ran command")).toHaveLength(2);
+	});
+
+	it("starts a new visual turn at a steer: earlier work settles, the steer gets its own Working row", () => {
 		const turnId = "turn-with-steer";
 		const at = "2026-08-11T10:01:00Z";
 		const snapshot: ConversationSnapshot = {
@@ -1127,19 +1160,63 @@ describe("ChatWorkspace timeline", () => {
 
 		render(<ChatWorkspace snapshot={snapshot} />);
 
-		// Read the transcript in document order: only the prompt sits above Working, and
-		// the steer stays after the work it interrupted and before the reply to it.
+		// Read the transcript in document order: the work before the steer settles into
+		// its own Worked row, and the steer opens a fresh Working row for the reply.
 		const text = screen.getByRole("log").textContent ?? "";
 		const positions = [
 			"Run the unit tests",
-			"Working for",
+			"Worked for",
 			"Starting with the test suite.",
-			"Ran command",
 			"Only the unit ones, please",
+			"Working for",
 			"Switching to the unit tests.",
 		].map((fragment) => text.indexOf(fragment));
 		expect(positions.every((position) => position >= 0)).toBe(true);
 		expect(positions).toEqual([...positions].sort((a, b) => a - b));
+	});
+
+	it("keeps a steer visible outside the folded work once the turn settles", async () => {
+		const user = userEvent.setup();
+		const turnId = "settled-turn-with-steer";
+		const at = "2026-08-11T10:01:00Z";
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureEmpty,
+			controller: { state: "ready" },
+			latestSequence: 5,
+			turns: [{ id: turnId, state: "completed", requestedAt: at, startedAt: at, completedAt: "2026-08-11T10:02:00Z" }],
+			items: [
+				{
+					kind: "message", id: "prompt", turnId, sequence: 1, revision: 0,
+					role: "user", origin: "human", text: "Run the unit tests",
+					streaming: false, createdAt: at,
+				},
+				{
+					kind: "activity", id: "tool", turnId, sequence: 2, revision: 0,
+					activityKind: "command", status: "completed", summary: "go test ./...",
+					detail: { command: "go test ./..." }, createdAt: at,
+				},
+				{
+					kind: "activity", id: "steer", turnId, sequence: 3, revision: 0,
+					activityKind: "system", status: "completed", summary: "Only the unit ones, please",
+					detail: { event: "steer", text: "Only the unit ones, please", origin: "human" },
+					createdAt: at,
+				},
+				{
+					kind: "message", id: "reply", turnId, sequence: 4, revision: 0,
+					role: "assistant", origin: "provider", text: "Switching to the unit tests.",
+					streaming: false, createdAt: at,
+				},
+			],
+		};
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		expect(screen.getByText("Only the unit ones, please")).toBeVisible();
+		const worked = screen.getByRole("button", { name: /Worked for/ });
+		await user.click(worked);
+		expect(screen.getAllByText("Only the unit ones, please")).toHaveLength(1);
+		await user.click(worked);
+		expect(screen.getByText("Only the unit ones, please")).toBeVisible();
 	});
 
 	it("replaces the generic working label with Claude's live retry count and backoff", () => {
@@ -1261,7 +1338,7 @@ describe("ChatWorkspace timeline", () => {
 		fireEvent.mouseUp(log);
 		const button = screen.getByRole("button", { name: "Add to chat" });
 		expect(button).toHaveClass("shrink-0", "whitespace-nowrap", "hover:bg-interactive-hover");
-		expect(button.parentElement).toHaveClass("bg-card", "border-border", "rounded-lg", "w-max");
+		expect(button.parentElement).toHaveClass("bg-overlay", "border-(--color-border-overlay)", "rounded-lg", "w-max");
 		fireEvent.mouseDown(button);
 		expect(selection.toString().trim()).toBe(selectedText);
 		fireEvent.click(button);
@@ -1269,6 +1346,30 @@ describe("ChatWorkspace timeline", () => {
 		fireEvent.click(screen.getByRole("button", { name: "1 annotation" }));
 		expect(screen.getByRole("button", { name: selectedText })).toBeInTheDocument();
 		selection.removeAllRanges();
+	});
+
+	it("scrolls to and highlights a navigated message even when its text does not match the rendered body", async () => {
+		const { rerender } = render(<ChatWorkspace snapshot={chatFixtureSettled} />);
+		const log = screen.getByRole("log", { name: "Conversation" });
+		const source = log.querySelector<HTMLElement>("[data-chat-message-id]")!;
+		const bounds = HTMLElement.prototype.getBoundingClientRect;
+		const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+			if (this === log) return new DOMRect(0, 0, 600, 500);
+			if (this === source) return new DOMRect(0, 900, 600, 80);
+			return bounds.call(this);
+		});
+		const scrollIntoView = vi.fn();
+		source.scrollIntoView = scrollIntoView;
+		rerender(<ChatWorkspace
+			snapshot={chatFixtureSettled}
+			annotationNavigationRequest={{ id: "palette:1", text: "- **raw** `markdown` line", messageId: source.dataset.chatMessageId }}
+		/>);
+		try {
+			await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "auto", block: "center" }));
+			expect(source.querySelector("[data-chat-message-body]")).toHaveClass("chat-annotation-target");
+		} finally {
+			geometry.mockRestore();
+		}
 	});
 
 	it("hides Add to chat on surfaces whose send does not forward excerpts", () => {
@@ -1831,6 +1932,37 @@ describe("ChatWorkspace timeline", () => {
 		expect(openShell).toHaveBeenCalledOnce();
 	});
 
+	it("shows a reconnect in progress while the daemon is still checking the session", () => {
+		const stopped = { ...chatFixtureSettled, controller: { state: "stopped" as const } };
+		const view = render(
+			<ChatWorkspace
+				snapshot={stopped}
+				session={{ ...chatSession, statusReadiness: "checking" }}
+				onResumeAgent={vi.fn()}
+				onOpenShell={vi.fn()}
+			/>,
+		);
+
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(screen.getByText("AO restarted. History is kept.")).toBeInTheDocument();
+		// The banner title and the composer placeholder both say so.
+		expect(screen.getAllByText("Reconnecting to the agent…")).toHaveLength(2);
+		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+		expect(screen.queryByText("The controller is not connected")).not.toBeInTheDocument();
+
+		// Once the check fails for good, the real recovery actions come back.
+		view.rerender(
+			<ChatWorkspace
+				snapshot={stopped}
+				session={{ ...chatSession, statusReadiness: "unavailable" }}
+				onResumeAgent={vi.fn()}
+				onOpenShell={vi.fn()}
+			/>,
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent("The agent controller stopped");
+		expect(screen.getByRole("button", { name: "Resume agent" })).toBeInTheDocument();
+	});
+
 	it("keeps a sleeping conversation usable without exposing wake controls", async () => {
 		const user = userEvent.setup();
 		const resume = vi.fn();
@@ -2169,18 +2301,6 @@ describe("ChatWorkspace timeline", () => {
 			</QueryClientProvider>,
 		);
 		expect(screen.getByRole("separator")).toBe(before);
-	});
-
-	it("keeps the interface switch in the composer while the agent is stopped", () => {
-		render(
-			<ChatWorkspace
-				snapshot={{ ...chatFixtureEmpty, controller: { state: "stopped" } }}
-				session={chatSession}
-				agentSwitch={{ projectId: "p", onPendingChange: vi.fn() }}
-				composerAction={<button type="button">Switch to terminal UI</button>}
-			/>,
-		);
-		expect(screen.getByRole("button", { name: "Switch to terminal UI" })).toBeInTheDocument();
 	});
 
 	it("shows startup failure and retry for an orchestrator with no messages or turns", async () => {

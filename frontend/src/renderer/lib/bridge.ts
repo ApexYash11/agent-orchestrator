@@ -24,6 +24,8 @@ export const aoBridge: AoBridge =
 			onOpenFolderPath: () => () => undefined,
 			onNewSessionShortcut: () => () => undefined,
 			onKeyboardShortcutsHelp: () => () => undefined,
+			onQuitConfirmRequest: () => () => undefined,
+			resolveQuitConfirm: () => undefined,
 			onNewShellTerminalShortcut: () => () => undefined,
 			onCloseShellTerminalShortcut: () => () => undefined,
 			setCloseShellTerminalShortcutEnabled: () => undefined,
@@ -34,6 +36,7 @@ export const aoBridge: AoBridge =
 			onPreviousTabShortcut: () => () => undefined,
 			onNextTabShortcut: () => () => undefined,
 			onShortcut: () => () => undefined,
+			onScrollPhase: () => () => undefined,
 		},
 		terminal: {
 			saveDroppedFile: async () => "",
@@ -85,6 +88,14 @@ export const aoBridge: AoBridge =
 				setTimeout(() => URL.revokeObjectURL(url), 0);
 				return true;
 			},
+		},
+		cloudArtifact: {
+			fetch: async (url: string) => {
+				const response = await fetch(url);
+				if (!response.ok) throw new Error(`Artifact request failed (${response.status})`);
+				return new Uint8Array(await response.arrayBuffer());
+			},
+			onFrameNavigated: () => () => undefined,
 		},
 		daemon: {
 			getStatus: async () => ({
@@ -272,7 +283,8 @@ export const aoBridge: AoBridge =
 				return { id, name, createdAt: now, updatedAt: now };
 			},
 			clear: async () => undefined,
-			delete: async () => undefined,
+			usage: async () => ({ sessions: [] }),
+			delete: async () => ({}),
 			setDefault: async () => undefined,
 			discoverImportSources: async () => ({ sources: [] }),
 			import: async () => ({ sourceName: "", entries: [] }),
