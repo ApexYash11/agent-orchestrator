@@ -1613,7 +1613,8 @@ async function readDaemonProbe(port: number, endpoint: "healthz" | "readyz"): Pr
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), DAEMON_PROBE_TIMEOUT_MS);
 	try {
-		const response = await net.fetch(`http://127.0.0.1:${port}/${endpoint}`, { signal: controller.signal });
+		// Electron net.fetch adds browser metadata without Origin, which the daemon rejects.
+		const response = await fetch(`http://127.0.0.1:${port}/${endpoint}`, { signal: controller.signal });
 		if (!response.ok) return null;
 		return parseDaemonProbe(endpoint, await response.json());
 	} catch {
