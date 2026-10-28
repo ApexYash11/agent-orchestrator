@@ -10,19 +10,24 @@
 // `--prompt` is deliberately not used: ZCode's headless prompt mode exits once
 // the turn is printed, which would make a supervised worker disappear mid-task.
 // Consequently this adapter also has no in-command prompt delivery strategy.
+// Instruction-bearing AO launches are unsupported until a private instruction
+// channel is available; they fail instead of silently losing the AO role.
 //
 // ZCode exposes a hook surface (SessionStart, UserPromptSubmit, PreToolUse,
 // PermissionRequest, PostToolUse, PostToolUseFailure, Stop), but project-level
 // hooks stay untrusted until a human runs `zcode hooks trust grant` with the
-// reviewed digest, so AO cannot install a working activity/restore pipeline
-// unattended. This adapter therefore installs no hooks, reports no native
+// reviewed digest. User-level hooks exist but have no session-specific AO
+// integration here. This adapter therefore installs no hooks, reports no native
 // session id, and cannot restore a previous conversation; a session relaunches
-// fresh in its worktree. Chat mode is likewise not registered.
+// fresh in its worktree, subject to the instruction guard. Chat mode is likewise
+// not registered.
 package zcode
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -33,6 +38,8 @@ import (
 )
 
 const adapterID = "zcode"
+
+var errUnsupportedInstructions = errors.New("zcode: AO standing instructions cannot be delivered by this integration; choose another harness until private instruction delivery is supported (see docs/harnesses/zcode.md)")
 
 // Plugin is the ZCode agent adapter. It is safe for concurrent use; the binary
 // path is resolved once and cached under binaryMu.
@@ -78,12 +85,25 @@ func (p *Plugin) Manifest() adapters.Manifest {
 // process in the session's worktree, and ZCode resolves project config, skills,
 // and session ownership from that working directory.
 //
-// ZCode has no system-prompt CLI flag (standing instructions come from
-// AGENTS.md and its skill/memory files), so AO's prompt file is dropped here
-// rather than written somewhere ZCode would ignore.
+// ZCode has no system-prompt CLI flag or session-local instruction overlay.
+// Reject nonblank inline or file instructions before resolving the binary,
+// including restore fallback and inline fallback after a prompt-file write
+// failure. Native/global and project AGENTS.md files are left to their owner.
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (cmd []string, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(cfg.SystemPrompt) != "" {
+		return nil, errUnsupportedInstructions
+	}
+	if cfg.SystemPromptFile != "" {
+		instructions, err := os.ReadFile(cfg.SystemPromptFile)
+		if err != nil {
+			return nil, fmt.Errorf("zcode: read AO standing instructions: %w", err)
+		}
+		if strings.TrimSpace(string(instructions)) != "" {
+			return nil, errUnsupportedInstructions
+		}
 	}
 	binary, err := p.zcodeBinary(ctx)
 	if err != nil {
@@ -98,8 +118,8 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 }
 
 // zcodeModes is ZCode's documented `--mode` ladder (see
-// docs/usage/05-permissions.md in zai-org/ZCode). `auto` is a reserved internal
-// value and is deliberately absent.
+// apps/zcode-cli/docs/usage/05-permissions.md in zai-org/ZCode). `auto` is a
+// reserved internal value and is deliberately absent.
 var zcodeModes = map[string]bool{
 	"plan": true, "build": true, "edit": true, "yolo": true, "guarded": true,
 }

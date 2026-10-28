@@ -1,9 +1,35 @@
 # ZCode Adapter
 
-AO supports [ZCode](https://github.com/zai-org/ZCode) as a terminal worker,
-orchestrator, and reviewer harness. ZCode is Z.ai's coding agent for GLM
-models; its CLI distribution installs a single `zcode` command and AO drives it
-in the interactive terminal UI. AO does not bundle ZCode.
+AO registers [ZCode](https://github.com/zai-org/ZCode) as a terminal-only
+harness. ZCode is Z.ai's coding agent for GLM models; its CLI distribution
+installs a single `zcode` command. AO does not bundle ZCode.
+
+## Blocking limitation: AO instructions are unsupported
+
+**Instruction-bearing AO launches are unsupported.** Normal AO worker and
+orchestrator sessions carry standing instructions. The adapter rejects them
+with an actionable launch error instead of silently dropping their role and
+coordination instructions. Restore falls back through the same guarded launch
+path. Launches with no standing instructions, including empty or whitespace-only
+instruction files, retain the existing TUI command and permission mapping.
+An unreadable instruction file fails rather than being treated as empty.
+
+Static inspection of upstream revision
+[`3c5b227649`](https://github.com/zai-org/ZCode/tree/3c5b227649371507ddc4eb46ac5133afe6db1cab)
+found no private instruction flag in the
+[CLI parser](https://github.com/zai-org/ZCode/blob/3c5b227649371507ddc4eb46ac5133afe6db1cab/apps/zcode-cli/packages/cli/src/arguments.ts)
+or instruction override in the
+[environment config loader](https://github.com/zai-org/ZCode/blob/3c5b227649371507ddc4eb46ac5133afe6db1cab/apps/zcode-cli/packages/adapters/src/config/env-config.adapter.ts).
+The native instruction loader merges `~/.zcode/AGENTS.md` and workspace
+`AGENTS.md`; AO does not overwrite these files or redirect the CLI's home.
+Upstream or integration support for private instruction delivery is required
+before supervised worker/orchestrator launches can work.
+
+**Live harness and desktop UI qualification remain blocked and unverified:**
+`zcode` was absent in the continuation environment. Static inspection and CI
+do not establish live prompt delivery, authentication, activity, kill/restore,
+role compliance, or UI behavior. This guard does not make the integration
+ready to merge.
 
 ## Install and authenticate
 
@@ -35,9 +61,11 @@ in through its opaque credential store.
   override because the CLI has no model flag.
 - AO installs no hooks. ZCode supports lifecycle hooks, but project hooks stay
   untrusted until a human reviews and grants the digest with
-  `zcode hooks trust grant`, so an unattended install would silently never run.
+  `zcode hooks trust grant`. User-level hooks are executable upstream, but AO
+  has not integrated a session-specific configuration channel for them.
 - No native session id is captured, so sessions relaunch fresh in their
-  worktree instead of restoring a previous ZCode conversation.
+  worktree instead of restoring a previous ZCode conversation, subject to the
+  standing-instruction launch guard above.
 
 This integration is TUI-only. It does not register ZCode for Chat, reviewer,
 interface handoff, or first-class nested-agent sessions. ZCode ships an

@@ -101,6 +101,88 @@ func TestGetLaunchCommandDeliversNoPrompt(t *testing.T) {
 	}
 }
 
+func TestGetLaunchCommandRejectsStandingInstructions(t *testing.T) {
+	const privateInstructions = "PRIVATE AO worker role instructions"
+	for _, test := range []struct {
+		name     string
+		inline   string
+		file     string
+		withFile bool
+	}{
+		{name: "inline", inline: privateInstructions},
+		{name: "file only", file: privateInstructions, withFile: true},
+		{name: "blank inline with file", inline: " \n\t", file: privateInstructions, withFile: true},
+		{name: "inline with empty file", inline: privateInstructions, withFile: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := ports.LaunchConfig{SystemPrompt: test.inline}
+			if test.withFile {
+				cfg.SystemPromptFile = filepath.Join(t.TempDir(), "system.md")
+				if err := os.WriteFile(cfg.SystemPromptFile, []byte(test.file), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// No binary cache: unsupported instructions must fail before resolution.
+			cmd, err := New().GetLaunchCommand(t.Context(), cfg)
+			if cmd != nil || err == nil || !strings.Contains(err.Error(), "AO standing instructions") || !strings.Contains(err.Error(), "choose another harness") {
+				t.Fatalf("launch = %v, %v; want no argv and an actionable instruction error", cmd, err)
+			}
+			if strings.Contains(err.Error(), privateInstructions) {
+				t.Fatal("launch error exposed private instructions")
+			}
+		})
+	}
+}
+
+func TestGetLaunchCommandAllowsEmptyStandingInstructions(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		inline   string
+		file     string
+		withFile bool
+	}{
+		{name: "absent"},
+		{name: "blank inline", inline: " \n\t"},
+		{name: "empty file", withFile: true},
+		{name: "blank file", inline: " \n", file: " \n\t", withFile: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := ports.LaunchConfig{SystemPrompt: test.inline, Prompt: "user task", Permissions: ports.PermissionModeAcceptEdits}
+			if test.withFile {
+				cfg.SystemPromptFile = filepath.Join(t.TempDir(), "system.md")
+				if err := os.WriteFile(cfg.SystemPromptFile, []byte(test.file), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd, err := (&Plugin{resolvedBinary: "zcode"}).GetLaunchCommand(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{"zcode", "--mode", "edit"}; !reflect.DeepEqual(cmd, want) {
+				t.Fatalf("argv = %v, want %v", cmd, want)
+			}
+		})
+	}
+}
+
+func TestGetLaunchCommandRejectsUnreadableInstructionFile(t *testing.T) {
+	cmd, err := New().GetLaunchCommand(t.Context(), ports.LaunchConfig{
+		SystemPromptFile: filepath.Join(t.TempDir(), "missing.md"),
+	})
+	if cmd != nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("launch = %v, %v; want no argv and the instruction-file read error", cmd, err)
+	}
+}
+
+func TestGetLaunchCommandHonorsCancellationBeforeInstructions(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cmd, err := New().GetLaunchCommand(ctx, ports.LaunchConfig{SystemPrompt: "AO instructions"})
+	if cmd != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("launch = %v, %v; want no argv and context.Canceled", cmd, err)
+	}
+}
+
 func TestGetLaunchCommandMapsPermissionModes(t *testing.T) {
 	tests := []struct {
 		name string

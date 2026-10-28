@@ -127,6 +127,10 @@ Worker, Chat, and reviewer support differ by agent; the [agent setup guides](htt
   </tr>
 </table>
 
+ZCode registration is pending qualification: AO worker/orchestrator launches
+with standing instructions are currently blocked. See the
+[ZCode integration limits](docs/harnesses/zcode.md).
+
 <br />
 
 ### Orchestrator for Mobile
