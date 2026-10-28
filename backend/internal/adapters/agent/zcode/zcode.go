@@ -1,5 +1,5 @@
-// Package zcode implements the Z.ai ZCode CLI agent adapter: launching the
-// interactive ZCode terminal session AO supervises.
+// Package zcode retains the deferred Z.ai ZCode CLI adapter. It is not shipped
+// in the production registry until private AO instruction delivery is supported.
 //
 // ZCode (binary "zcode", https://github.com/zai-org/ZCode) is Z.ai's Apache-2.0
 // coding harness, tuned for GLM models. Its CLI distribution installs a single
@@ -49,7 +49,7 @@ type Plugin struct {
 	resolvedBinary string
 }
 
-// New returns a ready-to-register ZCode adapter.
+// New returns a ZCode adapter for development; production registration is deferred.
 func New() *Plugin {
 	return &Plugin{}
 }
