@@ -122,6 +122,9 @@ Worker, Chat, and reviewer support differ by agent; the [agent setup guides](htt
     <td valign="middle" nowrap><picture><source media="(prefers-color-scheme: dark)" srcset="frontend/src/renderer/assets/agents/command-code-dark.svg" /><img src="frontend/src/renderer/assets/agents/command-code-light.svg" alt="Command Code" width="24" height="24" align="middle" /></picture> &nbsp; <b>Command Code</b></td>
     <td valign="middle" nowrap><picture><source media="(prefers-color-scheme: dark)" srcset="frontend/src/renderer/assets/agents/openhands-dark.svg" /><img src="frontend/src/renderer/assets/agents/openhands-light.svg" alt="OpenHands" width="24" height="24" align="middle" /></picture> &nbsp; <b>OpenHands</b></td>
   </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/zcode.png" alt="ZCode" width="24" height="24" align="middle" /> &nbsp; <b>ZCode</b></td>
+  </tr>
 </table>
 
 <br />

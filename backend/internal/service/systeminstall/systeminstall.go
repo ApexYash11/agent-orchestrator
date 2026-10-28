@@ -85,6 +85,7 @@ const (
 	TargetCommandCode Target = "command-code"
 	TargetMemcode     Target = "memcode"
 	TargetHermes      Target = "hermes"
+	TargetZCode       Target = "zcode"
 	// TargetCloudflared is the optional connector that makes a paired phone
 	// reachable from outside the local network.
 	TargetCloudflared Target = "cloudflared"
@@ -101,7 +102,7 @@ var agentTargets = []Target{
 	TargetContinue, TargetDevin, TargetKiro, TargetKilocode, TargetVibe,
 	TargetMuse, TargetAgy, TargetAutohand, TargetKimchi, TargetPrimeAgent,
 	TargetOMP, TargetFX, TargetUnreal, TargetCodewhale, TargetMiMoCode, TargetDeepSeek, TargetOpenHands,
-	TargetCommandCode, TargetMemcode, TargetHermes,
+	TargetCommandCode, TargetMemcode, TargetHermes, TargetZCode,
 }
 
 var agentTargetSet = func() map[Target]bool {

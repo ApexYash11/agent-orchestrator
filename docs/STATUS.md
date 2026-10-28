@@ -87,6 +87,10 @@ surface (`npm run sqlc`, `npm run api`).
   model selection, native-session restore, workspace activity hooks, and
   truthful configured-credential readiness. Chat and reviewer support are not
   claimed.
+- ZCode is available as a TUI worker/orchestrator harness: prompt delivery
+  after start, `--mode` permission mapping (or a pinned session mode), and
+  presence-based credential readiness. It installs no hooks, captures no
+  native session id, and registers no Chat or reviewer support.
 - Project CRUD plus per-project config (`PUT /projects/{id}/config`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and
   `/prs/{id}/resolve-comments`.
