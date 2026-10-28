@@ -202,6 +202,26 @@ func TestBuild_ZCodeInstallJobTarget(t *testing.T) {
 	}
 }
 
+func TestBuild_DeferredZCodeIsNotASelectableHarness(t *testing.T) {
+	got, err := specgen.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Components struct {
+			Schemas map[string]openAPISchemaNode `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for schema, field := range map[string]string{"SpawnSessionRequest": "harness", "DelegateTaskRequest": "agent"} {
+		if values := doc.Components.Schemas[schema].Properties[field].Enum; slices.Contains(values, "zcode") {
+			t.Errorf("%s.%s exposes deferred ZCode: %v", schema, field, values)
+		}
+	}
+}
+
 func TestBuild_OpenCodeV2InstallContracts(t *testing.T) {
 	got, err := specgen.Build()
 	if err != nil {

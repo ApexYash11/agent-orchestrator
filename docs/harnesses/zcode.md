@@ -1,8 +1,10 @@
 # ZCode Adapter
 
-AO registers [ZCode](https://github.com/zai-org/ZCode) as a terminal-only
-harness. ZCode is Z.ai's coding agent for GLM models; its CLI distribution
-installs a single `zcode` command. AO does not bundle ZCode.
+The [ZCode](https://github.com/zai-org/ZCode) adapter is development-only.
+**ZCode is not registered or selectable in AO.** Its public harness, installer,
+authentication-plan, and CLI-help registration are deferred until private AO
+standing-instruction delivery is supported and qualified. The adapter and
+migration history are retained for future integration work and persisted rows.
 
 ## Blocking limitation: AO instructions are unsupported
 
@@ -25,13 +27,19 @@ The native instruction loader merges `~/.zcode/AGENTS.md` and workspace
 Upstream or integration support for private instruction delivery is required
 before supervised worker/orchestrator launches can work.
 
-**Live harness and desktop UI qualification remain blocked and unverified:**
-`zcode` was absent in the continuation environment. Static inspection and CI
-do not establish live prompt delivery, authentication, activity, kill/restore,
-role compliance, or UI behavior. This guard does not make the integration
-ready to merge.
+**Live harness qualification has not passed.** An isolated macOS audit with
+source-built ZCode 0.17.0 recorded inconclusive authentication, an empty model
+catalog, no actionable setup control, and no ZCode entry in New Task. Both
+worker and orchestrator launch requests reached the instruction guard and
+failed. [Report and API evidence](https://github.com/OrchestratorInc/agent-orchestrator/pull/7389#issuecomment-6478145575)
+and [all 15 real screenshots](https://github.com/OrchestratorInc/agent-orchestrator/pull/7389#issuecomment-6480704889)
+document the prior registered head `f02b360c5f`; they do not qualify the deferred
+adapter or any future instruction channel. User-level configuration was left
+untouched. Before re-enabling registration, manager-level worker/orchestrator
+spawns must reach launch with their AO instructions preserved, then pass the
+live prompt, role-compliance, activity, and restore audit.
 
-## Install and authenticate
+## Native setup reference (not an AO launch path)
 
 Install the official ZCode distribution from
 [zcode.z.ai](https://zcode.z.ai/en/docs/install). It installs the CLI under
@@ -47,7 +55,7 @@ reports **configured** when it finds one of those keys, because it only checks
 presence, not provider acceptance; it reports **unknown** when ZCode is signed
 in through its opaque credential store.
 
-## AO integration
+## Retained adapter behavior (not publicly enabled)
 
 - ZCode starts in its interactive TUI; AO types the task into the session
   after startup. Headless `--prompt` runs are not used because they print one
@@ -67,6 +75,6 @@ in through its opaque credential store.
   worktree instead of restoring a previous ZCode conversation, subject to the
   standing-instruction launch guard above.
 
-This integration is TUI-only. It does not register ZCode for Chat, reviewer,
+The retained adapter targets TUI only. AO does not register ZCode for Chat, reviewer,
 interface handoff, or first-class nested-agent sessions. ZCode ships an
 `app-server` protocol entry, but AO has not qualified it as a chat driver yet.

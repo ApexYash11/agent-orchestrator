@@ -87,12 +87,11 @@ surface (`npm run sqlc`, `npm run api`).
   model selection, native-session restore, workspace activity hooks, and
   truthful configured-credential readiness. Chat and reviewer support are not
   claimed.
-- ZCode is registered TUI-only, but instruction-bearing AO worker/orchestrator
-  launches are blocked until private instruction delivery is supported.
-  Instruction-free launches retain after-start prompt delivery and `--mode`
-  permission mapping. Credential readiness is presence-based; hooks, native
-  restore, Chat, and reviewer support are absent. Live and UI qualification
-  remain unverified; see [the blocking limitation](harnesses/zcode.md).
+- ZCode adapter work is retained but public registration is deferred. It is not
+  selectable for workers or orchestrators until private AO standing-instruction
+  delivery is supported. The isolated live/UI audit failed qualification; auth,
+  model discovery, and New Task behavior also remain unresolved. See
+  [the blocking limitation](harnesses/zcode.md).
 - Project CRUD plus per-project config (`PUT /projects/{id}/config`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and
   `/prs/{id}/resolve-comments`.

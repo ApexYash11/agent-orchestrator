@@ -24,6 +24,12 @@ type installCapabilitiesStub struct {
 	probe             func(context.Context) error
 }
 
+func TestDeferredZCodeIsNotAnInstallTarget(t *testing.T) {
+	if IsAgentTarget(TargetZCode) || Valid(TargetZCode) {
+		t.Fatal("deferred ZCode must not be offered as an installable harness")
+	}
+}
+
 func (s installCapabilitiesStub) Probe(ctx context.Context) (ports.InstallCapabilities, error) {
 	if s.calls != nil {
 		(*s.calls)++
