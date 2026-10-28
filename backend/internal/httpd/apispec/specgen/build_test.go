@@ -184,6 +184,24 @@ func TestBuild_OpenCodeV2HarnessContracts(t *testing.T) {
 	}
 }
 
+func TestBuild_ZCodeInstallJobTarget(t *testing.T) {
+	got, err := specgen.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var doc struct {
+		Components struct {
+			Schemas map[string]openAPISchemaNode `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(got, &doc); err != nil {
+		t.Fatalf("parse generated OpenAPI: %v", err)
+	}
+	if targets := doc.Components.Schemas["InstallJob"].Properties["target"].Enum; !slices.Contains(targets, "zcode") {
+		t.Fatalf("InstallJob.target enum = %v, missing zcode", targets)
+	}
+}
+
 func TestBuild_OpenCodeV2InstallContracts(t *testing.T) {
 	got, err := specgen.Build()
 	if err != nil {

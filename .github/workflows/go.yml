@@ -325,4 +325,5 @@ jobs:
       # openapi.yaml drift is already caught by TestBuild_MatchesEmbedded in
       # the build-test job (go test -race ./...). Only schema.ts needs checking here.
       - name: Check for schema.ts drift
-        run: git diff --exit-code -- frontend/src/api/schema.ts
+        # Temporary diagnostic: recover both remote-generated artifacts without local generation.
+        run: git diff --exit-code -- backend/internal/httpd/apispec/openapi.yaml frontend/src/api/schema.ts
