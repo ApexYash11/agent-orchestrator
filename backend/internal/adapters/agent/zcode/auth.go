@@ -64,7 +64,7 @@ func (p *Plugin) AuthStatusWithDiagnostics(ctx context.Context) (ports.AgentAuth
 		return ports.AgentAuthStatusUnknown, domain.AgentAccountIdentity{}, nil, err
 	}
 
-	workspace, err := os.MkdirTemp("", "ao-zcode-auth-")
+	workspace, err := newAuthProbeWorkspace()
 	if err != nil {
 		return ports.AgentAuthStatusUnknown, domain.AgentAccountIdentity{}, nil, err
 	}
@@ -76,7 +76,6 @@ func (p *Plugin) AuthStatusWithDiagnostics(ctx context.Context) (ports.AgentAuth
 		"--prompt", zcodeAuthProbePrompt, "--json", "--cwd", workspace, "--mode", "plan")
 	cmd.Dir = workspace
 	output, runErr := cmd.CombinedOutput()
-	_ = runErr // classified below; the CLI exits nonzero on provider errors too
 
 	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 		return ports.AgentAuthStatusUnknown, domain.AgentAccountIdentity{},
@@ -86,10 +85,32 @@ func (p *Plugin) AuthStatusWithDiagnostics(ctx context.Context) (ports.AgentAuth
 		return ports.AgentAuthStatusUnknown, domain.AgentAccountIdentity{}, nil, err
 	}
 
-	status, code := classifyZCodeAuthProbe(string(output))
+	status, code := classifyZCodeAuthProbe(string(output), runErr)
 	diag := newZCodeAuthDiagnostic(code, started)
 	diag.DurationMs = time.Since(started).Milliseconds()
 	return status, domain.AgentAccountIdentity{}, diagsWith(presenceDiag, diag), nil
+}
+
+// newAuthProbeWorkspace keeps transient agent work under AO's configured data
+// directory, including installations that use AO_DATA_DIR for isolation.
+func newAuthProbeWorkspace() (string, error) {
+	dataDir := os.Getenv("AO_DATA_DIR")
+	if dataDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dataDir = filepath.Join(home, ".ao", "data")
+	}
+	dataDir, err := filepath.Abs(dataDir)
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(dataDir, "auth-probes")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(root, "zcode-")
 }
 
 // credentialPresenceDiagnostic records, as authored evidence, that a
@@ -113,33 +134,49 @@ func diagsWith(presence *domain.AgentAuthDiagnostic, verdict domain.AgentAuthDia
 	return append(diags, verdict)
 }
 
-// classifyZCodeAuthProbe maps the verification turn onto a verdict. ZCode
-// exits zero even when the provider rejects the turn, so the response body is
-// the evidence: a completed turn means the credential works; the plan
-// exhaustion and rejection codes mean it does not. Reasons stay authored —
-// provider bodies can echo credentials, so only matchcodes are inspected.
-func classifyZCodeAuthProbe(output string) (ports.AgentAuthStatus, string) {
+// classifyZCodeAuthProbe accepts only a successful --json summary from the
+// pinned CLI: an idle projection with a completed turn and the requested final
+// response. Session creation, prompt echoes, malformed output, process failures,
+// and provider errors cannot establish authorization. Raw output is never
+// returned in diagnostics.
+func classifyZCodeAuthProbe(output string, runErr error) (ports.AgentAuthStatus, string) {
 	text := strings.ToLower(output)
 	switch {
-	case strings.Contains(text, `"stream_completed":true`),
-		strings.Contains(text, `"sessionid":"sess_`),
-		strings.Contains(text, "reply with exactly"):
-		// The turn ran to a response (the JSON echo includes the echoed
-		// prompt), which only happens on an accepted credential.
-		return ports.AgentAuthStatusAuthorized, "provider_turn_completed"
 	case strings.Contains(text, "1113"), strings.Contains(text, "insufficient balance"):
 		return ports.AgentAuthStatusUnauthorized, "provider_plan_exhausted"
 	case strings.Contains(text, "authenticate_error"),
 		strings.Contains(text, "invalid_api_key"),
-		strings.Contains(text, "api key"),
+		strings.Contains(text, "invalid api key"),
 		strings.Contains(text, "unauthorized"),
 		strings.Contains(text, "not logged in"),
 		strings.Contains(text, "no provider configured"),
 		strings.Contains(text, "login required"):
 		return ports.AgentAuthStatusUnauthorized, "provider_rejected_credential"
-	default:
+	}
+	var result struct {
+		SessionID string          `json:"sessionId"`
+		Response  string          `json:"response"`
+		Error     json.RawMessage `json:"error"`
+		Errors    json.RawMessage `json:"errors"`
+		Projection struct {
+			Status    string `json:"status"`
+			TurnCount int    `json:"turnCount"`
+		} `json:"projection"`
+	}
+	if runErr != nil || json.Unmarshal([]byte(output), &result) != nil {
 		return ports.AgentAuthStatusUnknown, "check_inconclusive"
 	}
+	for _, raw := range []json.RawMessage{result.Error, result.Errors} {
+		switch strings.TrimSpace(string(raw)) {
+		case "", "null", "[]", "false":
+		default:
+			return ports.AgentAuthStatusUnknown, "check_inconclusive"
+		}
+	}
+	if result.SessionID != "" && result.Projection.Status == "idle" && result.Projection.TurnCount > 0 && strings.EqualFold(strings.TrimSpace(result.Response), "ok") {
+		return ports.AgentAuthStatusAuthorized, "provider_turn_completed"
+	}
+	return ports.AgentAuthStatusUnknown, "check_inconclusive"
 }
 
 // newZCodeAuthDiagnostic builds the authored evidence entry for one auth

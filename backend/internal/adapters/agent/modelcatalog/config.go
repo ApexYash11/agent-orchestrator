@@ -177,7 +177,7 @@ func zcodeBuiltinCatalogFiles(runtimeRoot string) []string {
 	var found []string
 	err := filepath.WalkDir(runtimeRoot, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
-			return nil // unreachable roots are simply no catalog
+			return err // discovery handles missing or inaccessible catalog roots
 		}
 		if entry.IsDir() || entry.Name() != "zcode-builtin.json" {
 			return nil

@@ -49,7 +49,7 @@ func TestShippedChatDrivers(t *testing.T) {
 	for _, harness := range []domain.AgentHarness{
 		domain.HarnessAider,
 		domain.HarnessHermes, // TUI-only until a chat driver is qualified
-		domain.HarnessZCode, // TUI-only: ZCode's app-server protocol is not qualified yet
+		domain.HarnessZCode,  // Deferred: no private standing-instruction channel
 		"definitely-not-an-agent",
 	} {
 		if _, err := r.Driver(harness); err == nil {

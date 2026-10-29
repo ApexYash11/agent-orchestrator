@@ -1,9 +1,5 @@
-// Package zcode implements the Z.ai ZCode CLI agent adapter: launching the
-// interactive ZCode terminal session AO supervises.
-//
-// ZCode has no system-prompt channel, so AO standing instructions ride the
-// session's first typed message (see BuildAfterStartPrompt); nothing is
-// dropped and nothing is rejected.
+// Package zcode retains the deferred Z.ai ZCode CLI adapter. It is not shipped
+// in the production registry until private AO instruction delivery is supported.
 //
 // ZCode (binary "zcode", https://github.com/zai-org/ZCode) is Z.ai's Apache-2.0
 // coding harness, tuned for GLM models. Its CLI distribution installs a single
@@ -14,9 +10,8 @@
 // `--prompt` is deliberately not used: ZCode's headless prompt mode exits once
 // the turn is printed, which would make a supervised worker disappear mid-task.
 // Consequently this adapter also has no in-command prompt delivery strategy.
-// AO standing instructions have no private channel (no system-prompt flag), so
-// BuildAfterStartPrompt delivers them explicitly as the first typed message;
-// nothing is silently dropped and instruction-bearing launches start normally.
+// Instruction-bearing AO launches are unsupported until a private instruction
+// channel is available; they fail instead of silently losing the AO role.
 //
 // ZCode exposes a hook surface (SessionStart, UserPromptSubmit, PreToolUse,
 // PermissionRequest, PostToolUse, PostToolUseFailure, Stop), but project-level
@@ -24,15 +19,17 @@
 // reviewed digest. User-level hooks exist but have no session-specific AO
 // integration here. This adapter therefore installs no hooks, reports no native
 // session id, and cannot restore a previous conversation; a session relaunches
-// fresh in its worktree. Chat mode is likewise not registered.
+// fresh in its worktree, subject to the instruction guard. Chat mode is likewise
+// not registered.
 package zcode
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
@@ -42,11 +39,7 @@ import (
 
 const adapterID = "zcode"
 
-// instructionPreambleHeader frames AO's standing instructions inside the first
-// typed message. It is explicit by design: ZCode has no system-prompt channel,
-// so the instructions travel with the task and the framing keeps the model from
-// treating the instructions themselves as the task.
-const instructionPreambleHeader = "The following are standing operating instructions for this AO session. They apply to the whole session; the actual task follows after the marker line."
+var errUnsupportedInstructions = errors.New("zcode: AO standing instructions cannot be delivered by this integration; choose another harness until private instruction delivery is supported (see docs/harnesses/zcode.md)")
 
 // Plugin is the ZCode agent adapter. It is safe for concurrent use; the binary
 // path is resolved once and cached under binaryMu.
@@ -56,7 +49,7 @@ type Plugin struct {
 	resolvedBinary string
 }
 
-// New returns a ready-to-register ZCode adapter.
+// New returns a ZCode adapter for development; production registration is deferred.
 func New() *Plugin {
 	return &Plugin{}
 }
@@ -66,8 +59,6 @@ var _ ports.Agent = (*Plugin)(nil)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentBinaryResolver = (*Plugin)(nil)
 var _ ports.AgentBinaryResolutionInvalidator = (*Plugin)(nil)
-var _ ports.AgentAfterStartPromptBuilder = (*Plugin)(nil)
-var _ ports.AgentPromptReadinessProvider = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -94,12 +85,28 @@ func (p *Plugin) Manifest() adapters.Manifest {
 // process in the session's worktree, and ZCode resolves project config, skills,
 // and session ownership from that working directory.
 //
-// ZCode has no system-prompt CLI flag, so standing instructions are never part
-// of the argv. BuildAfterStartPrompt delivers them with the first typed message;
-// the launch itself carries only the binary and the permission mode.
+// ZCode has no system-prompt CLI flag or session-local instruction overlay.
+// Reject nonblank inline or file instructions before resolving the binary,
+// including restore fallback and inline fallback after a prompt-file write
+// failure. Native/global and project AGENTS.md files are left to their owner.
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (cmd []string, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(cfg.SystemPrompt) != "" {
+		return nil, errUnsupportedInstructions
+	}
+	if cfg.SystemPromptFile != "" {
+		instructions, err := os.ReadFile(cfg.SystemPromptFile)
+		if err != nil {
+			return nil, fmt.Errorf("zcode: read AO standing instructions: %w", err)
+		}
+		if strings.TrimSpace(string(instructions)) != "" {
+			return nil, errUnsupportedInstructions
+		}
+	}
+	if strings.TrimSpace(cfg.Config.Model) != "" {
+		return nil, errors.New("zcode: per-session model selection is unsupported; configure the native default model before launching")
 	}
 	binary, err := p.zcodeBinary(ctx)
 	if err != nil {
@@ -111,47 +118,6 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		return nil, err
 	}
 	return cmd, nil
-}
-
-// BuildAfterStartPrompt composes the first message AO types into the running
-// TUI: AO's standing instructions (when the session carries any) framed ahead
-// of the task. This is ZCode's only instruction surface — there is no
-// system-prompt flag and project hooks stay untrusted — so the composition is
-// explicit rather than silent: the preamble names itself as instructions and
-// marks where the task begins. A task-only launch composes to the task
-// unchanged.
-func (p *Plugin) BuildAfterStartPrompt(ctx context.Context, cfg ports.LaunchConfig) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	instructions := strings.TrimSpace(cfg.SystemPrompt)
-	task := strings.TrimSpace(cfg.Prompt)
-	switch {
-	case instructions == "" && task == "":
-		return "", nil
-	case instructions == "":
-		return cfg.Prompt, nil
-	case task == "":
-		return instructionPreambleHeader + "\n\n" + cfg.SystemPrompt, nil
-	default:
-		return instructionPreambleHeader + "\n\n" + cfg.SystemPrompt + "\n\n--- Task ---\n\n" + cfg.Prompt, nil
-	}
-}
-
-// PromptReadinessHints waits briefly for ZCode's interactive prompt before AO
-// injects the first message. The opentui prompt glyph varies by build, so the
-// patterns are broad and the timeout short: a miss falls back to timed
-// delivery rather than blocking the session.
-func (p *Plugin) PromptReadinessHints(ctx context.Context, _ ports.LaunchConfig) (ports.PromptReadinessHints, error) {
-	if err := ctx.Err(); err != nil {
-		return ports.PromptReadinessHints{}, err
-	}
-	return ports.PromptReadinessHints{
-		InitialDelay: 1500 * time.Millisecond,
-		Patterns:     []string{"❯", ">"},
-		PollInterval: 250 * time.Millisecond,
-		Timeout:      5 * time.Second,
-	}, nil
 }
 
 // zcodeModes is ZCode's documented `--mode` ladder (see
