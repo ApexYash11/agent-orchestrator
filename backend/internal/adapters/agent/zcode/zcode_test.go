@@ -290,7 +290,7 @@ func TestAuthStatusVerifiesWithARealTurnWhenCredentialsExist(t *testing.T) {
 	}{
 		{
 			name:       "completed turn verifies",
-			fakeOutput: `{"sessionId":"sess_abc","response":"ok","projection":{"status":"idle","turnCount":1}}`,
+			fakeOutput: successfulAuthProbeOutput,
 			want:       ports.AgentAuthStatusAuthorized,
 			wantCode:   "provider_turn_completed",
 		},
@@ -360,7 +360,7 @@ func TestAuthStatusWithoutCredentialEvidenceStillVerifies(t *testing.T) {
 	t.Setenv("ZCODE_DATA_BASE_DIR", t.TempDir())
 	// A `zcode login` user has no file evidence at all: the probe is the only
 	// way to conclude, and its verdict must stand on its own.
-	installFakeZcode(t, `{"sessionId":"sess_abc","response":"ok","projection":{"status":"idle","turnCount":1}}`)
+	installFakeZcode(t, successfulAuthProbeOutput)
 	status, _, diags, err := New().AuthStatusWithDiagnostics(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -404,7 +404,7 @@ func TestAuthStatusWithConfiguredProviderKeyVerifiesThroughTheProbe(t *testing.T
 		t.Fatal(err)
 	}
 	t.Setenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", config)
-	installFakeZcode(t, `{"sessionId":"sess_abc","response":"ok","projection":{"status":"idle","turnCount":1}}`)
+	installFakeZcode(t, successfulAuthProbeOutput)
 
 	status, _, diags, err := New().AuthStatusWithDiagnostics(t.Context())
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,7 +74,7 @@ func (p *Plugin) AuthStatusWithDiagnostics(ctx context.Context) (ports.AgentAuth
 	probeCtx, cancel := context.WithTimeout(ctx, zcodeAuthProbeTimeout)
 	defer cancel()
 	cmd := process.CommandContext(probeCtx, binary,
-		"--prompt", zcodeAuthProbePrompt, "--json", "--cwd", workspace, "--mode", "plan")
+		"--prompt", zcodeAuthProbePrompt, "--output-format", "stream-json", "--cwd", workspace, "--mode", "plan")
 	cmd.Dir = workspace
 	output, runErr := cmd.CombinedOutput()
 
@@ -134,11 +135,10 @@ func diagsWith(presence *domain.AgentAuthDiagnostic, verdict domain.AgentAuthDia
 	return append(diags, verdict)
 }
 
-// classifyZCodeAuthProbe accepts only a successful --json summary from the
-// pinned CLI: an idle projection with a completed turn and the requested final
-// response. Session creation, prompt echoes, malformed output, process failures,
-// and provider errors cannot establish authorization. Raw output is never
-// returned in diagnostics.
+// classifyZCodeAuthProbe requires the pinned CLI's successful turn.completed
+// event and matching final result, with no error and a successful process exit.
+// Session creation, prompt echoes, malformed/incomplete output and failed turns
+// cannot establish authorization. Raw output is never returned in diagnostics.
 func classifyZCodeAuthProbe(output string, runErr error) (ports.AgentAuthStatus, string) {
 	text := strings.ToLower(output)
 	switch {
@@ -153,27 +153,54 @@ func classifyZCodeAuthProbe(output string, runErr error) (ports.AgentAuthStatus,
 		strings.Contains(text, "login required"):
 		return ports.AgentAuthStatusUnauthorized, "provider_rejected_credential"
 	}
-	var result struct {
-		SessionID string          `json:"sessionId"`
-		Response  string          `json:"response"`
-		Error     json.RawMessage `json:"error"`
-		Errors    json.RawMessage `json:"errors"`
-		Projection struct {
-			Status    string `json:"status"`
-			TurnCount int    `json:"turnCount"`
-		} `json:"projection"`
-	}
-	if runErr != nil || json.Unmarshal([]byte(output), &result) != nil {
+	if runErr != nil {
 		return ports.AgentAuthStatusUnknown, "check_inconclusive"
 	}
-	for _, raw := range []json.RawMessage{result.Error, result.Errors} {
-		switch strings.TrimSpace(string(raw)) {
-		case "", "null", "[]", "false":
-		default:
+	decoder := json.NewDecoder(strings.NewReader(output))
+	completedSession, completedTurn := "", ""
+	success := false
+	for {
+		var event struct {
+			Type string `json:"type"`
+			SessionID string `json:"sessionId"`
+			TurnID string `json:"turnId"`
+			Response string `json:"response"`
+			Error json.RawMessage `json:"error"`
+			Errors json.RawMessage `json:"errors"`
+			Payload struct {
+				ResultType string `json:"resultType"`
+				Error json.RawMessage `json:"error"`
+			} `json:"payload"`
+			Projection struct {
+				Status string `json:"status"`
+				TurnCount int `json:"turnCount"`
+			} `json:"projection"`
+		}
+		if err := decoder.Decode(&event); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
 			return ports.AgentAuthStatusUnknown, "check_inconclusive"
 		}
+		for _, raw := range []json.RawMessage{event.Error, event.Errors, event.Payload.Error} {
+			switch strings.TrimSpace(string(raw)) {
+			case "", "null", "[]", "false":
+			default:
+				return ports.AgentAuthStatusUnknown, "check_inconclusive"
+			}
+		}
+		switch event.Type {
+		case "turn.failed":
+			return ports.AgentAuthStatusUnknown, "check_inconclusive"
+		case "turn.completed":
+			if event.Payload.ResultType != "success" || event.SessionID == "" || event.TurnID == "" {
+				return ports.AgentAuthStatusUnknown, "check_inconclusive"
+			}
+			completedSession, completedTurn = event.SessionID, event.TurnID
+		case "result":
+			success = completedSession != "" && completedTurn != "" && event.SessionID == completedSession && event.TurnID == completedTurn && event.Projection.Status == "idle" && event.Projection.TurnCount > 0 && strings.EqualFold(strings.TrimSpace(event.Response), "ok")
+		}
 	}
-	if result.SessionID != "" && result.Projection.Status == "idle" && result.Projection.TurnCount > 0 && strings.EqualFold(strings.TrimSpace(result.Response), "ok") {
+	if success {
 		return ports.AgentAuthStatusAuthorized, "provider_turn_completed"
 	}
 	return ports.AgentAuthStatusUnknown, "check_inconclusive"

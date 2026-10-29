@@ -53,8 +53,9 @@ is not publicly registered while AO instruction delivery is deferred.
 The author's bounded plan-mode auth probe is retained as development work. Its
 workspace is created under `AO_DATA_DIR/auth-probes` (default
 `~/.ao/data/auth-probes`) and removed after the probe. Authorization requires a
-successful process and the pinned CLI's JSON summary containing a completed
-idle turn with the requested final response, without a provider error. Session
+successful process and the pinned CLI's `turn.completed` event with
+`resultType: success`, followed by a matching final result with the requested
+response and no provider error. Session
 IDs and echoed prompts are not authorization evidence. This retained probe has
 not passed a fresh live qualification audit.
 

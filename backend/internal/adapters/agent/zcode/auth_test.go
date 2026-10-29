@@ -9,8 +9,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+const successfulAuthProbeOutput = `{"type":"turn.completed","sessionId":"sess_abc","turnId":"turn_1","payload":{"resultType":"success"}}` + "\n" +
+	`{"type":"result","sessionId":"sess_abc","turnId":"turn_1","response":"ok","projection":{"status":"idle","turnCount":1}}`
+
 func TestAuthProbeRequiresSuccessfulProviderResult(t *testing.T) {
-	const success = `{"sessionId":"sess_abc","response":"ok","projection":{"status":"idle","turnCount":1}}`
+	const success = successfulAuthProbeOutput
 	cases := []struct {
 		name string
 		output string
@@ -18,6 +21,10 @@ func TestAuthProbeRequiresSuccessfulProviderResult(t *testing.T) {
 		want ports.AgentAuthStatus
 	}{
 		{name: "completed summary", output: success, want: ports.AgentAuthStatusAuthorized},
+		{name: "summary without successful event", output: `{"type":"result","sessionId":"sess_abc","turnId":"turn_1","response":"ok","projection":{"status":"idle","turnCount":1}}`, want: ports.AgentAuthStatusUnknown},
+		{name: "failed completion event", output: `{"type":"turn.completed","sessionId":"sess_abc","turnId":"turn_1","payload":{"resultType":"error"}}`, want: ports.AgentAuthStatusUnknown},
+		{name: "successful stream then failed turn", output: success + "\n" + `{"type":"turn.failed","payload":{"error":"network lost"}}`, want: ports.AgentAuthStatusUnknown},
+		{name: "different result turn", output: `{"type":"turn.completed","sessionId":"sess_abc","turnId":"turn_2","payload":{"resultType":"success"}}` + "\n" + `{"type":"result","sessionId":"sess_abc","turnId":"turn_1","response":"ok","projection":{"status":"idle","turnCount":1}}`, want: ports.AgentAuthStatusUnknown},
 		{name: "metadata only", output: `{"sessionId":"sess_abc"}`, want: ports.AgentAuthStatusUnknown},
 		{name: "prompt echo", output: `{"prompt":"Reply with exactly: ok"}`, want: ports.AgentAuthStatusUnknown},
 		{name: "metadata and rejection", output: `{"sessionId":"sess_abc","error":"invalid_api_key"}`, want: ports.AgentAuthStatusUnauthorized},
@@ -41,7 +48,7 @@ func TestAuthProbeRequiresSuccessfulProviderResult(t *testing.T) {
 }
 
 func TestAuthProbeUsesConfiguredAODataDirectoryAndCleansWorkspace(t *testing.T) {
-	installFakeZcode(t, `{"sessionId":"sess_abc","response":"ok","projection":{"status":"idle","turnCount":1}}`)
+	installFakeZcode(t, successfulAuthProbeOutput)
 	dataDir := t.TempDir()
 	t.Setenv("AO_DATA_DIR", dataDir)
 	status, err := New().AuthStatus(t.Context())
