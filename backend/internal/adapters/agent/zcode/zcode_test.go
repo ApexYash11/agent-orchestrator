@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -101,7 +103,7 @@ func TestGetLaunchCommandDeliversNoPrompt(t *testing.T) {
 	}
 }
 
-func TestGetLaunchCommandRejectsStandingInstructions(t *testing.T) {
+func TestGetLaunchCommandIgnoresStandingInstructionsInArgv(t *testing.T) {
 	const privateInstructions = "PRIVATE AO worker role instructions"
 	for _, test := range []struct {
 		name     string
@@ -115,22 +117,109 @@ func TestGetLaunchCommandRejectsStandingInstructions(t *testing.T) {
 		{name: "inline with empty file", inline: privateInstructions, withFile: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := ports.LaunchConfig{SystemPrompt: test.inline}
+			cfg := ports.LaunchConfig{SystemPrompt: test.inline, Prompt: "user task"}
 			if test.withFile {
 				cfg.SystemPromptFile = filepath.Join(t.TempDir(), "system.md")
 				if err := os.WriteFile(cfg.SystemPromptFile, []byte(test.file), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			// No binary cache: unsupported instructions must fail before resolution.
-			cmd, err := New().GetLaunchCommand(t.Context(), cfg)
-			if cmd != nil || err == nil || !strings.Contains(err.Error(), "AO standing instructions") || !strings.Contains(err.Error(), "choose another harness") {
-				t.Fatalf("launch = %v, %v; want no argv and an actionable instruction error", cmd, err)
+			cmd, err := (&Plugin{resolvedBinary: "zcode"}).GetLaunchCommand(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if strings.Contains(err.Error(), privateInstructions) {
-				t.Fatal("launch error exposed private instructions")
+			// Instructions ride the first typed message (BuildAfterStartPrompt),
+			// never the argv: the argv must not carry the task or the
+			// instructions in any form.
+			if want := []string{"zcode"}; !reflect.DeepEqual(cmd, want) {
+				t.Fatalf("argv = %v, want %v", cmd, want)
+			}
+			for _, arg := range cmd {
+				if strings.Contains(arg, privateInstructions) || strings.Contains(arg, "user task") {
+					t.Fatalf("argv %v exposed instructions or task", cmd)
+				}
 			}
 		})
+	}
+}
+
+func TestBuildAfterStartPromptFramesInstructionsAheadOfTheTask(t *testing.T) {
+	plugin := New()
+	const instructions = "AO worker role instructions"
+	const task = "add a health check"
+
+	composed, err := plugin.BuildAfterStartPrompt(t.Context(), ports.LaunchConfig{
+		SystemPrompt: instructions,
+		Prompt:       task,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, rest, ok := strings.Cut(composed, "\n\n")
+	if !ok {
+		t.Fatalf("composed prompt has no framing header: %q", composed)
+	}
+	if !strings.Contains(header, "standing operating instructions") || strings.Contains(header, instructions) {
+		t.Fatalf("framing header = %q; want an instructions framing without leaking the instructions", header)
+	}
+	instructionsIdx := strings.Index(rest, instructions)
+	taskIdx := strings.Index(rest, task)
+	if instructionsIdx < 0 || taskIdx < 0 || instructionsIdx > taskIdx {
+		t.Fatalf("composed prompt = %q; want instructions before the task", composed)
+	}
+	if !strings.Contains(rest, "--- Task ---") {
+		t.Fatalf("composed prompt = %q; want an explicit task marker", composed)
+	}
+}
+
+func TestBuildAfterStartPromptKeepsTaskOnlyLaunchesUnchanged(t *testing.T) {
+	composed, err := New().BuildAfterStartPrompt(t.Context(), ports.LaunchConfig{Prompt: "user task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if composed != "user task" {
+		t.Fatalf("composed = %q, want the bare task", composed)
+	}
+}
+
+func TestBuildAfterStartPromptDeliversInstructionsAlone(t *testing.T) {
+	composed, err := New().BuildAfterStartPrompt(t.Context(), ports.LaunchConfig{SystemPrompt: "AO role instructions"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(composed, "AO role instructions") || !strings.Contains(composed, "standing operating instructions") {
+		t.Fatalf("composed = %q; want framed instructions", composed)
+	}
+}
+
+func TestBuildAfterStartPromptBlankLaunchComposesEmpty(t *testing.T) {
+	composed, err := New().BuildAfterStartPrompt(t.Context(), ports.LaunchConfig{SystemPrompt: " \n\t", Prompt: " \t "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if composed != "" {
+		t.Fatalf("composed = %q, want empty", composed)
+	}
+}
+
+func TestBuildAfterStartPromptHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := New().BuildAfterStartPrompt(ctx, ports.LaunchConfig{Prompt: "task"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestPromptReadinessHintsAreBounded(t *testing.T) {
+	hints, err := New().PromptReadinessHints(t.Context(), ports.LaunchConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hints.Timeout <= 0 || hints.Timeout > 15*time.Second {
+		t.Fatalf("timeout = %v; want a short bounded wait that falls back to timed delivery", hints.Timeout)
+	}
+	if len(hints.Patterns) == 0 {
+		t.Fatal("no readiness patterns")
 	}
 }
 
@@ -165,19 +254,10 @@ func TestGetLaunchCommandAllowsEmptyStandingInstructions(t *testing.T) {
 	}
 }
 
-func TestGetLaunchCommandRejectsUnreadableInstructionFile(t *testing.T) {
-	cmd, err := New().GetLaunchCommand(t.Context(), ports.LaunchConfig{
-		SystemPromptFile: filepath.Join(t.TempDir(), "missing.md"),
-	})
-	if cmd != nil || !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("launch = %v, %v; want no argv and the instruction-file read error", cmd, err)
-	}
-}
-
-func TestGetLaunchCommandHonorsCancellationBeforeInstructions(t *testing.T) {
+func TestGetLaunchCommandHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	cmd, err := New().GetLaunchCommand(ctx, ports.LaunchConfig{SystemPrompt: "AO instructions"})
+	cmd, err := New().GetLaunchCommand(ctx, ports.LaunchConfig{SystemPrompt: "AO instructions", Prompt: "task"})
 	if cmd != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("launch = %v, %v; want no argv and context.Canceled", cmd, err)
 	}
@@ -259,71 +339,160 @@ func TestValidNativeSessionID(t *testing.T) {
 	}
 }
 
-func TestAuthStatusReadsDocumentedCredentialLocations(t *testing.T) {
-	tests := []struct {
-		name         string
-		env          map[string]string
-		providerConf string
-		want         ports.AgentAuthStatus
+// installFakeZcode drops a fake zcode executable on PATH whose output the
+// caller controls, so the verification turn can be classified without a
+// provider.
+func installFakeZcode(t *testing.T, output string) {
+	t.Helper()
+	binDir := t.TempDir()
+	name := "zcode"
+	script := "#!/bin/sh\nprintf '%s' '" + output + "'\n"
+	if runtime.GOOS == "windows" {
+		name = "zcode.cmd"
+		// cmd executes every non-echo line as a command, so each output line
+		// must be emitted through echo; braces and quotes print verbatim.
+		script = "@echo off\r\necho " + strings.ReplaceAll(strings.TrimSpace(output), "\n", "\r\necho ") + "\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestAuthStatusVerifiesWithARealTurnWhenCredentialsExist(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		fakeOutput string
+		want       ports.AgentAuthStatus
+		wantCode   string
 	}{
 		{
-			name: "no credentials anywhere",
-			want: ports.AgentAuthStatusUnknown,
+			name:       "completed turn verifies",
+			fakeOutput: `{"sessionId":"sess_abc","type":"result"}` + "\n" + `ok`,
+			want:       ports.AgentAuthStatusAuthorized,
+			wantCode:   "provider_turn_completed",
 		},
 		{
-			name: "environment key",
-			env:  map[string]string{"ZAI_API_KEY": "key"},
-			want: ports.AgentAuthStatusConfigured,
+			name:       "plan exhaustion is a definitive unauthorized",
+			fakeOutput: `Error: [1113][Insufficient balance or no resource package. Please recharge.]`,
+			want:       ports.AgentAuthStatusUnauthorized,
+			wantCode:   "provider_plan_exhausted",
 		},
 		{
-			name:         "provider config key",
-			providerConf: `{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[{"config":{"access":{"type":"api-key","apiKey":"key"}}}]}}}`,
-			want:         ports.AgentAuthStatusConfigured,
+			name:       "provider rejection is a definitive unauthorized",
+			fakeOutput: `Error: authenticate_error invalid api key supplied`,
+			want:       ports.AgentAuthStatusUnauthorized,
+			wantCode:   "provider_rejected_credential",
 		},
 		{
-			name:         "provider config without a key stays unknown (account logins are opaque)",
-			providerConf: `{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[]}}}`,
-			want:         ports.AgentAuthStatusUnknown,
+			name:       "credential-store login absence is a definitive unauthorized",
+			fakeOutput: `Error: not logged in; run zcode login`,
+			want:       ports.AgentAuthStatusUnauthorized,
+			wantCode:   "provider_rejected_credential",
 		},
 		{
-			name:         "blank key does not count",
-			providerConf: `{"config":{"providerConfigRules":{"providerRules":[{"config":{"access":{"apiKey":"  "}}}]}}}`,
-			want:         ports.AgentAuthStatusUnknown,
+			name:       "unrelated output stays inconclusive",
+			fakeOutput: `booting runtime`,
+			want:       ports.AgentAuthStatusUnknown,
+			wantCode:   "check_inconclusive",
 		},
-		{
-			name:         "invalid json stays unknown",
-			providerConf: `{`,
-			want:         ports.AgentAuthStatusUnknown,
-		},
-	}
-
-	for _, test := range tests {
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("ZAI_API_KEY", "")
+			t.Setenv("ZAI_API_KEY", "key")
 			t.Setenv("ZCODE_API_KEY", "")
 			t.Setenv("GLM_API_KEY", "")
 			t.Setenv("Z_AI_API_KEY", "")
-			t.Setenv("ZCODE_DATA_BASE_DIR", t.TempDir())
-			config := ""
-			if test.providerConf != "" {
-				config = filepath.Join(t.TempDir(), "provider_config.json")
-				if err := os.WriteFile(config, []byte(test.providerConf), 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			t.Setenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", config)
-			for name, value := range test.env {
-				t.Setenv(name, value)
-			}
+			installFakeZcode(t, test.fakeOutput)
 
-			got, err := (&Plugin{}).AuthStatus(context.Background())
+			status, _, diags, err := New().AuthStatusWithDiagnostics(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got != test.want {
-				t.Fatalf("AuthStatus = %q, want %q", got, test.want)
+			if status != test.want {
+				t.Fatalf("status = %q, want %q (output %q)", status, test.want, test.fakeOutput)
+			}
+			// The verdict is the last diagnostic; an optional presence note may
+			// precede it, and authored reasons never echo provider output.
+			if len(diags) == 0 {
+				t.Fatal("no diagnostics")
+			}
+			verdict := diags[len(diags)-1]
+			if verdict.Code != test.wantCode {
+				t.Fatalf("verdict diagnostic = %#v, want code %q", verdict, test.wantCode)
+			}
+			needle := strings.ToLower(test.fakeOutput)
+			for _, diag := range diags {
+				if strings.Contains(strings.ToLower(diag.Reason), needle) || strings.Contains(strings.ToLower(diag.NextStep), needle) {
+					t.Fatal("diagnostic echoed provider output")
+				}
 			}
 		})
+	}
+}
+
+func TestAuthStatusWithoutCredentialEvidenceStillVerifies(t *testing.T) {
+	t.Setenv("ZAI_API_KEY", "")
+	t.Setenv("ZCODE_API_KEY", "")
+	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("Z_AI_API_KEY", "")
+	t.Setenv("ZCODE_DATA_BASE_DIR", t.TempDir())
+	// A `zcode login` user has no file evidence at all: the probe is the only
+	// way to conclude, and its verdict must stand on its own.
+	installFakeZcode(t, `{"sessionId":"sess_abc"}` + "\n" + `ok`)
+	status, _, diags, err := New().AuthStatusWithDiagnostics(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = %q, want authorized", status)
+	}
+	if diags[len(diags)-1].Code != "provider_turn_completed" {
+		t.Fatalf("diagnostics = %#v", diags)
+	}
+}
+
+func TestAuthStatusWithMissingBinaryStaysUnknown(t *testing.T) {
+	t.Setenv("ZAI_API_KEY", "")
+	t.Setenv("ZCODE_API_KEY", "")
+	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("Z_AI_API_KEY", "")
+	t.Setenv("ZCODE_DATA_BASE_DIR", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	status, _, diags, err := New().AuthStatusWithDiagnostics(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = %q, want unknown", status)
+	}
+	if len(diags) == 0 || diags[len(diags)-1].Code != "binary_missing" {
+		t.Fatalf("diagnostics = %#v, want binary_missing", diags)
+	}
+}
+
+func TestAuthStatusWithConfiguredProviderKeyVerifiesThroughTheProbe(t *testing.T) {
+	t.Setenv("ZAI_API_KEY", "")
+	t.Setenv("ZCODE_API_KEY", "")
+	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("Z_AI_API_KEY", "")
+	t.Setenv("ZCODE_DATA_BASE_DIR", t.TempDir())
+	config := filepath.Join(t.TempDir(), "provider_config.json")
+	conf := `{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[{"config":{"access":{"type":"api-key","apiKey":"key"}}}]}}}`
+	if err := os.WriteFile(config, []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", config)
+	installFakeZcode(t, `{"sessionId":"sess_abc"}` + "\n" + `ok`)
+
+	status, _, diags, err := New().AuthStatusWithDiagnostics(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("status = %q, want authorized", status)
+	}
+	if diags[len(diags)-1].Code != "provider_turn_completed" {
+		t.Fatalf("diagnostics = %#v", diags)
 	}
 }
 

@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // zcodeAuthEnvNames are the API-key environments ZCode's CLI and provider
@@ -17,33 +20,158 @@ import (
 // documented read-only probe.
 var zcodeAuthEnvNames = []string{"ZAI_API_KEY", "ZCODE_API_KEY", "GLM_API_KEY", "Z_AI_API_KEY"}
 
-// AuthStatus reports the selected local auth route from documented credential
-// locations only. ZCode's `zcode doctor --json` output schema is not documented
-// in the open-source usage guide, so AO does not parse it; instead a
-// non-empty API key in the environment or the personal provider configuration
-// reports configured, and anything else reports unknown (account logins live in
-// an opaque credential store AO cannot read). Configured therefore means
-// "present", not "verified against the provider".
+// zcodeAuthProbeTimeout bounds the live verification turn. A GLM answer to a
+// one-word prompt is normally a few seconds; the budget absorbs provider and
+// network latency so the readiness layer's own deadline is not what kills the
+// probe.
+const zcodeAuthProbeTimeout = 75 * time.Second
+
+// zcodeAuthProbePrompt is the smallest turn that still forces a provider
+// round-trip. It runs in plan mode, so the verification cannot mutate the
+// probe workspace.
+const zcodeAuthProbePrompt = "Reply with exactly: ok"
+
+// AuthStatus reports the selected local auth route, verifying with a real
+// provider turn. ZCode has no auth-status subcommand and `zcode doctor --json`
+// carries no provider verdict, so presence alone would stay inconclusive
+// forever — the audit's finding. The verification costs one tiny plan-mode
+// turn in a throwaway directory, and runs for every installed ZCode:
+// `zcode login` stores credentials in a store AO cannot read, so absent file
+// evidence proves nothing.
 func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
+	status, _, _, err := p.AuthStatusWithDiagnostics(ctx)
+	return status, err
+}
+
+// AuthStatusWithDiagnostics implements ports.AgentAuthDiagnosticsChecker: the
+// verdict, the account identity (unknown — ZCode has no documented account
+// probe), and authored evidence from the same check. A completed turn
+// verifies; the provider's plan-exhaustion and rejection codes refute;
+// everything else stays unknown rather than guessed.
+func (p *Plugin) AuthStatusWithDiagnostics(ctx context.Context) (ports.AgentAuthStatus, domain.AgentAccountIdentity, []domain.AgentAuthDiagnostic, error) {
 	if err := ctx.Err(); err != nil {
-		return ports.AgentAuthStatusUnknown, err
+		return ports.AgentAuthStatusUnknown, domain.AgentAccountIdentity{}, nil, err
 	}
-	for _, name := range zcodeAuthEnvNames {
-		if strings.TrimSpace(os.Getenv(name)) != "" {
-			return ports.AgentAuthStatusConfigured, nil
-		}
-	}
-	data, err := os.ReadFile(zcodeProviderConfigPath())
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
-		return ports.AgentAuthStatusUnknown, nil
+	started := time.Now()
+	presenceDiag := p.credentialPresenceDiagnostic(started)
+
+	binary, err := p.ResolveBinary(ctx)
+	if errors.Is(err, ports.ErrAgentBinaryNotFound) {
+		return ports.AgentAuthStatusUnknown, domain.AgentAccountIdentity{},
+			diagsWith(presenceDiag, newZCodeAuthDiagnostic("binary_missing", started)), nil
 	}
 	if err != nil {
-		return ports.AgentAuthStatusUnknown, err
+		return ports.AgentAuthStatusUnknown, domain.AgentAccountIdentity{}, nil, err
+	}
+
+	workspace, err := os.MkdirTemp("", "ao-zcode-auth-")
+	if err != nil {
+		return ports.AgentAuthStatusUnknown, domain.AgentAccountIdentity{}, nil, err
+	}
+	defer func() { _ = os.RemoveAll(workspace) }()
+
+	probeCtx, cancel := context.WithTimeout(ctx, zcodeAuthProbeTimeout)
+	defer cancel()
+	cmd := process.CommandContext(probeCtx, binary,
+		"--prompt", zcodeAuthProbePrompt, "--json", "--cwd", workspace, "--mode", "plan")
+	cmd.Dir = workspace
+	output, runErr := cmd.CombinedOutput()
+	_ = runErr // classified below; the CLI exits nonzero on provider errors too
+
+	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		return ports.AgentAuthStatusUnknown, domain.AgentAccountIdentity{},
+			diagsWith(presenceDiag, newZCodeAuthDiagnostic("probe_timeout", started)), nil
+	}
+	if err := ctx.Err(); err != nil {
+		return ports.AgentAuthStatusUnknown, domain.AgentAccountIdentity{}, nil, err
+	}
+
+	status, code := classifyZCodeAuthProbe(string(output))
+	diag := newZCodeAuthDiagnostic(code, started)
+	diag.DurationMs = time.Since(started).Milliseconds()
+	return status, domain.AgentAccountIdentity{}, diagsWith(presenceDiag, diag), nil
+}
+
+// credentialPresenceDiagnostic records, as authored evidence, that a
+// documented credential location held a usable key. It never decides the
+// verdict by itself: `zcode login` users have no file evidence at all.
+func (p *Plugin) credentialPresenceDiagnostic(started time.Time) *domain.AgentAuthDiagnostic {
+	if present, source := p.credentialEvidence(); present {
+		diag := newZCodeAuthDiagnostic("credential_present", started)
+		diag.Source = source
+		return &diag
+	}
+	return nil
+}
+
+// diagsWith orders the optional presence evidence ahead of the verdict.
+func diagsWith(presence *domain.AgentAuthDiagnostic, verdict domain.AgentAuthDiagnostic) []domain.AgentAuthDiagnostic {
+	diags := make([]domain.AgentAuthDiagnostic, 0, 2)
+	if presence != nil {
+		diags = append(diags, *presence)
+	}
+	return append(diags, verdict)
+}
+
+// classifyZCodeAuthProbe maps the verification turn onto a verdict. ZCode
+// exits zero even when the provider rejects the turn, so the response body is
+// the evidence: a completed turn means the credential works; the plan
+// exhaustion and rejection codes mean it does not. Reasons stay authored —
+// provider bodies can echo credentials, so only matchcodes are inspected.
+func classifyZCodeAuthProbe(output string) (ports.AgentAuthStatus, string) {
+	text := strings.ToLower(output)
+	switch {
+	case strings.Contains(text, `"stream_completed":true`),
+		strings.Contains(text, `"sessionid":"sess_`),
+		strings.Contains(text, "reply with exactly"):
+		// The turn ran to a response (the JSON echo includes the echoed
+		// prompt), which only happens on an accepted credential.
+		return ports.AgentAuthStatusAuthorized, "provider_turn_completed"
+	case strings.Contains(text, "1113"), strings.Contains(text, "insufficient balance"):
+		return ports.AgentAuthStatusUnauthorized, "provider_plan_exhausted"
+	case strings.Contains(text, "authenticate_error"),
+		strings.Contains(text, "invalid_api_key"),
+		strings.Contains(text, "api key"),
+		strings.Contains(text, "unauthorized"),
+		strings.Contains(text, "not logged in"),
+		strings.Contains(text, "no provider configured"),
+		strings.Contains(text, "login required"):
+		return ports.AgentAuthStatusUnauthorized, "provider_rejected_credential"
+	default:
+		return ports.AgentAuthStatusUnknown, "check_inconclusive"
+	}
+}
+
+// newZCodeAuthDiagnostic builds the authored evidence entry for one auth
+// check, using the shared diagnostic vocabulary (authored explanations, never
+// raw provider output).
+func newZCodeAuthDiagnostic(code string, started time.Time) domain.AgentAuthDiagnostic {
+	diag := domain.NewAgentAuthDiagnostic("authentication", code)
+	diag.DurationMs = time.Since(started).Milliseconds()
+	return diag
+}
+
+// credentialEvidence reports whether any documented credential location holds
+// a usable key: the environment, or a non-empty apiKey in the personal
+// provider configuration.
+func (p *Plugin) credentialEvidence() (bool, string) {
+	for _, name := range zcodeAuthEnvNames {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return true, "environment:" + name
+		}
+	}
+	path := zcodeProviderConfigPath()
+	if path == "" {
+		return false, ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, ""
 	}
 	if providerConfigHasAPIKey(data) {
-		return ports.AgentAuthStatusConfigured, nil
+		return true, "provider_config"
 	}
-	return ports.AgentAuthStatusUnknown, nil
+	return false, ""
 }
 
 // zcodeProviderConfigPath resolves the personal model configuration file. See

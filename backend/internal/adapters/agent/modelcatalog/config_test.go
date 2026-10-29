@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -324,5 +325,53 @@ func TestConfigCatalogDiscoveryAndFingerprint(t *testing.T) {
 	after := CatalogFingerprint(context.Background(), "continue", "", "", nil)
 	if before == after {
 		t.Fatalf("fingerprint did not change after config edit: %q", before)
+	}
+}
+
+func TestZcodeDiscoveryReadsProviderRuntimeCatalog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	catalog := filepath.Join(home, ".zcode", "v2", "runtime", "provider", "windows-x86_64", "0.0.0-dev", "endpoint-abc", "zcode-builtin.json")
+	if err := os.MkdirAll(filepath.Dir(catalog), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	builtin := `{"schemaVersion":1,"revision":7,"config":{"providerConfigRules":{"providerRules":[` +
+		`{"providerId":"account:zai-individual-coding-plan","config":{"builtinModelIds":["GLM-5.3","GLM-5.3-Flash"]}},` +
+		`{"providerId":"account:zai-start-plan","config":{"builtinModelIds":["GLM-5.3-Flash","GLM-5.2"]}}` +
+		`]}}}`
+	if err := os.WriteFile(catalog, []byte(builtin), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	personal := filepath.Join(home, ".zcode", "v2", "provider_config.json")
+	if err := os.WriteFile(personal, []byte(`{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[{"providerId":"example","config":{"access":{"type":"api-key","apiKey":"k"},"personalModelIds":["example-model"]}}]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "zcode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != "config" || got.SelectionMode != ports.ModelSelectionCatalog {
+		t.Fatalf("source=%q selection=%q; want config catalog", got.Source, got.SelectionMode)
+	}
+	ids := make([]string, 0, len(got.Models))
+	for _, model := range got.Models {
+		ids = append(ids, model.ID)
+	}
+	want := []string{"example-model", "GLM-5.2", "GLM-5.3", "GLM-5.3-Flash"}
+	if !slices.Equal(ids, want) {
+		t.Fatalf("models = %v, want %v (stable, de-duplicated)", ids, want)
+	}
+}
+
+func TestZcodeDiscoveryWithoutRuntimeFilesStaysEmpty(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	_, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "zcode"})
+	if err == nil {
+		t.Fatal("discovery succeeded without any zcode files; want the manual fallback path")
 	}
 }
