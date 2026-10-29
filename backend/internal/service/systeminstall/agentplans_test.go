@@ -24,9 +24,9 @@ type installCapabilitiesStub struct {
 	probe             func(context.Context) error
 }
 
-func TestDeferredZCodeIsNotAnInstallTarget(t *testing.T) {
-	if IsAgentTarget(TargetZCode) || Valid(TargetZCode) {
-		t.Fatal("deferred ZCode must not be offered as an installable harness")
+func TestDeferredZCodeIsAnInstallTarget(t *testing.T) {
+	if !IsAgentTarget(TargetZCode) {
+		t.Fatal("ZCode must be offered as an installable harness; standing-instruction delivery is supported")
 	}
 }
 
