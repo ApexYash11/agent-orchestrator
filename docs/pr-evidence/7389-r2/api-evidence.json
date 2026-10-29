@@ -1,0 +1,2235 @@
+{
+  "agents": {
+    "status": 200,
+    "ms": 107,
+    "data": {
+      "supported": [
+        {
+          "id": "agy",
+          "label": "Agy",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "aider",
+          "label": "Aider",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "amp",
+          "label": "Amp",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "auggie",
+          "label": "Auggie",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "autohand",
+          "label": "Autohand",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "claude-code",
+          "label": "Claude Code",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "cline",
+          "label": "Cline",
+          "authStatus": "authorized"
+        },
+        {
+          "id": "codewhale",
+          "label": "Codewhale",
+          "authStatus": "authorized"
+        },
+        {
+          "id": "codex",
+          "label": "Codex",
+          "authStatus": "unauthorized"
+        },
+        {
+          "id": "command-code",
+          "label": "Command Code",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "continue",
+          "label": "Continue",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "crush",
+          "label": "Crush",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "cursor",
+          "label": "Cursor",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "deepseek-harness",
+          "label": "DeepSeek",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "devin",
+          "label": "Devin",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "droid",
+          "label": "Droid",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "gemini",
+          "label": "Gemini CLI",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "copilot",
+          "label": "GitHub Copilot",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "goose",
+          "label": "Goose",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "grok",
+          "label": "Grok Build",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "hermes",
+          "label": "Hermes Agent",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "kilocode",
+          "label": "Kilo Code",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "kimchi",
+          "label": "Kimchi",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "kimi",
+          "label": "Kimi",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "kiro",
+          "label": "Kiro",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "mimo-code",
+          "label": "MiMo Code",
+          "authStatus": "configured"
+        },
+        {
+          "id": "vibe",
+          "label": "Mistral Vibe",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "muse",
+          "label": "Muse Code",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "omp",
+          "label": "OMP",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "opencode-v2",
+          "label": "OpenCode 2",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "openhands",
+          "label": "OpenHands",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "pi",
+          "label": "Pi",
+          "authStatus": "authorized"
+        },
+        {
+          "id": "prime-agent",
+          "label": "Prime Agent",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "qwen",
+          "label": "Qwen Code",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "unreal-agent",
+          "label": "Unreal Agent",
+          "authStatus": "unauthorized"
+        },
+        {
+          "id": "fx",
+          "label": "fx",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "memcode",
+          "label": "memcode",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "opencode",
+          "label": "opencode",
+          "authStatus": "unknown"
+        }
+      ],
+      "installed": [
+        {
+          "id": "cline",
+          "label": "Cline",
+          "authStatus": "authorized"
+        },
+        {
+          "id": "codewhale",
+          "label": "Codewhale",
+          "authStatus": "authorized"
+        },
+        {
+          "id": "codex",
+          "label": "Codex",
+          "authStatus": "unauthorized"
+        },
+        {
+          "id": "deepseek-harness",
+          "label": "DeepSeek",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "mimo-code",
+          "label": "MiMo Code",
+          "authStatus": "configured"
+        },
+        {
+          "id": "omp",
+          "label": "OMP",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "opencode-v2",
+          "label": "OpenCode 2",
+          "authStatus": "unknown"
+        },
+        {
+          "id": "pi",
+          "label": "Pi",
+          "authStatus": "authorized"
+        },
+        {
+          "id": "unreal-agent",
+          "label": "Unreal Agent",
+          "authStatus": "unauthorized"
+        }
+      ],
+      "authorized": [
+        {
+          "id": "cline",
+          "label": "Cline",
+          "authStatus": "authorized"
+        },
+        {
+          "id": "codewhale",
+          "label": "Codewhale",
+          "authStatus": "authorized"
+        },
+        {
+          "id": "pi",
+          "label": "Pi",
+          "authStatus": "authorized"
+        }
+      ]
+    }
+  },
+  "readiness": {
+    "status": 200,
+    "ms": 11,
+    "data": {
+      "agents": [
+        {
+          "id": "agy",
+          "label": "Agy",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6317467Z",
+            "attemptedAt": "2026-10-29T16:04:30.6317467Z",
+            "reasonCode": "not_installed",
+            "reason": "Agy is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.3831445Z",
+            "attemptedAt": "2026-10-29T16:04:31.3831445Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "aider",
+          "label": "Aider",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6317467Z",
+            "attemptedAt": "2026-10-29T16:04:30.6317467Z",
+            "reasonCode": "not_installed",
+            "reason": "Aider is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.0438962Z",
+            "attemptedAt": "2026-10-29T16:04:31.0438962Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "amp",
+          "label": "Amp",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6317467Z",
+            "attemptedAt": "2026-10-29T16:04:30.6317467Z",
+            "reasonCode": "not_installed",
+            "reason": "Amp is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.3825998Z",
+            "attemptedAt": "2026-10-29T16:04:31.3825998Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "auggie",
+          "label": "Auggie",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6943609Z",
+            "attemptedAt": "2026-10-29T16:04:30.6943609Z",
+            "reasonCode": "not_installed",
+            "reason": "Auggie is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.4438855Z",
+            "attemptedAt": "2026-10-29T16:04:31.4438855Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "autohand",
+          "label": "Autohand",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6933484Z",
+            "attemptedAt": "2026-10-29T16:04:30.6933484Z",
+            "reasonCode": "not_installed",
+            "reason": "Autohand is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.4416106Z",
+            "attemptedAt": "2026-10-29T16:04:31.4416106Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "claude-code",
+          "label": "Claude Code",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.4416106Z",
+            "attemptedAt": "2026-10-29T16:04:31.4416106Z",
+            "reasonCode": "not_installed",
+            "reason": "Claude Code is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.0842207Z",
+            "attemptedAt": "2026-10-29T16:04:32.0842207Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "cline",
+          "label": "Cline",
+          "installation": {
+            "state": "installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.4438855Z",
+            "attemptedAt": "2026-10-29T16:04:31.4438855Z",
+            "reasonCode": "installed",
+            "reason": "Cline is installed."
+          },
+          "authentication": {
+            "state": "authorized",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:33.974835Z",
+            "attemptedAt": "2026-10-29T16:04:33.974835Z",
+            "reasonCode": "authorized",
+            "reason": "Cline appears signed in.",
+            "account": {
+              "email": "yashmaheshwari441@gmail.com",
+              "name": "Yash Maheshwari",
+              "provider": "cline",
+              "method": "account",
+              "sourceKind": "file",
+              "source": "~\\.cline\\data\\settings\\providers.json"
+            },
+            "diagnostics": [
+              {
+                "method": "selected_credential",
+                "code": "credential_present",
+                "reason": "A local credential is configured; its presence alone does not prove provider access.",
+                "source": "~\\.cline\\data\\settings\\providers.json",
+                "provider": "cline",
+                "checkedAt": "2026-10-29T21:34:33.9916127+05:30",
+                "cached": false,
+                "durationMs": 0
+              }
+            ]
+          },
+          "effectiveReadiness": "ready",
+          "usageCount": 0
+        },
+        {
+          "id": "codewhale",
+          "label": "Codewhale",
+          "installation": {
+            "state": "installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6928317Z",
+            "attemptedAt": "2026-10-29T16:04:30.6928317Z",
+            "reasonCode": "installed",
+            "reason": "Codewhale is installed."
+          },
+          "authentication": {
+            "state": "authorized",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:33.975452Z",
+            "attemptedAt": "2026-10-29T16:04:33.975452Z",
+            "reasonCode": "authorized",
+            "reason": "Codewhale appears signed in.",
+            "account": {
+              "sourceKind": "command",
+              "source": "codewhale doctor --probe-api"
+            },
+            "diagnostics": [
+              {
+                "method": "selected_credential",
+                "code": "credential_present",
+                "reason": "A local credential is configured; its presence alone does not prove provider access.",
+                "source": "codewhale doctor --probe-api",
+                "checkedAt": "2026-10-29T21:34:43.9994919+05:30",
+                "cached": false,
+                "durationMs": 0
+              }
+            ]
+          },
+          "effectiveReadiness": "ready",
+          "usageCount": 0
+        },
+        {
+          "id": "codex",
+          "label": "Codex",
+          "installation": {
+            "state": "installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6933484Z",
+            "attemptedAt": "2026-10-29T16:04:30.6933484Z",
+            "reasonCode": "installed",
+            "reason": "Codex is installed."
+          },
+          "authentication": {
+            "state": "unauthorized",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:33.9539652Z",
+            "attemptedAt": "2026-10-29T16:04:33.9539652Z",
+            "reasonCode": "unauthorized",
+            "reason": "Codex needs authentication.",
+            "diagnostics": [
+              {
+                "method": "codex_account",
+                "code": "account_store_unavailable",
+                "reason": "AO's Codex account store could not answer; AO is falling back to the native authentication check.",
+                "nextStep": "Review the native check below and refresh Codex accounts in Settings.",
+                "checkedAt": "2026-10-29T21:34:33.9544831+05:30",
+                "cached": false,
+                "durationMs": 0
+              },
+              {
+                "method": "codex.exe login status",
+                "code": "cli_signed_out",
+                "reason": "The CLI explicitly reported that it is signed out.",
+                "nextStep": "Run the same executable and status command on the selected host. If it reports a login in your terminal, compare the user, config directory and environment seen by AO before signing in again.",
+                "source": "~\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+                "checkedAt": "2026-10-29T21:34:34.1673055+05:30",
+                "cached": false,
+                "durationMs": 212,
+                "exitCode": 1
+              }
+            ]
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "command-code",
+          "label": "Command Code",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6317467Z",
+            "attemptedAt": "2026-10-29T16:04:30.6317467Z",
+            "reasonCode": "not_installed",
+            "reason": "Command Code is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.0098904Z",
+            "attemptedAt": "2026-10-29T16:04:32.0098904Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "continue",
+          "label": "Continue",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.4341827Z",
+            "attemptedAt": "2026-10-29T16:04:31.4341827Z",
+            "reasonCode": "not_installed",
+            "reason": "Continue is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.0769084Z",
+            "attemptedAt": "2026-10-29T16:04:32.0769084Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "copilot",
+          "label": "GitHub Copilot",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.4353976Z",
+            "attemptedAt": "2026-10-29T16:04:31.4353976Z",
+            "reasonCode": "not_installed",
+            "reason": "GitHub Copilot is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.7469948Z",
+            "attemptedAt": "2026-10-29T16:04:31.7469948Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "crush",
+          "label": "Crush",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.879633Z",
+            "attemptedAt": "2026-10-29T16:04:30.879633Z",
+            "reasonCode": "not_installed",
+            "reason": "Crush is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.5662692Z",
+            "attemptedAt": "2026-10-29T16:04:31.5662692Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "cursor",
+          "label": "Cursor",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.5434328Z",
+            "attemptedAt": "2026-10-29T16:04:31.5434328Z",
+            "reasonCode": "not_installed",
+            "reason": "Cursor is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.8234137Z",
+            "attemptedAt": "2026-10-29T16:04:31.8234137Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "deepseek-harness",
+          "label": "DeepSeek",
+          "installation": {
+            "state": "installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.3831445Z",
+            "attemptedAt": "2026-10-29T16:04:31.3831445Z",
+            "reasonCode": "installed",
+            "reason": "DeepSeek is installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "stale",
+            "checkedAt": null,
+            "attemptedAt": "2026-10-29T16:04:48.9748926Z",
+            "reasonCode": "auth_check_inconclusive",
+            "reason": "Authentication check was inconclusive.",
+            "diagnostics": [
+              {
+                "method": "environment",
+                "code": "credential_environment_missing",
+                "reason": "None of the credential variables checked here is set in AO's process.",
+                "nextStep": "Compare these variable names with the working terminal. If you change AO's environment, restart AO and check again; do not copy key values into a report.",
+                "source": "DEEPSEEK_API_KEY",
+                "checkedAt": "2026-10-29T21:34:48.9934455+05:30",
+                "cached": false,
+                "durationMs": 0
+              }
+            ]
+          },
+          "effectiveReadiness": "unknown",
+          "usageCount": 0
+        },
+        {
+          "id": "devin",
+          "label": "Devin",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.5662692Z",
+            "attemptedAt": "2026-10-29T16:04:31.5662692Z",
+            "reasonCode": "not_installed",
+            "reason": "Devin is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.1391736Z",
+            "attemptedAt": "2026-10-29T16:04:32.1391736Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "droid",
+          "label": "Droid",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.8234137Z",
+            "attemptedAt": "2026-10-29T16:04:31.8234137Z",
+            "reasonCode": "not_installed",
+            "reason": "Droid is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.2930164Z",
+            "attemptedAt": "2026-10-29T16:04:32.2930164Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "fx",
+          "label": "fx",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6928317Z",
+            "attemptedAt": "2026-10-29T16:04:30.6928317Z",
+            "reasonCode": "not_installed",
+            "reason": "fx is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6928317Z",
+            "attemptedAt": "2026-10-29T16:04:30.6928317Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "gemini",
+          "label": "Gemini CLI",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.8172125Z",
+            "attemptedAt": "2026-10-29T16:04:31.8172125Z",
+            "reasonCode": "not_installed",
+            "reason": "Gemini CLI is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.2930164Z",
+            "attemptedAt": "2026-10-29T16:04:32.2930164Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "goose",
+          "label": "Goose",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.8234137Z",
+            "attemptedAt": "2026-10-29T16:04:31.8234137Z",
+            "reasonCode": "not_installed",
+            "reason": "Goose is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.0769084Z",
+            "attemptedAt": "2026-10-29T16:04:32.0769084Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "grok",
+          "label": "Grok Build",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.0774658Z",
+            "attemptedAt": "2026-10-29T16:04:32.0774658Z",
+            "reasonCode": "not_installed",
+            "reason": "Grok Build is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.3987107Z",
+            "attemptedAt": "2026-10-29T16:04:32.3987107Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "hermes",
+          "label": "Hermes Agent",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.0842207Z",
+            "attemptedAt": "2026-10-29T16:04:32.0842207Z",
+            "reasonCode": "not_installed",
+            "reason": "Hermes Agent is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.0842207Z",
+            "attemptedAt": "2026-10-29T16:04:32.0842207Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "kilocode",
+          "label": "Kilo Code",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.0849243Z",
+            "attemptedAt": "2026-10-29T16:04:32.0849243Z",
+            "reasonCode": "not_installed",
+            "reason": "Kilo Code is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.696563Z",
+            "attemptedAt": "2026-10-29T16:04:32.696563Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "kimchi",
+          "label": "Kimchi",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.139823Z",
+            "attemptedAt": "2026-10-29T16:04:32.139823Z",
+            "reasonCode": "not_installed",
+            "reason": "Kimchi is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.4740164Z",
+            "attemptedAt": "2026-10-29T16:04:32.4740164Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "kimi",
+          "label": "Kimi",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.2930164Z",
+            "attemptedAt": "2026-10-29T16:04:32.2930164Z",
+            "reasonCode": "not_installed",
+            "reason": "Kimi is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.6298726Z",
+            "attemptedAt": "2026-10-29T16:04:32.6298726Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "kiro",
+          "label": "Kiro",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.2930164Z",
+            "attemptedAt": "2026-10-29T16:04:32.2930164Z",
+            "reasonCode": "not_installed",
+            "reason": "Kiro is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.6287608Z",
+            "attemptedAt": "2026-10-29T16:04:32.6287608Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "memcode",
+          "label": "memcode",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.3987107Z",
+            "attemptedAt": "2026-10-29T16:04:32.3987107Z",
+            "reasonCode": "not_installed",
+            "reason": "memcode is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.5154257Z",
+            "attemptedAt": "2026-10-29T16:04:32.5154257Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "mimo-code",
+          "label": "MiMo Code",
+          "installation": {
+            "state": "installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.7469948Z",
+            "attemptedAt": "2026-10-29T16:04:31.7469948Z",
+            "reasonCode": "installed",
+            "reason": "MiMo Code is installed."
+          },
+          "authentication": {
+            "state": "configured",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:33.9536192Z",
+            "attemptedAt": "2026-10-29T16:04:33.9536192Z",
+            "reasonCode": "auth_configured_unverified",
+            "reason": "MiMo Code has credentials configured, but AO could not verify them.",
+            "account": {
+              "sourceKind": "command",
+              "source": "mimo.cmd auth list"
+            },
+            "diagnostics": [
+              {
+                "method": "provider_validation",
+                "code": "provider_unsupported",
+                "reason": "AO cannot directly verify the selected provider configuration.",
+                "nextStep": "Verify access using the harness on the selected host.",
+                "checkedAt": "2026-10-29T21:35:03.9819311+05:30",
+                "cached": false,
+                "durationMs": 0
+              },
+              {
+                "method": "selected_credential",
+                "code": "credential_present",
+                "reason": "A local credential is configured; its presence alone does not prove provider access.",
+                "source": "mimo.cmd auth list",
+                "checkedAt": "2026-10-29T21:35:03.9819311+05:30",
+                "cached": false,
+                "durationMs": 0
+              }
+            ]
+          },
+          "effectiveReadiness": "unknown",
+          "usageCount": 0
+        },
+        {
+          "id": "muse",
+          "label": "Muse Code",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.5154257Z",
+            "attemptedAt": "2026-10-29T16:04:32.5154257Z",
+            "reasonCode": "not_installed",
+            "reason": "Muse Code is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.7334091Z",
+            "attemptedAt": "2026-10-29T16:04:32.7334091Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "omp",
+          "label": "OMP",
+          "installation": {
+            "state": "installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.5985516Z",
+            "attemptedAt": "2026-10-29T16:04:32.5985516Z",
+            "reasonCode": "installed",
+            "reason": "OMP is installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "stale",
+            "checkedAt": null,
+            "attemptedAt": "2026-10-29T16:04:48.9763665Z",
+            "reasonCode": "auth_check_inconclusive",
+            "reason": "Authentication check was inconclusive.",
+            "diagnostics": [
+              {
+                "method": "credential_store",
+                "code": "credential_file_missing",
+                "reason": "AO did not find the credential file at the location this harness checks.",
+                "nextStep": "Compare the selected host, user and harness config directory with the terminal where login works. A terminal-only config override may not be present in AO.",
+                "source": "~\\.omp\\agent\\agent.db",
+                "checkedAt": "2026-10-29T21:34:48.9945628+05:30",
+                "cached": false,
+                "durationMs": 0
+              },
+              {
+                "method": "credential_store",
+                "code": "credential_file_missing",
+                "reason": "AO did not find the credential file at the location this harness checks.",
+                "nextStep": "Compare the selected host, user and harness config directory with the terminal where login works. A terminal-only config override may not be present in AO.",
+                "source": "~\\.omp\\agent\\auth.json",
+                "checkedAt": "2026-10-29T21:34:48.9945628+05:30",
+                "cached": false,
+                "durationMs": 0
+              }
+            ]
+          },
+          "effectiveReadiness": "unknown",
+          "usageCount": 0
+        },
+        {
+          "id": "opencode",
+          "label": "opencode",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.6298726Z",
+            "attemptedAt": "2026-10-29T16:04:32.6298726Z",
+            "reasonCode": "not_installed",
+            "reason": "opencode is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:33.9531038Z",
+            "attemptedAt": "2026-10-29T16:04:33.9531038Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "opencode-v2",
+          "label": "OpenCode 2",
+          "installation": {
+            "state": "installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.6327465Z",
+            "attemptedAt": "2026-10-29T16:04:32.6327465Z",
+            "reasonCode": "installed",
+            "reason": "OpenCode 2 is installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "stale",
+            "checkedAt": null,
+            "attemptedAt": "2026-10-29T16:04:52.5037109Z",
+            "reasonCode": "auth_check_inconclusive",
+            "reason": "Authentication check was inconclusive.",
+            "diagnostics": [
+              {
+                "method": "authentication",
+                "code": "check_inconclusive",
+                "reason": "AO could not determine authentication from the available evidence. This is not proof that the harness is signed out.",
+                "nextStep": "Compare the executable and credential sources below with the working terminal, then re-check. If they match, report the harness version and these diagnostics.",
+                "checkedAt": "2026-10-29T21:34:56.5011191+05:30",
+                "cached": false,
+                "durationMs": 0
+              }
+            ]
+          },
+          "effectiveReadiness": "unknown",
+          "usageCount": 0
+        },
+        {
+          "id": "openhands",
+          "label": "OpenHands",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.4740164Z",
+            "attemptedAt": "2026-10-29T16:04:32.4740164Z",
+            "reasonCode": "not_installed",
+            "reason": "OpenHands is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.5985516Z",
+            "attemptedAt": "2026-10-29T16:04:32.5985516Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "pi",
+          "label": "Pi",
+          "installation": {
+            "state": "installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.6971932Z",
+            "attemptedAt": "2026-10-29T16:04:32.6971932Z",
+            "reasonCode": "installed",
+            "reason": "Pi is installed."
+          },
+          "authentication": {
+            "state": "authorized",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:33.9922443Z",
+            "attemptedAt": "2026-10-29T16:04:33.9922443Z",
+            "reasonCode": "authorized",
+            "reason": "Pi appears signed in.",
+            "account": {
+              "method": "api_key",
+              "sourceKind": "environment",
+              "source": "GOOGLE_API_KEY"
+            },
+            "diagnostics": [
+              {
+                "method": "credential_store",
+                "code": "credential_file_read",
+                "reason": "AO could read this credential file; this alone does not establish a usable login.",
+                "source": "~\\.pi\\agent\\auth.json",
+                "checkedAt": "2026-10-29T21:34:33.9933818+05:30",
+                "cached": false,
+                "durationMs": 0
+              },
+              {
+                "method": "selected_credential",
+                "code": "credential_present",
+                "reason": "A local credential is configured; its presence alone does not prove provider access.",
+                "source": "GOOGLE_API_KEY",
+                "checkedAt": "2026-10-29T21:34:33.9933818+05:30",
+                "cached": false,
+                "durationMs": 0
+              }
+            ]
+          },
+          "effectiveReadiness": "ready",
+          "usageCount": 0
+        },
+        {
+          "id": "prime-agent",
+          "label": "Prime Agent",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.6971932Z",
+            "attemptedAt": "2026-10-29T16:04:32.6971932Z",
+            "reasonCode": "not_installed",
+            "reason": "Prime Agent is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.8605781Z",
+            "attemptedAt": "2026-10-29T16:04:32.8605781Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "qwen",
+          "label": "Qwen Code",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.7334091Z",
+            "attemptedAt": "2026-10-29T16:04:32.7334091Z",
+            "reasonCode": "not_installed",
+            "reason": "Qwen Code is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.8980549Z",
+            "attemptedAt": "2026-10-29T16:04:32.8980549Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "unreal-agent",
+          "label": "Unreal Agent",
+          "installation": {
+            "state": "installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:32.8605781Z",
+            "attemptedAt": "2026-10-29T16:04:32.8605781Z",
+            "reasonCode": "installed",
+            "reason": "Unreal Agent is installed."
+          },
+          "authentication": {
+            "state": "unauthorized",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:33.9939624Z",
+            "attemptedAt": "2026-10-29T16:04:33.9939624Z",
+            "reasonCode": "unauthorized",
+            "reason": "Unreal Agent needs authentication."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        },
+        {
+          "id": "vibe",
+          "label": "Mistral Vibe",
+          "installation": {
+            "state": "not_installed",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:30.6899925Z",
+            "attemptedAt": "2026-10-29T16:04:30.6899925Z",
+            "reasonCode": "not_installed",
+            "reason": "Mistral Vibe is not installed."
+          },
+          "authentication": {
+            "state": "unknown",
+            "freshness": "fresh",
+            "checkedAt": "2026-10-29T16:04:31.4353976Z",
+            "attemptedAt": "2026-10-29T16:04:31.4353976Z",
+            "reasonCode": "auth_skipped_not_installed",
+            "reason": "Authentication was skipped because the harness is not installed."
+          },
+          "effectiveReadiness": "not_ready",
+          "usageCount": 0
+        }
+      ]
+    }
+  },
+  "installers": {
+    "status": 200,
+    "ms": 3186,
+    "data": {
+      "agents": [
+        {
+          "agentId": "claude-code",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://claude.ai/install.ps1>",
+          "documentationUrl": "https://code.claude.com/docs/en/installation",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": false,
+              "command": "npm install -g @anthropic-ai/claude-code",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @anthropic-ai/claude-code --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\claude-code\\versions\\<next> --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest"
+            },
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://claude.ai/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "claude update"
+            }
+          ]
+        },
+        {
+          "agentId": "codex",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://chatgpt.com/codex/install.ps1>",
+          "documentationUrl": "https://github.com/openai/codex",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": false,
+              "command": "npm install -g @openai/codex",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @openai/codex --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\codex\\versions\\<next> --allow-scripts=@openai/codex @openai/codex@latest"
+            },
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://chatgpt.com/codex/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "codex update"
+            }
+          ]
+        },
+        {
+          "agentId": "cursor",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://cursor.com/install?win32=true>",
+          "documentationUrl": "https://docs.cursor.com/en/cli/installation",
+          "methods": [
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://cursor.com/install?win32=true>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "cursor-agent update"
+            }
+          ]
+        },
+        {
+          "agentId": "opencode",
+          "available": true,
+          "automatic": true,
+          "method": "winget",
+          "command": "winget install -e --id SST.opencode --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
+          "documentationUrl": "https://github.com/anomalyco/opencode",
+          "methods": [
+            {
+              "id": "winget",
+              "label": "winget",
+              "available": true,
+              "recommended": true,
+              "command": "winget install -e --id SST.opencode --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
+              "reinstallAvailable": true,
+              "reinstallCommand": "winget install -e --id SST.opencode --silent --accept-package-agreements --accept-source-agreements --disable-interactivity --force",
+              "updateAvailable": true,
+              "updateCommand": "winget upgrade -e --id SST.opencode --silent --accept-package-agreements --accept-source-agreements --disable-interactivity"
+            }
+          ]
+        },
+        {
+          "agentId": "opencode-v2",
+          "available": true,
+          "automatic": true,
+          "method": "npm",
+          "command": "npm install -g --prefix C:\\Users\\ACER\\.local\\share\\opencode-v2-home\\npm @opencode/cli",
+          "documentationUrl": "https://opencode.ai/v2/docs",
+          "expectedDestination": "C:\\Users\\ACER\\.local\\share\\opencode-v2-home\\npm",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": true,
+              "command": "npm install -g --prefix C:\\Users\\ACER\\.local\\share\\opencode-v2-home\\npm @opencode/cli",
+              "expectedDestination": "C:\\Users\\ACER\\.local\\share\\opencode-v2-home\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g --prefix C:\\Users\\ACER\\.local\\share\\opencode-v2-home\\npm @opencode/cli --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\opencode-v2\\versions\\<next> --allow-scripts=@opencode/cli @opencode/cli@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "aider",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://aider.chat/install.ps1>",
+          "documentationUrl": "https://aider.chat/docs/install.html",
+          "methods": [
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://aider.chat/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": false,
+              "updateReason": "This vendor installer does not expose a supported update command."
+            },
+            {
+              "id": "uv",
+              "label": "uv tool",
+              "available": true,
+              "recommended": false,
+              "command": "uv tool install aider-chat",
+              "reinstallAvailable": true,
+              "reinstallCommand": "uv tool install aider-chat --force --reinstall",
+              "updateAvailable": true,
+              "updateCommand": "uv tool install --force aider-chat"
+            }
+          ]
+        },
+        {
+          "agentId": "copilot",
+          "available": true,
+          "automatic": true,
+          "method": "winget",
+          "command": "winget install -e --id GitHub.Copilot --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
+          "documentationUrl": "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
+          "methods": [
+            {
+              "id": "winget",
+              "label": "winget",
+              "available": true,
+              "recommended": true,
+              "command": "winget install -e --id GitHub.Copilot --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
+              "reinstallAvailable": true,
+              "reinstallCommand": "winget install -e --id GitHub.Copilot --silent --accept-package-agreements --accept-source-agreements --disable-interactivity --force",
+              "updateAvailable": true,
+              "updateCommand": "winget upgrade -e --id GitHub.Copilot --silent --accept-package-agreements --accept-source-agreements --disable-interactivity"
+            },
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": false,
+              "command": "npm install -g @github/copilot",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @github/copilot --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\copilot\\versions\\<next> --allow-scripts=@github/copilot @github/copilot@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "grok",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://x.ai/cli/install.ps1>",
+          "documentationUrl": "https://docs.x.ai/build/overview",
+          "methods": [
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://x.ai/cli/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://x.ai/cli/install.ps1>"
+            }
+          ]
+        },
+        {
+          "agentId": "kimi",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://code.kimi.com/kimi-code/install.ps1>",
+          "documentationUrl": "https://moonshotai.github.io/kimi-code/en/",
+          "methods": [
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://code.kimi.com/kimi-code/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://code.kimi.com/kimi-code/install.ps1>"
+            }
+          ]
+        },
+        {
+          "agentId": "pi",
+          "available": false,
+          "automatic": false,
+          "method": "npm",
+          "command": "npm install -g @earendil-works/pi-coding-agent",
+          "reason": "Node.js 22.19+ is required for pi's npm recipe; found v22.14.0.",
+          "documentationUrl": "https://github.com/earendil-works/pi",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": false,
+              "recommended": true,
+              "command": "npm install -g @earendil-works/pi-coding-agent",
+              "reason": "Node.js 22.19+ is required for pi's npm recipe; found v22.14.0.",
+              "reinstallAvailable": false,
+              "reinstallCommand": "npm install -g @earendil-works/pi-coding-agent",
+              "reinstallReason": "Node.js 22.19+ is required for pi's npm recipe; found v22.14.0.",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Roaming\\npm @earendil-works/pi-coding-agent@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "amp",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://ampcode.com/install.ps1>",
+          "documentationUrl": "https://ampcode.com/manual",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": false,
+              "command": "npm install -g @ampcode/cli",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @ampcode/cli --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\amp\\versions\\<next> --allow-scripts=@ampcode/cli @ampcode/cli@latest"
+            },
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://ampcode.com/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "amp update --porcelain"
+            }
+          ]
+        },
+        {
+          "agentId": "auggie",
+          "available": true,
+          "automatic": true,
+          "method": "npm",
+          "command": "npm install -g @augmentcode/auggie",
+          "documentationUrl": "https://docs.augmentcode.com/cli/overview",
+          "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": true,
+              "command": "npm install -g @augmentcode/auggie",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @augmentcode/auggie --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\auggie\\versions\\<next> --allow-scripts=@augmentcode/auggie @augmentcode/auggie@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "droid",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://app.factory.ai/cli/windows>",
+          "documentationUrl": "https://docs.factory.ai/droid-cli/cli-reference",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": false,
+              "command": "npm install -g droid",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g droid --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\droid\\versions\\<next> --allow-scripts=droid droid@latest"
+            },
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://app.factory.ai/cli/windows>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "droid update"
+            }
+          ]
+        },
+        {
+          "agentId": "crush",
+          "available": true,
+          "automatic": true,
+          "method": "npm",
+          "command": "npm install -g @charmland/crush",
+          "documentationUrl": "https://github.com/charmbracelet/crush",
+          "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": true,
+              "command": "npm install -g @charmland/crush",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @charmland/crush --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\crush\\versions\\<next> --allow-scripts=@charmland/crush @charmland/crush@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "cline",
+          "available": true,
+          "automatic": true,
+          "method": "npm",
+          "command": "npm install -g cline@latest",
+          "documentationUrl": "https://github.com/cline/cline",
+          "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": true,
+              "command": "npm install -g cline@latest",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g cline@latest --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\cline\\versions\\<next> --allow-scripts=cline cline@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "goose",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1>",
+          "documentationUrl": "https://goose-docs.ai/docs/getting-started/installation/",
+          "methods": [
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "goose update"
+            }
+          ]
+        },
+        {
+          "agentId": "qwen",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1>",
+          "documentationUrl": "https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": false,
+              "command": "npm install -g @qwen-code/qwen-code@latest",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @qwen-code/qwen-code@latest --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\qwen\\versions\\<next> --allow-scripts=@qwen-code/qwen-code @qwen-code/qwen-code@latest"
+            },
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "qwen update"
+            }
+          ]
+        },
+        {
+          "agentId": "gemini",
+          "available": true,
+          "automatic": true,
+          "method": "npm",
+          "command": "npm install -g @google/gemini-cli@latest",
+          "documentationUrl": "https://geminicli.com/docs/get-started/installation/",
+          "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": true,
+              "command": "npm install -g @google/gemini-cli@latest",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @google/gemini-cli@latest --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\gemini\\versions\\<next> --allow-scripts=@google/gemini-cli @google/gemini-cli@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "continue",
+          "available": true,
+          "automatic": true,
+          "method": "npm",
+          "command": "npm install -g @continuedev/cli",
+          "documentationUrl": "https://docs.continue.dev/cli/quickstart",
+          "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": true,
+              "command": "npm install -g @continuedev/cli",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @continuedev/cli --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\continue\\versions\\<next> --allow-scripts=@continuedev/cli @continuedev/cli@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "devin",
+          "available": false,
+          "automatic": false,
+          "method": "manual",
+          "reason": "Devin for Terminal documents installation through WSL on Windows.",
+          "documentationUrl": "https://docs.devin.ai/get-started/devin-intro",
+          "methods": [
+            {
+              "id": "manual",
+              "label": "Manual installation",
+              "available": false,
+              "recommended": true,
+              "reason": "Devin for Terminal documents installation through WSL on Windows.",
+              "reinstallAvailable": false,
+              "reinstallReason": "Devin for Terminal documents installation through WSL on Windows.",
+              "updateAvailable": false,
+              "updateReason": "Devin for Terminal documents installation through WSL on Windows."
+            }
+          ]
+        },
+        {
+          "agentId": "kiro",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://cli.kiro.dev/install.ps1>",
+          "documentationUrl": "https://kiro.dev/docs/getting-started/installation/",
+          "methods": [
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://cli.kiro.dev/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": false,
+              "updateReason": "This vendor installer does not expose a supported update command."
+            }
+          ]
+        },
+        {
+          "agentId": "kilocode",
+          "available": true,
+          "automatic": true,
+          "method": "npm",
+          "command": "npm install -g @kilocode/cli",
+          "documentationUrl": "https://kilo.ai/docs/code-with-ai/platforms/cli",
+          "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": true,
+              "command": "npm install -g @kilocode/cli",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @kilocode/cli --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\kilocode\\versions\\<next> --allow-scripts=@kilocode/cli @kilocode/cli@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "vibe",
+          "available": true,
+          "automatic": true,
+          "method": "uv",
+          "command": "uv tool install mistral-vibe",
+          "documentationUrl": "https://github.com/mistralai/mistral-vibe",
+          "methods": [
+            {
+              "id": "uv",
+              "label": "uv tool",
+              "available": true,
+              "recommended": true,
+              "command": "uv tool install mistral-vibe",
+              "reinstallAvailable": true,
+              "reinstallCommand": "uv tool install mistral-vibe --force --reinstall",
+              "updateAvailable": true,
+              "updateCommand": "uv tool install --force mistral-vibe"
+            },
+            {
+              "id": "pipx",
+              "label": "pipx",
+              "available": false,
+              "recommended": false,
+              "reason": "pipx was not found on PATH. Install pipx, then retry.",
+              "reinstallAvailable": false,
+              "reinstallReason": "pipx was not found on PATH. Install pipx, then retry.",
+              "updateAvailable": false,
+              "updateReason": "pipx was not found on PATH. Install pipx, then retry."
+            }
+          ]
+        },
+        {
+          "agentId": "muse",
+          "available": false,
+          "automatic": false,
+          "method": "manual",
+          "reason": "Muse Code does not currently publish a native Windows installer.",
+          "documentationUrl": "https://ai.meta.com/llama/",
+          "methods": [
+            {
+              "id": "manual",
+              "label": "Manual installation",
+              "available": false,
+              "recommended": true,
+              "reason": "Muse Code does not currently publish a native Windows installer.",
+              "reinstallAvailable": false,
+              "reinstallReason": "Muse Code does not currently publish a native Windows installer.",
+              "updateAvailable": false,
+              "updateReason": "Muse Code does not currently publish a native Windows installer."
+            }
+          ]
+        },
+        {
+          "agentId": "agy",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://antigravity.google/cli/install.ps1>",
+          "documentationUrl": "https://github.com/google-antigravity/antigravity-cli",
+          "methods": [
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://antigravity.google/cli/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": false,
+              "updateReason": "This vendor installer does not expose a supported update command."
+            }
+          ]
+        },
+        {
+          "agentId": "autohand",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://autohand.ai/install.ps1>",
+          "documentationUrl": "https://docs.autohand.ai/working-with-autohand-code/cli",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": false,
+              "command": "npm install -g autohand-cli",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g autohand-cli --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\autohand\\versions\\<next> --allow-scripts=autohand-cli autohand-cli@latest"
+            },
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://autohand.ai/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://autohand.ai/install.ps1>"
+            }
+          ]
+        },
+        {
+          "agentId": "kimchi",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1>",
+          "documentationUrl": "https://docs.kimchi.dev/docs/coding-getting-started",
+          "methods": [
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "kimchi update self --force"
+            }
+          ]
+        },
+        {
+          "agentId": "prime-agent",
+          "available": false,
+          "automatic": false,
+          "method": "manual",
+          "reason": "Prime Agent currently documents macOS and Linux; use WSL on Windows.",
+          "documentationUrl": "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md",
+          "methods": [
+            {
+              "id": "manual",
+              "label": "Manual installation",
+              "available": false,
+              "recommended": true,
+              "reason": "Prime Agent currently documents macOS and Linux; use WSL on Windows.",
+              "reinstallAvailable": false,
+              "reinstallReason": "Prime Agent currently documents macOS and Linux; use WSL on Windows.",
+              "updateAvailable": false,
+              "updateReason": "Prime Agent currently documents macOS and Linux; use WSL on Windows."
+            }
+          ]
+        },
+        {
+          "agentId": "omp",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://omp.sh/install.ps1>",
+          "documentationUrl": "https://github.com/can1357/oh-my-pi",
+          "methods": [
+            {
+              "id": "bun",
+              "label": "Bun",
+              "available": true,
+              "recommended": false,
+              "command": "bun install -g @oh-my-pi/pi-coding-agent",
+              "reinstallAvailable": true,
+              "reinstallCommand": "bun install -g @oh-my-pi/pi-coding-agent --force",
+              "updateAvailable": true,
+              "updateCommand": "bun install -g @oh-my-pi/pi-coding-agent@latest"
+            },
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://omp.sh/install.ps1>",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "omp update"
+            }
+          ]
+        },
+        {
+          "agentId": "fx",
+          "available": false,
+          "automatic": false,
+          "method": "manual",
+          "reason": "fx publishes macOS and Linux installers; use WSL on Windows.",
+          "documentationUrl": "https://fx.sh/docs",
+          "methods": [
+            {
+              "id": "manual",
+              "label": "Manual installation",
+              "available": false,
+              "recommended": true,
+              "reason": "fx publishes macOS and Linux installers; use WSL on Windows.",
+              "reinstallAvailable": false,
+              "reinstallReason": "fx publishes macOS and Linux installers; use WSL on Windows.",
+              "updateAvailable": false,
+              "updateReason": "fx publishes macOS and Linux installers; use WSL on Windows."
+            }
+          ]
+        },
+        {
+          "agentId": "unreal-agent",
+          "available": false,
+          "automatic": false,
+          "method": "manual",
+          "reason": "Unreal Agent is built into AO; update AO to update the harness.",
+          "documentationUrl": "https://github.com/unreallabsai/unreal-agent",
+          "methods": [
+            {
+              "id": "manual",
+              "label": "Manual installation",
+              "available": false,
+              "recommended": true,
+              "reason": "Unreal Agent is built into AO; update AO to update the harness.",
+              "reinstallAvailable": false,
+              "reinstallReason": "Unreal Agent is built into AO; update AO to update the harness.",
+              "updateAvailable": false,
+              "updateReason": "Unreal Agent is built into AO; update AO to update the harness."
+            }
+          ]
+        },
+        {
+          "agentId": "codewhale",
+          "available": false,
+          "automatic": false,
+          "method": "manual",
+          "reason": "AO does not automatically install Codewhale. Follow the upstream installation instructions, then refresh harness status.",
+          "documentationUrl": "https://github.com/Hmbown/Codewhale",
+          "methods": [
+            {
+              "id": "manual",
+              "label": "Manual installation",
+              "available": false,
+              "recommended": true,
+              "reason": "AO does not automatically install Codewhale. Follow the upstream installation instructions, then refresh harness status.",
+              "reinstallAvailable": false,
+              "reinstallReason": "AO does not automatically install Codewhale. Follow the upstream installation instructions, then refresh harness status.",
+              "updateAvailable": false,
+              "updateReason": "AO does not automatically install Codewhale. Follow the upstream installation instructions, then refresh harness status."
+            }
+          ]
+        },
+        {
+          "agentId": "mimo-code",
+          "available": true,
+          "automatic": true,
+          "method": "npm",
+          "command": "npm install -g @mimo-ai/cli",
+          "documentationUrl": "https://github.com/XiaomiMiMo/MiMo-Code",
+          "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": true,
+              "command": "npm install -g @mimo-ai/cli",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @mimo-ai/cli --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\mimo-code\\versions\\<next> --allow-scripts=@mimo-ai/cli @mimo-ai/cli@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "deepseek-harness",
+          "available": true,
+          "automatic": true,
+          "method": "npm",
+          "command": "npm install -g @deepseek-ai/dsh",
+          "documentationUrl": "https://github.com/deepseek-ai/deepseek-harness",
+          "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": true,
+              "command": "npm install -g @deepseek-ai/dsh",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g @deepseek-ai/dsh --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\deepseek-harness\\versions\\<next> --allow-scripts=@deepseek-ai/dsh @deepseek-ai/dsh@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "openhands",
+          "available": true,
+          "automatic": true,
+          "method": "uv",
+          "command": "uv tool install openhands",
+          "documentationUrl": "https://docs.openhands.dev/openhands/usage/cli/installation",
+          "methods": [
+            {
+              "id": "uv",
+              "label": "uv tool",
+              "available": true,
+              "recommended": true,
+              "command": "uv tool install openhands",
+              "reinstallAvailable": true,
+              "reinstallCommand": "uv tool install openhands --force --reinstall",
+              "updateAvailable": true,
+              "updateCommand": "uv tool install --force openhands"
+            }
+          ]
+        },
+        {
+          "agentId": "command-code",
+          "available": true,
+          "automatic": true,
+          "method": "npm",
+          "command": "npm install -g command-code",
+          "documentationUrl": "https://commandcode.ai/docs/quickstart",
+          "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+          "methods": [
+            {
+              "id": "npm",
+              "label": "npm",
+              "available": true,
+              "recommended": true,
+              "command": "npm install -g command-code",
+              "expectedDestination": "C:\\Users\\ACER\\AppData\\Roaming\\npm",
+              "reinstallAvailable": true,
+              "reinstallCommand": "npm install -g command-code --force",
+              "updateAvailable": true,
+              "updateCommand": "npm install -g --prefix C:\\Users\\ACER\\AppData\\Local\\Temp\\opencode\\ao-zcode-r2-data\\harnesses\\command-code\\versions\\<next> --allow-scripts=command-code command-code@latest"
+            }
+          ]
+        },
+        {
+          "agentId": "memcode",
+          "available": false,
+          "automatic": false,
+          "method": "manual",
+          "reason": "Install the official native memcode release binary",
+          "documentationUrl": "https://github.com/memcode-ai/memcode/releases",
+          "methods": [
+            {
+              "id": "manual",
+              "label": "Manual installation",
+              "available": false,
+              "recommended": true,
+              "reason": "Install the official native memcode release binary",
+              "reinstallAvailable": false,
+              "reinstallReason": "Install the official native memcode release binary",
+              "updateAvailable": false,
+              "updateReason": "Install the official native memcode release binary"
+            }
+          ]
+        },
+        {
+          "agentId": "hermes",
+          "available": true,
+          "automatic": true,
+          "method": "official-installer",
+          "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://hermes-agent.nousresearch.com/install.ps1> -NonInteractive",
+          "documentationUrl": "https://github.com/NousResearch/hermes-agent",
+          "methods": [
+            {
+              "id": "official-installer",
+              "label": "Official installer",
+              "available": true,
+              "recommended": true,
+              "command": "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://hermes-agent.nousresearch.com/install.ps1> -NonInteractive",
+              "reinstallAvailable": false,
+              "reinstallReason": "This vendor installer does not provide a verified headless reinstall operation.",
+              "updateAvailable": true,
+              "updateCommand": "hermes update --yes"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "spawn_worker_zcode": {
+    "status": 400,
+    "ms": 17,
+    "data": {
+      "error": "bad_request",
+      "code": "UNKNOWN_AGENT_ID",
+      "message": "Unknown agent adapter: zcode",
+      "requestId": "YASH/x3PlFMr5Dq-000038",
+      "details": {
+        "agentId": "zcode"
+      }
+    }
+  },
+  "spawn_orchestrator_zcode": {
+    "status": 400,
+    "ms": 5,
+    "data": {
+      "error": "bad_request",
+      "code": "PROJECT_ID_REQUIRED",
+      "message": "projectId is required",
+      "requestId": "YASH/x3PlFMr5Dq-000039"
+    }
+  },
+  "sessions_after": {
+    "status": 200,
+    "ms": 4,
+    "data": {
+      "sessions": []
+    }
+  }
+}
