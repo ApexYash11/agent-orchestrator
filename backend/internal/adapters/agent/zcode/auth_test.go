@@ -15,10 +15,10 @@ const successfulAuthProbeOutput = `{"type":"turn.completed","sessionId":"sess_ab
 func TestAuthProbeRequiresSuccessfulProviderResult(t *testing.T) {
 	const success = successfulAuthProbeOutput
 	cases := []struct {
-		name string
+		name   string
 		output string
 		runErr error
-		want ports.AgentAuthStatus
+		want   ports.AgentAuthStatus
 	}{
 		{name: "completed summary", output: success, want: ports.AgentAuthStatusAuthorized},
 		{name: "summary without successful event", output: `{"type":"result","sessionId":"sess_abc","turnId":"turn_1","response":"ok","projection":{"status":"idle","turnCount":1}}`, want: ports.AgentAuthStatusUnknown},

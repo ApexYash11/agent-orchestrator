@@ -161,19 +161,19 @@ func classifyZCodeAuthProbe(output string, runErr error) (ports.AgentAuthStatus,
 	success := false
 	for {
 		var event struct {
-			Type string `json:"type"`
-			SessionID string `json:"sessionId"`
-			TurnID string `json:"turnId"`
-			Response string `json:"response"`
-			Error json.RawMessage `json:"error"`
-			Errors json.RawMessage `json:"errors"`
-			Payload struct {
-				ResultType string `json:"resultType"`
-				Error json.RawMessage `json:"error"`
+			Type      string          `json:"type"`
+			SessionID string          `json:"sessionId"`
+			TurnID    string          `json:"turnId"`
+			Response  string          `json:"response"`
+			Error     json.RawMessage `json:"error"`
+			Errors    json.RawMessage `json:"errors"`
+			Payload   struct {
+				ResultType string          `json:"resultType"`
+				Error      json.RawMessage `json:"error"`
 			} `json:"payload"`
 			Projection struct {
-				Status string `json:"status"`
-				TurnCount int `json:"turnCount"`
+				Status    string `json:"status"`
+				TurnCount int    `json:"turnCount"`
 			} `json:"projection"`
 		}
 		if err := decoder.Decode(&event); errors.Is(err, io.EOF) {

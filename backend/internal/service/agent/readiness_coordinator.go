@@ -26,11 +26,11 @@ const (
 	hermesInstallCheckTimeout = 60 * time.Second
 	// The Hermes auth check resolves the binary, then runs `hermes status`,
 	// which inspects every provider and takes several seconds even when warm.
-	hermesAuthCheckTimeout     = 45 * time.Second
+	hermesAuthCheckTimeout = 45 * time.Second
 	// The ZCode auth check is a real one-word plan-mode turn against the
 	// provider (there is no local auth-status subcommand), so it needs a
 	// turn-sized budget, not a file-read one.
-	zcodeAuthCheckTimeout = 90 * time.Second
+	zcodeAuthCheckTimeout      = 90 * time.Second
 	opencodeV2MigrationTimeout = 30 * time.Minute
 	defaultAuthCheckTimeout    = 10 * time.Second
 	defaultReadinessWorkers    = 4
