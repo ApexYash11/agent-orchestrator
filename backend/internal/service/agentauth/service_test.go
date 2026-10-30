@@ -143,6 +143,59 @@ func TestStartPiInjectsLoginAutomatically(t *testing.T) {
 	}
 }
 
+func TestStartGeminiInjectsAuthWhenEditorIsReady(t *testing.T) {
+	t.Parallel()
+
+	opener := &recordingTerminalOpener{}
+	svc := New(foundExecutable("gemini"), opener)
+
+	got, err := svc.Start(context.Background(), "gemini")
+	if err != nil {
+		t.Fatalf("Start(gemini): %v", err)
+	}
+	wantInput := shellterm.OpenCommandTerminalInput{
+		Argv:  []string{"/test/bin/gemini"},
+		Title: "Set up Gemini CLI",
+		InitialInputReadyStates: []shellterm.InitialInputReadyState{
+			{Text: "How would you like to authenticate for this project?", SkipInput: true},
+			{
+				Text:            "Type your message or @path/to/file",
+				RawPrefix:       "/auth",
+				SubmitReadyText: "Manage authentication",
+			},
+		},
+	}
+	if !reflect.DeepEqual(opener.input, wantInput) {
+		t.Fatalf("OpenCommandTerminal input = %#v, want %#v", opener.input, wantInput)
+	}
+	if got.TerminalInput != "" {
+		t.Fatalf("Start(gemini) terminal input = %q, want none so setup is not held behind a button", got.TerminalInput)
+	}
+}
+
+func TestGeminiReadyStateMatchesRenderedEditor(t *testing.T) {
+	t.Parallel()
+
+	readyStates := planByAgentID["gemini"].initialInputReadyStates
+	if got := shellterm.MatchInitialInputReadyState("Gemini CLI v0.63.0\nAuthenticated with gemini-api-key /auth", readyStates); got != nil {
+		t.Fatalf("startup banner matched before editor was ready: %#v", got)
+	}
+	if got := shellterm.MatchInitialInputReadyState("Type your message or @path/to/file", readyStates); got == nil || got.SkipInput {
+		t.Fatal("rendered Gemini editor did not match its ready state")
+	}
+}
+
+func TestGeminiReadyStateSkipsOpenAuthDialog(t *testing.T) {
+	t.Parallel()
+
+	// The picker wins even when scrollback still contains the editor marker.
+	output := "Type your message or @path/to/file\nGet started\nHow would you like to authenticate for this project?"
+	got := shellterm.MatchInitialInputReadyState(output, planByAgentID["gemini"].initialInputReadyStates)
+	if got == nil || !got.SkipInput {
+		t.Fatalf("open Gemini auth dialog = %#v, want skip input", got)
+	}
+}
+
 func TestStartOMPOpensNativeProviderSetupWithoutInjectingInput(t *testing.T) {
 	t.Parallel()
 
