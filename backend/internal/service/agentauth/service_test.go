@@ -142,6 +142,28 @@ func TestStartPiInjectsLoginAutomatically(t *testing.T) {
 	}
 }
 
+func TestStartOMPOpensNativeProviderSetupWithoutInjectingInput(t *testing.T) {
+	t.Parallel()
+
+	opener := &recordingTerminalOpener{}
+	svc := New(foundExecutable("omp"), opener)
+
+	got, err := svc.Start(context.Background(), "omp")
+	if err != nil {
+		t.Fatalf("Start(omp): %v", err)
+	}
+	wantInput := shellterm.OpenCommandTerminalInput{
+		Argv:  []string{"/test/bin/omp", "setup"},
+		Title: "Log in to OMP",
+	}
+	if !reflect.DeepEqual(opener.input, wantInput) {
+		t.Fatalf("OpenCommandTerminal input = %#v, want %#v", opener.input, wantInput)
+	}
+	if got.TerminalInput != "" {
+		t.Fatalf("Start(omp) terminal input = %q, want none because OMP owns provider sign-in", got.TerminalInput)
+	}
+}
+
 // Screens captured from Pi 0.85.1 in an AO auth terminal (120 columns), so the
 // reviewed markers are checked against what Pi actually renders.
 const (
