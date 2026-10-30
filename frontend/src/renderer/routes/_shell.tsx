@@ -1594,7 +1594,7 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 								// must stay opaque rather than reveal the darker native window.
 								"fixed top-0 left-0 z-chrome transition-[height] duration-200 ease-out motion-reduce:transition-none",
 								sidebarHasLayout ? "w-(--ao-sidebar-w,var(--size-sidebar-default))" : "w-titlebar-content-offset",
-								isFullScreen ? "pointer-events-none h-0" : "h-traffic-light-clearance",
+								isFullScreen ? "pointer-events-none h-0" : sidebarHasLayout ? "h-traffic-light-clearance" : "h-mac-panel-header-bottom",
 							)}
 							ref={sidebarDragStripRef}
 							style={{
@@ -1602,10 +1602,6 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 								...(trafficLightDragActive ? ({ WebkitAppRegion: "drag" } as CSSProperties) : null),
 							}}
 						>
-							{/* Closed-sidebar band: the page's topbar color behind the traffic
-							    lights and history arrows. Always present; the sidebar-colored
-							    layer slides over it. */}
-							<div className="pointer-events-none absolute inset-y-0 left-0 w-titlebar-content-offset bg-background" />
 							{/* Sidebar-colored top of the sidebar. Rides the sidebar's own spring,
 							    so the fake top and the real sidebar slide in and out together. */}
 							<motion.div
