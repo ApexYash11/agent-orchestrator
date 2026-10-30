@@ -202,7 +202,7 @@ func TestBuild_ZCodeInstallJobTarget(t *testing.T) {
 	}
 }
 
-func TestBuild_DeferredZCodeIsNotASelectableHarness(t *testing.T) {
+func TestBuild_ZCodeIsASelectableHarness(t *testing.T) {
 	got, err := specgen.Build()
 	if err != nil {
 		t.Fatal(err)
@@ -216,8 +216,8 @@ func TestBuild_DeferredZCodeIsNotASelectableHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 	for schema, field := range map[string]string{"SpawnSessionRequest": "harness", "DelegateTaskRequest": "agent"} {
-		if values := doc.Components.Schemas[schema].Properties[field].Enum; slices.Contains(values, "zcode") {
-			t.Errorf("%s.%s exposes deferred ZCode: %v", schema, field, values)
+		if values := doc.Components.Schemas[schema].Properties[field].Enum; !slices.Contains(values, "zcode") {
+			t.Errorf("%s.%s does not expose ZCode: %v", schema, field, values)
 		}
 	}
 }

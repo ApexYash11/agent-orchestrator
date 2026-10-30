@@ -102,36 +102,118 @@ func TestGetLaunchCommandDeliversNoPrompt(t *testing.T) {
 	}
 }
 
-func TestGetLaunchCommandRejectsStandingInstructions(t *testing.T) {
-	const privateInstructions = "PRIVATE AO worker role instructions"
-	for _, test := range []struct {
-		name     string
-		inline   string
-		file     string
-		withFile bool
-	}{
-		{name: "inline", inline: privateInstructions},
-		{name: "file only", file: privateInstructions, withFile: true},
-		{name: "blank inline with file", inline: " \n\t", file: privateInstructions, withFile: true},
-		{name: "inline with empty file", inline: privateInstructions, withFile: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := ports.LaunchConfig{SystemPrompt: test.inline}
-			if test.withFile {
-				cfg.SystemPromptFile = filepath.Join(t.TempDir(), "system.md")
-				if err := os.WriteFile(cfg.SystemPromptFile, []byte(test.file), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			// No binary cache: unsupported instructions must fail before resolution.
-			cmd, err := New().GetLaunchCommand(t.Context(), cfg)
-			if cmd != nil || err == nil || !strings.Contains(err.Error(), "AO standing instructions") || !strings.Contains(err.Error(), "choose another harness") {
-				t.Fatalf("launch = %v, %v; want no argv and an actionable instruction error", cmd, err)
-			}
-			if strings.Contains(err.Error(), privateInstructions) {
-				t.Fatal("launch error exposed private instructions")
-			}
-		})
+func TestGetLaunchCommandDeliversStandingInstructionsPrivately(t *testing.T) {
+	const inline = "PRIVATE AO worker role instructions"
+	dataDir := t.TempDir()
+	file := filepath.Join(t.TempDir(), "system.md")
+	if err := os.WriteFile(file, []byte("PRIVATE file role instructions"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := ports.LaunchConfig{
+		SystemPrompt:     inline,
+		SystemPromptFile: file,
+		DataDir:          dataDir,
+		SessionID:        "ses-delivery-1",
+		Prompt:           "user task",
+	}
+	cmd, err := (&Plugin{resolvedBinary: "zcode"}).GetLaunchCommand(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"zcode"}; !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("argv = %v, want %v", cmd, want)
+	}
+	for _, arg := range cmd {
+		if strings.Contains(arg, inline) || strings.Contains(arg, "user task") || strings.Contains(arg, "role instructions") {
+			t.Fatalf("argv %v exposed instructions or task", cmd)
+		}
+	}
+	delivered, err := os.ReadFile(filepath.Join(dataDir, "zcode", "instruction-homes", "ses-delivery-1", ".zcode", "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(delivered), inline) || !strings.Contains(string(delivered), "PRIVATE file role instructions") {
+		t.Fatalf("AGENTS.md = %q; want both the inline and the file instructions on the private channel", delivered)
+	}
+}
+
+func TestGetLaunchCommandRequiresSessionStorageToDeliverInstructions(t *testing.T) {
+	cmd, err := New().GetLaunchCommand(t.Context(), ports.LaunchConfig{
+		SystemPrompt: "AO instructions",
+		// No DataDir: the instructions home cannot be placed.
+	})
+	if cmd != nil || err == nil || !strings.Contains(err.Error(), "cannot deliver AO standing instructions") {
+		t.Fatalf("launch = %v, %v; want no argv and an actionable data-directory error", cmd, err)
+	}
+}
+
+func TestGetLaunchCommandLeavesBlankInstructionLaunchesNative(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := ports.LaunchConfig{DataDir: dataDir, SessionID: "ses-blank", Prompt: "user task"}
+	cmd, err := (&Plugin{resolvedBinary: "zcode"}).GetLaunchCommand(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"zcode"}; !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("argv = %v, want %v", cmd, want)
+	}
+	if entries, err := os.ReadDir(filepath.Join(dataDir, "zcode", "instruction-homes")); err == nil && len(entries) > 0 {
+		t.Fatalf("blank launch created instruction homes: %v", entries)
+	}
+}
+
+func TestAugmentRuntimeEnvRedirectsHomeAndPreservesStorage(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
+	dataDir := t.TempDir()
+
+	env := map[string]string{"AO_SESSION_ID": "ses-env-1", "PATH": "x"}
+	(&Plugin{}).AugmentRuntimeEnv(env, dataDir)
+	wantHome := filepath.Join(dataDir, "zcode", "instruction-homes", "ses-env-1")
+	if env["HOME"] != wantHome {
+		t.Fatalf("HOME = %q, want %q", env["HOME"], wantHome)
+	}
+	if want := filepath.Join(userHome, ".zcode"); env["ZCODE_STORAGE_DIR"] != want {
+		t.Fatalf("ZCODE_STORAGE_DIR = %q, want %q", env["ZCODE_STORAGE_DIR"], want)
+	}
+	if _, err := os.Stat(wantHome); err != nil {
+		t.Fatalf("instructions home not created: %v", err)
+	}
+
+	// An explicit storage override wins (the user pointed the CLI somewhere).
+	custom := map[string]string{"AO_SESSION_ID": "ses-env-2", "ZCODE_STORAGE_DIR": filepath.Join("custom", "storage")}
+	(&Plugin{}).AugmentRuntimeEnv(custom, dataDir)
+	if custom["ZCODE_STORAGE_DIR"] != filepath.Join("custom", "storage") {
+		t.Fatalf("ZCODE_STORAGE_DIR = %q; want the explicit value preserved", custom["ZCODE_STORAGE_DIR"])
+	}
+
+	// No session id: the environment stays native.
+	plain := map[string]string{"PATH": "x"}
+	(&Plugin{}).AugmentRuntimeEnv(plain, dataDir)
+	if _, ok := plain["HOME"]; ok {
+		t.Fatalf("HOME = %q; a launch without a session keeps its native environment", plain["HOME"])
+	}
+}
+
+func TestBuildAfterStartPromptTypesOnlyTheTask(t *testing.T) {
+	plugin := New()
+	composed, err := plugin.BuildAfterStartPrompt(t.Context(), ports.LaunchConfig{
+		SystemPrompt: "AO role instructions",
+		Prompt:       "add a health check",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if composed != "add a health check" {
+		t.Fatalf("composed = %q; the private channel carries instructions, the typed message carries only the task", composed)
+	}
+	blank, err := plugin.BuildAfterStartPrompt(t.Context(), ports.LaunchConfig{SystemPrompt: "AO role instructions"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blank != "" {
+		t.Fatalf("composed = %q, want empty for a promptless launch", blank)
 	}
 }
 

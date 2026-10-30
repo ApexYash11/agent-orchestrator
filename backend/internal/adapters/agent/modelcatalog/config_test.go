@@ -348,7 +348,7 @@ func TestZcodeDiscoveryReadsProviderRuntimeCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := discoverConfigCatalog("zcode", "", map[string]string{"ZCODE_DATA_BASE_DIR": filepath.Join(home, ".zcode")})
+	got, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "zcode"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,12 +373,5 @@ func TestZcodeDiscoveryWithoutRuntimeFilesStaysEmpty(t *testing.T) {
 	_, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "zcode"})
 	if err == nil {
 		t.Fatal("discovery succeeded without any zcode files; want the manual fallback path")
-	}
-}
-
-func TestDeferredZCodeDiscoveryDoesNotPublishSelectableModels(t *testing.T) {
-	catalog, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "zcode"})
-	if err == nil || len(catalog.Models) != 0 || catalog.AllowCustom {
-		t.Fatalf("deferred catalog = %#v, %v; want no selectable models", catalog, err)
 	}
 }

@@ -141,7 +141,7 @@ func TestLiveClaimKeepsTheOldReleaseThroughAPrune(t *testing.T) {
 func TestFailedTerminalRefreshRetainsRelease(t *testing.T) {
 	for _, harness := range domain.AllHarnesses {
 		switch harness {
-		case domain.HarnessAider, domain.HarnessContinue, domain.HarnessDeepSeek, domain.HarnessUnreal:
+		case domain.HarnessAider, domain.HarnessContinue, domain.HarnessDeepSeek, domain.HarnessUnreal, domain.HarnessZCode:
 			continue
 		}
 

@@ -1,5 +1,11 @@
-// Package zcode retains the deferred Z.ai ZCode CLI adapter. It is not shipped
-// in the production registry until private AO instruction delivery is supported.
+// Package zcode implements the Z.ai ZCode CLI agent adapter: launching the
+// interactive ZCode terminal session AO supervises.
+//
+// ZCode resolves its instructions file from the process HOME: it reads
+// `<HOME>/.zcode/AGENTS.md`. AO redirects HOME to a session-scoped directory
+// (see AugmentRuntimeEnv) and writes its standing instructions there — a
+// private, per-session instruction channel the user's own files never see.
+// Nothing is dropped and nothing is rejected.
 //
 // ZCode (binary "zcode", https://github.com/zai-org/ZCode) is Z.ai's Apache-2.0
 // coding harness, tuned for GLM models. Its CLI distribution installs a single
@@ -10,8 +16,8 @@
 // `--prompt` is deliberately not used: ZCode's headless prompt mode exits once
 // the turn is printed, which would make a supervised worker disappear mid-task.
 // Consequently this adapter also has no in-command prompt delivery strategy.
-// Instruction-bearing AO launches are unsupported until a private instruction
-// channel is available; they fail instead of silently losing the AO role.
+// AO standing instructions use the private HOME-scoped channel (see
+// AugmentRuntimeEnv); BuildAfterStartPrompt types only the task itself.
 //
 // ZCode exposes a hook surface (SessionStart, UserPromptSubmit, PreToolUse,
 // PermissionRequest, PostToolUse, PostToolUseFailure, Stop), but project-level
@@ -19,8 +25,7 @@
 // reviewed digest. User-level hooks exist but have no session-specific AO
 // integration here. This adapter therefore installs no hooks, reports no native
 // session id, and cannot restore a previous conversation; a session relaunches
-// fresh in its worktree, subject to the instruction guard. Chat mode is likewise
-// not registered.
+// fresh in its worktree. Chat mode is likewise not registered.
 package zcode
 
 import (
@@ -28,8 +33,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
@@ -39,7 +46,10 @@ import (
 
 const adapterID = "zcode"
 
-var errUnsupportedInstructions = errors.New("zcode: AO standing instructions cannot be delivered by this integration; choose another harness until private instruction delivery is supported (see docs/harnesses/zcode.md)")
+// envSessionID is the session AO stamps on every launch environment (the
+// manager's EnvSessionID). The adapter cannot import the manager package, so
+// the key is mirrored here like other adapters do.
+const envSessionID = "AO_SESSION_ID"
 
 // Plugin is the ZCode agent adapter. It is safe for concurrent use; the binary
 // path is resolved once and cached under binaryMu.
@@ -49,7 +59,7 @@ type Plugin struct {
 	resolvedBinary string
 }
 
-// New returns a ZCode adapter for development; production registration is deferred.
+// New returns a ready-to-register ZCode adapter.
 func New() *Plugin {
 	return &Plugin{}
 }
@@ -59,6 +69,9 @@ var _ ports.Agent = (*Plugin)(nil)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentBinaryResolver = (*Plugin)(nil)
 var _ ports.AgentBinaryResolutionInvalidator = (*Plugin)(nil)
+var _ ports.AgentAfterStartPromptBuilder = (*Plugin)(nil)
+var _ ports.AgentPromptReadinessProvider = (*Plugin)(nil)
+var _ interface{ AugmentRuntimeEnv(map[string]string, string) } = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -85,28 +98,23 @@ func (p *Plugin) Manifest() adapters.Manifest {
 // process in the session's worktree, and ZCode resolves project config, skills,
 // and session ownership from that working directory.
 //
-// ZCode has no system-prompt CLI flag or session-local instruction overlay.
-// Reject nonblank inline or file instructions before resolving the binary,
-// including restore fallback and inline fallback after a prompt-file write
-// failure. Native/global and project AGENTS.md files are left to their owner.
+// ZCode's standing instructions never ride the argv. GetLaunchCommand writes
+// them into the session-scoped instructions home (AugmentRuntimeEnv redirected
+// HOME to it), and the launch itself carries only the binary and the permission
+// mode.
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (cmd []string, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(cfg.SystemPrompt) != "" {
-		return nil, errUnsupportedInstructions
-	}
-	if cfg.SystemPromptFile != "" {
-		instructions, err := os.ReadFile(cfg.SystemPromptFile)
-		if err != nil {
-			return nil, fmt.Errorf("zcode: read AO standing instructions: %w", err)
-		}
-		if strings.TrimSpace(string(instructions)) != "" {
-			return nil, errUnsupportedInstructions
-		}
-	}
 	if strings.TrimSpace(cfg.Config.Model) != "" {
+		// ZCode selects models through its provider configuration, not the
+		// launch. Silently launching the native default while recording a
+		// requested model would misreport what ran (review finding): reject
+		// instead, before resolving the binary.
 		return nil, errors.New("zcode: per-session model selection is unsupported; configure the native default model before launching")
+	}
+	if err := writeInstructionFile(ctx, cfg); err != nil {
+		return nil, err
 	}
 	binary, err := p.zcodeBinary(ctx)
 	if err != nil {
@@ -118,6 +126,125 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		return nil, err
 	}
 	return cmd, nil
+}
+
+// zcodeInstructionHome returns the session-scoped directory that becomes the
+// launched CLI's HOME (HOME=<dir>/.zcode/AGENTS.md is ZCode's user-default
+// instructions file). Nothing else in the CLI resolves through that HOME,
+// aside from os.homedir() users covered by the ZCODE_STORAGE_DIR override set
+// alongside it, so the redirect moves the instruction file and nothing else.
+// A missing session id yields an empty path: the caller leaves HOME alone
+// (development/probe launches without a session carry no AO instructions).
+func zcodeInstructionHome(dataDir, sessionID string) string {
+	dataDir = strings.TrimSpace(dataDir)
+	sessionID = strings.TrimSpace(sessionID)
+	if dataDir == "" || sessionID == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, "zcode", "instruction-homes", sessionID)
+}
+
+// writeInstructionFile materializes the launch's standing instructions into
+// the session's instructions home, matching the HOME AugmentRuntimeEnv set.
+// Inline system prompts and instruction files both land there: ZCode reads a
+// single user-level AGENTS.md, so the session gets one merged origin instead
+// of a typed echo. Blank instructions write nothing; the redirected home then
+// simply has no user-level instruction file, and project discovery inside the
+// worktree still applies.
+func writeInstructionFile(ctx context.Context, cfg ports.LaunchConfig) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	mergeInstructions := ""
+	if strings.TrimSpace(cfg.SystemPrompt) != "" {
+		mergeInstructions = cfg.SystemPrompt
+	}
+	if cfg.SystemPromptFile != "" {
+		fileInstructions, err := os.ReadFile(cfg.SystemPromptFile)
+		if err != nil {
+			return fmt.Errorf("zcode: read AO standing instructions: %w", err)
+		}
+		if strings.TrimSpace(string(fileInstructions)) != "" {
+			if mergeInstructions != "" {
+				mergeInstructions += "\n\n"
+			}
+			mergeInstructions += string(fileInstructions)
+		}
+	}
+	if strings.TrimSpace(mergeInstructions) == "" {
+		return nil
+	}
+	home := zcodeInstructionHome(cfg.DataDir, cfg.SessionID)
+	if home == "" {
+		return errors.New("zcode: cannot deliver AO standing instructions without a session data directory")
+	}
+	instructionsDir := filepath.Join(home, ".zcode")
+	if err := os.MkdirAll(instructionsDir, 0o700); err != nil {
+		return fmt.Errorf("zcode: prepare session instructions home: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(instructionsDir, "AGENTS.md"), []byte(mergeInstructions), 0o600); err != nil {
+		return fmt.Errorf("zcode: write AO standing instructions: %w", err)
+	}
+	return nil
+}
+
+// AugmentRuntimeEnv redirects the launch environment's HOME to the session's
+// instructions home and pins ZCODE_STORAGE_DIR to the real profile, so ZCode
+// reads AO's standing instructions from the session-scoped AGENTS.md while
+// keeping its login and storage on the user's machine. The manager calls this
+// on every session launch path for adapters that opt in. A launch without a
+// session id keeps its native environment (development and probe paths carry
+// no AO instructions).
+func (p *Plugin) AugmentRuntimeEnv(env map[string]string, dataDir string) {
+	if env == nil {
+		return
+	}
+	home := zcodeInstructionHome(dataDir, env[envSessionID])
+	if home == "" {
+		return
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return
+	}
+	// Keep auth and storage on the real profile. On POSIX os.homedir() would
+	// otherwise follow the redirected HOME into the empty session home and
+	// lose the user's `.zcode`.
+	if _, redirected := env["ZCODE_STORAGE_DIR"]; !redirected {
+		if userHome, err := os.UserHomeDir(); err == nil && strings.TrimSpace(userHome) != "" {
+			env["ZCODE_STORAGE_DIR"] = filepath.Join(userHome, ".zcode")
+		}
+	}
+	env["HOME"] = home
+}
+
+// BuildAfterStartPrompt composes the first message AO types into the running
+// TUI: the task itself. Standing instructions no longer ride this message —
+// the session gets them through the private AGENTS.md channel — so AO never
+// echoes its own role text back into a conversation a user may watch.
+func (p *Plugin) BuildAfterStartPrompt(ctx context.Context, cfg ports.LaunchConfig) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(cfg.Prompt) == "" {
+		return "", nil
+	}
+	return cfg.Prompt, nil
+}
+
+// PromptReadinessHints waits briefly for ZCode's interactive prompt before AO
+// injects the first message. The opentui prompt glyph varies by build, so the
+// patterns are broad and the timeout short: a miss falls back to timed
+// delivery rather than blocking the session.
+func (p *Plugin) PromptReadinessHints(ctx context.Context, _ ports.LaunchConfig) (ports.PromptReadinessHints, error) {
+	if err := ctx.Err(); err != nil {
+		return ports.PromptReadinessHints{}, err
+	}
+	return ports.PromptReadinessHints{
+		InitialDelay: 1500 * time.Millisecond,
+		Patterns:     []string{"❯", ">"},
+		PollInterval: 250 * time.Millisecond,
+		Timeout:      5 * time.Second,
+	}, nil
 }
 
 // zcodeModes is ZCode's documented `--mode` ladder (see
