@@ -4,8 +4,12 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Coffee, Copy, Globe, Loader2, MonitorSmartphone, QrCode, RotateCcw, TriangleAlert } from "lucide-react";
 import { apiClient, apiErrorMessage } from "../../lib/api-client";
 import { mobileStatusQueryKey } from "../../lib/mobile-status-key";
+import { useSettings } from "../../hooks/useSettings";
 import { useStayAwake } from "../../hooks/useStayAwake";
 import { aoBridge } from "../../lib/bridge";
+import { useCloudSession } from "../../lib/cloud-session";
+import { AccountHostSyncError, deleteAccountRemoteHost } from "../../lib/account-remote-hosts";
+import { linkThisComputer } from "../../lib/link-this-computer";
 import { captureRendererEvent } from "../../lib/telemetry";
 import { ANDROID_PLAY_STORE_URL, IOS_APP_STORE_URL } from "./ConnectMobileGetApp";
 import { reasonMessage, type SetupMode } from "./ConnectMobileSetup";
@@ -124,7 +128,8 @@ function pairingIsPending(status: PairingReadinessStatus | undefined): boolean {
 	if (status.noPublicTunnel === true) return false;
 	const tunnel = status.tunnel;
 	if (!tunnel || tunnel.ready || tunnel.lastError) return false;
-	return tunnel.supported === true || tunnel.running;
+	// A cloudflared download counts: the connector starts when it lands.
+	return tunnel.supported === true || tunnel.running || tunnel.installing === true;
 }
 
 export function mobileStatusRefetchInterval(status: PairingReadinessStatus | undefined): number | false {
@@ -217,6 +222,8 @@ const ICON_ACTION_CLASS =
 
 interface MobileStatus {
 	enabled: boolean;
+	/** An AO account holds this machine's account token, listed or not. */
+	accountLinked?: boolean;
 	/** User intent, independent of whether cloudflared is installed or running. */
 	noPublicTunnel?: boolean;
 	browserRemoteAccess?: boolean;
@@ -233,11 +240,15 @@ interface MobileStatus {
 		/** False when this machine has no connector at all — cloudflared is
 		 * absent. Distinct from "not started yet", which is running:false. */
 		supported?: boolean;
+		/** Set while no connector is installed but one is being installed. */
+		installing?: boolean;
 		running: boolean;
 		ready: boolean;
 		hostname: string;
 		location: string;
 		lastError: string;
+		/** Set while the connector serves the computer's fixed address. */
+		fixed?: boolean;
 	};
 	host: string;
 	tailscaleHost: string;
@@ -270,6 +281,36 @@ export async function fetchMobileStatus(): Promise<MobileStatus> {
 	const { data, error } = await apiClient.GET("/api/v1/mobile/status");
 	if (error || !data) throw new Error(apiErrorMessage(error));
 	return data;
+}
+
+const TUNNEL_POLL_MS = 2_000;
+// A tunnel usually has its address within half a minute.
+const TUNNEL_WAIT_MS = 90_000;
+
+/** The tunnel address in the form the daemon's address publisher sends, so a
+ * later publish never rewrites the record and reconnects every device. */
+export function tunnelUrl(status: MobileStatus): string | null {
+	const tunnel = status.endpoints?.find((endpoint) => endpoint.kind === "tunnel" && endpoint.secure);
+	return tunnel ? `https://${tunnel.host}:${tunnel.port}` : null;
+}
+
+/** Polls until the tunnel has a public address; null when no connector is installed or on its way. */
+export async function waitForTunnel(timeoutMessage: string): Promise<{ status: MobileStatus; url: string } | null> {
+	let deadline = Date.now() + TUNNEL_WAIT_MS;
+	for (;;) {
+		const status = await fetchMobileStatus();
+		const url = tunnelUrl(status);
+		if (url) return { status, url };
+		if (status.tunnel?.supported === false) {
+			// No connector, and none on its way; one that is starts the tunnel by itself when it lands.
+			if (!status.tunnel.installing) return null;
+			// The download, tens of MB on a slow link, does not count against the tunnel's start.
+			deadline = Date.now() + TUNNEL_WAIT_MS;
+		}
+		if (status.tunnel?.lastError) throw new Error(status.tunnel.lastError);
+		if (Date.now() >= deadline) throw new Error(timeoutMessage);
+		await new Promise((resolve) => setTimeout(resolve, TUNNEL_POLL_MS));
+	}
 }
 
 type KeepAwakeStatus = NonNullable<MobileStatus["keepAwake"]>;
@@ -332,6 +373,53 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		};
 	}, []);
 
+	// A signed-in computer is linked, and its code carries a fixed address that
+	// survives restarts. Signed out, pairing works as it always has, with a
+	// quick tunnel whose address changes on restart.
+	const { session, configured: signInConfigured } = useCloudSession();
+	const { settings } = useSettings();
+	const cloudBaseUrl = settings?.cloudControlPlaneUrl ?? "";
+	const accountId = session?.user.id ?? "";
+	const signedIn = Boolean(cloudBaseUrl && accountId);
+	// Why the last link left this computer out of the account.
+	const [linkError, setLinkError] = useState("");
+	const reportLinkError = (cause: unknown) =>
+		setLinkError(cause instanceof Error && cause.message ? cause.message : t("remote.shareThisComputerFailed"));
+	/** Returns the host id the account lists now and the one this call added, or "", and whether linking failed. */
+	const linkIfSignedIn = async (
+		password: string,
+		hostId: string,
+		options?: { ifListed?: boolean },
+	): Promise<{ linked: string; added: string; failed: boolean }> => {
+		setLinkError("");
+		if (!signedIn || !password) return { linked: "", added: "", failed: false };
+		// Not fatal: an unlinked computer still gets a quick tunnel, whose
+		// address changes on restart. Said, though: after a new password the
+		// account's devices hold the old one until a link lands. An AO Cloud
+		// without fixed addresses is not linked here, as before them.
+		return linkThisComputer(cloudBaseUrl, accountId, hostId, password, options).then(
+			(linked) => ({ linked: linked.hostId, added: linked.added ? linked.hostId : "", failed: false }),
+			(cause: unknown) => {
+				// An account that uses all of its fixed addresses keeps this
+				// computer at its quick tunnel's address, as without them.
+				if (cause instanceof AccountHostSyncError && cause.status === 409) return { linked: "", added: "", failed: false };
+				reportLinkError(cause);
+				return { linked: "", added: "", failed: true };
+			},
+		);
+	};
+	/** Links this computer when signed in, then starts remote access, which moves a running connector to the fixed address the link gave it, so the code stays valid after restarts. */
+	const linkAndStartRemoteAccess = async (password: string, hostId: string) => {
+		const { added } = await linkIfSignedIn(password, hostId);
+		const started = await apiClient.POST("/api/v1/mobile/remote-access");
+		if (started.error) {
+			// Not left listed at an address nothing serves.
+			if (added) await deleteAccountRemoteHost(cloudBaseUrl, added).catch(() => undefined);
+			throw new Error(apiErrorMessage(started.error));
+		}
+		return started.data;
+	};
+
 	const query = useQuery({
 		queryKey: mobileStatusQueryKey,
 		queryFn: fetchMobileStatus,
@@ -374,16 +462,27 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 
 	const enable = useMutation({
 		mutationFn: async () => {
+			// Signed in or not, it starts as before fixed addresses: an app that
+			// quits while the link runs leaves remote access on its quick tunnel,
+			// not a computer that only serves this network after a restart. The
+			// link usually lands before the quick tunnel's address is advertised.
 			const { data, error } = await apiClient.POST("/api/v1/mobile/enable");
 			if (error) throw new Error(apiErrorMessage(error));
-			return data;
+			if (!signedIn) return data;
+			invalidate(); // the code shows while the computer is linked
+			return linkAndStartRemoteAccess(data?.password ?? "", data?.hostId ?? "");
 		},
-		onSuccess: invalidate,
+		// The first call can turn the bridge on before the second fails, so read back what is actually on.
+		onSettled: invalidate,
 		onError: () => setOptimisticEnabled(null),
 	});
 
+	// After cloudflared is installed. A bridge that started LAN-only, signed
+	// out, is linked first, as enable links it; one already serving remote
+	// access was linked when it started.
 	const startRemoteAccess = useMutation({
 		mutationFn: async () => {
+			if (query.data?.noPublicTunnel === true) return linkAndStartRemoteAccess(query.data.password, query.data.hostId ?? "");
 			const { data, error } = await apiClient.POST("/api/v1/mobile/remote-access");
 			if (error) throw new Error(apiErrorMessage(error));
 			return data;
@@ -395,11 +494,32 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		mutationFn: async () => {
 			const { data, error } = await apiClient.POST("/api/v1/mobile/regenerate");
 			if (error) throw new Error(apiErrorMessage(error));
+			invalidate(); // the new password shows at once; linking can take a minute
+			// A new password revokes the account link with the old one; link
+			// again so the fixed address survives the next restart. Only while
+			// remote access is on and the account still lists this computer:
+			// a LAN-only computer, or one removed from the account, is not
+			// listed again. A lost device signed in to the account is cut off
+			// by signing it out of the account; a new password is for
+			// password-paired devices.
+			if (data && !data.noPublicTunnel) {
+				const { linked, failed } = await linkIfSignedIn(data.password ?? "", data.hostId ?? "", { ifListed: true });
+				// An AO Cloud without fixed addresses, or an account that uses all of them,
+				// links nothing without a url, and the account would keep the old token:
+				// it lists the tunnel's address instead.
+				if (signedIn && !linked && !failed) {
+					void waitForTunnel(t("remote.shareThisComputerTimeout"))
+						.then((ready) => ready && linkThisComputer(cloudBaseUrl, accountId, data.hostId ?? "", data.password ?? "", { ifListed: true, url: ready.url }))
+						.catch(reportLinkError);
+				}
+			}
 			return data;
 		},
 		onSuccess: invalidate,
 	});
 
+	// Off is a pause: the computer stays in the account at its fixed address,
+	// and on brings it back there. Allow access is where it leaves the account.
 	const disable = useMutation({
 		mutationFn: async () => {
 			const { error } = await apiClient.POST("/api/v1/mobile/disable");
@@ -503,6 +623,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		disable.reset();
 		setSecure.reset();
 		setBrowserRemoteAccess.reset();
+		setLinkError("");
 	};
 
 	const copyPassword = async () => {
@@ -540,6 +661,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		(setSecure.error instanceof Error && setSecure.error.message) ||
 		(setBrowserRemoteAccess.error instanceof Error && setBrowserRemoteAccess.error.message) ||
 		stayAwake.error ||
+		linkError ||
 		null;
 
 	const turnOff = () => {
@@ -769,18 +891,27 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 					</p>
 				)}
 
+				{qrValue && signInConfigured && !signedIn && !status?.tunnel?.fixed && (
+					<p className="mt-4 text-xs leading-5 text-settings-muted" data-testid="mobile-sign-in-hint" role="status">
+						{t("mobile.signInForFixedAddress", "Sign in to AO to give this computer an address that stays the same after restarts.")}
+					</p>
+				)}
+
 				{remoteAccessUnavailable && (
 					// Stated rather than hidden: pairing still works on this network,
 					// so this is a limitation of what the code can reach, not an
 					// error. Without it the QR looks entirely normal and the user
 					// discovers the gap only by being away from home.
 					<div className="mt-4">
-						<p className="text-xs text-settings-muted" data-testid="mobile-remote-unavailable">
-							{t(
-								"mobile.remoteAccessUnavailable",
-								"Works on this network only — cloudflared isn't installed, so this machine can't be reached from elsewhere.",
-							)}
-						</p>
+						{/* While the daemon downloads it, the row below says so instead. */}
+						{!status.tunnel?.installing && (
+							<p className="text-xs text-settings-muted" data-testid="mobile-remote-unavailable">
+								{t(
+									"mobile.remoteAccessUnavailable",
+									"Works on this network only — cloudflared isn't installed, so this machine can't be reached from elsewhere.",
+								)}
+							</p>
+						)}
 						{/* Deliberately not enable(): that mints a fresh password, so
 						    installing remote access would invalidate the phone the user
 						    had already paired. This re-checks for the binary and starts

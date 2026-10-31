@@ -1079,6 +1079,43 @@ func TestStartRemoteAccessWhileDisabledDoesNothing(t *testing.T) {
 	}
 }
 
+// The daemon downloads cloudflared itself when an enable finds none. Once it
+// lands, remote access must come up without another click, on the same
+// password, and only where the user asked for a public tunnel.
+func TestConnectorInstalledStartsTheTunnelTheBridgeWanted(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		enable    func(*BridgeService) (MobileStatusResponse, error)
+		wantStart bool
+	}{
+		{name: "public", enable: (*BridgeService).Enable, wantStart: true},
+		{name: "lan only", enable: (*BridgeService).EnableLANOnly},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tun TunnelController // no connector yet, as at the first enable
+			b := &BridgeService{
+				ConfigPath: filepath.Join(t.TempDir(), "mobile.json"), LAN: &fakeLAN{}, DefaultPort: 3011,
+				ResolveTunnel: func() TunnelController { return tun },
+			}
+			before, err := tc.enable(b)
+			if err != nil {
+				t.Fatalf("enable: %v", err)
+			}
+
+			landed := &fakeTunnel{}
+			tun = landed
+			b.ConnectorInstalled()
+
+			if started := landed.startedOn == 3011; started != tc.wantStart {
+				t.Fatalf("connector started on %d, want started=%v", landed.startedOn, tc.wantStart)
+			}
+			if b.Status().Password != before.Password {
+				t.Fatal("password rotated: the phone paired a moment ago can no longer authenticate")
+			}
+		})
+	}
+}
+
 type startErrorLAN struct {
 	fakeLAN
 	err error
@@ -1100,5 +1137,19 @@ func TestMobileRestoreOnBootRollsBackHashWhenStartFails(t *testing.T) {
 	}
 	if got := lan.AccountTokenHash(); got != "previous-account-hash" {
 		t.Fatalf("account token hash after failed restore = %q, want previous-account-hash", got)
+	}
+}
+
+// A bridge with no connector says when one is being installed, so a client
+// waits for it rather than offering to install one.
+func TestTunnelStatusSaysWhenAConnectorIsOnItsWay(t *testing.T) {
+	installing := true
+	b := &BridgeService{LAN: &fakeLAN{}, ConfigPath: filepath.Join(t.TempDir(), "mobile", "config.json"), ConnectorInstalling: func() bool { return installing }}
+	if st := b.tunnelStatus(); st.Supported || !st.Installing {
+		t.Fatalf("installing: %+v", st)
+	}
+	installing = false
+	if st := b.tunnelStatus(); st.Installing {
+		t.Fatalf("not installing: %+v", st)
 	}
 }

@@ -24,6 +24,7 @@ const { mobileStatus } = vi.hoisted(() => ({
 			| undefined
 			| {
 					supported: boolean;
+					installing?: boolean;
 					running: boolean;
 					ready: boolean;
 					hostname: string;
@@ -53,6 +54,12 @@ vi.mock("../hooks/useAwake", () => ({
 }));
 
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: vi.fn() }));
+// An app with no AO sign-in pairs signed out; signing in to pair is covered in
+// settings/ConnectMobileContent.signin.test.tsx.
+vi.mock("../lib/cloud-session", () => ({
+	useCloudSession: () => ({ session: null, status: "unauthenticated", configured: false, signIn: () => undefined }),
+}));
+
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
 		GET: async (path: string) =>
@@ -844,6 +851,17 @@ test("does not poll when there is no tunnel to wait for", () => {
 	expect(mobileStatusRefetchInterval(undefined)).toBe(false);
 });
 
+test("polls while the daemon downloads cloudflared, so the connector shows when it lands", () => {
+	const endpoints = [{ kind: "lan" as const, host: "192.168.1.42", port: 3011, secure: false }];
+	expect(
+		mobileStatusRefetchInterval({
+			enabled: true,
+			endpoints,
+			tunnel: { supported: false, installing: true, running: false, ready: false },
+		}),
+	).toBeGreaterThan(0);
+});
+
 test("polls LAN-only mode for network recovery but not for a disabled public tunnel", () => {
 	const status = {
 		enabled: true,
@@ -870,6 +888,18 @@ test("says so when this machine cannot be reached from elsewhere", async () => {
 	expect(await screen.findByTestId("mobile-remote-unavailable")).toHaveTextContent(
 		/only|cloudflared/i,
 	);
+});
+
+// While the daemon downloads its own connector, the download row says so; the
+// caveat would contradict it.
+test("does not claim cloudflared is missing while it downloads", async () => {
+	mobileStatus.tunnel = {
+		supported: false, installing: true, running: false, ready: false, hostname: "", location: "", lastError: "",
+	};
+	renderMobileSettings();
+
+	expect(await screen.findByTestId("mobile-install-cloudflared")).toBeVisible();
+	expect(screen.queryByTestId("mobile-remote-unavailable")).toBeNull();
 });
 
 // A machine that has a connector must not carry the caveat, whether or not the
