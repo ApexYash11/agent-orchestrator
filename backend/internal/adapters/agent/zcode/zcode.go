@@ -71,7 +71,9 @@ var _ ports.AgentBinaryResolver = (*Plugin)(nil)
 var _ ports.AgentBinaryResolutionInvalidator = (*Plugin)(nil)
 var _ ports.AgentAfterStartPromptBuilder = (*Plugin)(nil)
 var _ ports.AgentPromptReadinessProvider = (*Plugin)(nil)
-var _ interface{ AugmentRuntimeEnv(map[string]string, string) } = (*Plugin)(nil)
+var _ interface {
+	AugmentRuntimeEnv(map[string]string, string)
+} = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
