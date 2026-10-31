@@ -17088,7 +17088,6 @@ components:
           - command-code
           - memcode
           - hermes
-          - zcode
           - fake
           type: string
         approvalMode:
@@ -21219,7 +21218,6 @@ components:
           - command-code
           - memcode
           - hermes
-          - zcode
           type: string
         issueId:
           type: string
