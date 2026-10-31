@@ -161,6 +161,8 @@ func Base(agentID string) ports.AgentModelCatalog {
 	now := time.Now().UTC()
 	entryMode := customModelEntryMode(agentID)
 	switch agentID {
+	case "zcode":
+		return Manual(agentID)
 	case "muse":
 		return catalog(agentID, "official-catalog", entryMode, now,
 			model("muse-spark", "Muse Spark", true),
@@ -239,7 +241,7 @@ func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
 	case "claude-code", "codex", "opencode", "opencode-v2", "grok", "cursor", "qwen", "gemini",
 		"kimi", "muse", "aider", "goose", "autohand", "fx", "unreal-agent", "codewhale", "mimo-code", "deepseek-harness", "openhands", "devin", "hermes":
 		return ports.CustomModelEntryDirect
-	case "continue", "cline", "kilocode", "vibe", "pi", "kimchi", "prime-agent", "zcode":
+	case "continue", "cline", "kilocode", "vibe", "pi", "kimchi", "prime-agent":
 		return ports.CustomModelEntryConfigured
 	default:
 		return ports.CustomModelEntryNone
@@ -284,6 +286,11 @@ func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscov
 }
 
 func (d Discoverer) discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
+	if request.AgentID == "zcode" {
+		// Launch rejects model overrides until a session-scoped selection
+		// channel exists. Native configuration is not a selectable AO catalog.
+		return Manual(request.AgentID), nil
+	}
 	if request.AgentID == "fx" && request.CredentialType == "" {
 		return discoverFXCatalog(ctx, request, func(ctx context.Context, binary string, args []string, dir string, env map[string]string) ([]byte, error) {
 			return modelCommand(ctx, binary, args, dir, env).CombinedOutput()

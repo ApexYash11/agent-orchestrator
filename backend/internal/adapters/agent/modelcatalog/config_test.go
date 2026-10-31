@@ -328,7 +328,7 @@ func TestConfigCatalogDiscoveryAndFingerprint(t *testing.T) {
 	}
 }
 
-func TestZcodeDiscoveryReadsProviderRuntimeCatalog(t *testing.T) {
+func TestZcodeParserRetainsProviderRuntimeCatalogWithoutPublishingChoices(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -348,7 +348,7 @@ func TestZcodeDiscoveryReadsProviderRuntimeCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "zcode"})
+	got, err := discoverConfigCatalog("zcode", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,6 +363,15 @@ func TestZcodeDiscoveryReadsProviderRuntimeCatalog(t *testing.T) {
 	if !slices.Equal(ids, want) {
 		t.Fatalf("models = %v, want %v (stable, de-duplicated)", ids, want)
 	}
+	public, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "zcode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, catalog := range []ports.AgentModelCatalog{public, Base("zcode"), Manual("zcode")} {
+		if len(catalog.Models) != 0 || catalog.AllowCustom || catalog.CustomModelEntry != ports.CustomModelEntryNone || catalog.SelectionMode == ports.ModelSelectionText {
+			t.Fatalf("catalog = %#v; want no selectable models or custom entry", catalog)
+		}
+	}
 }
 
 func TestZcodeDiscoveryWithoutRuntimeFilesStaysEmpty(t *testing.T) {
@@ -370,8 +379,8 @@ func TestZcodeDiscoveryWithoutRuntimeFilesStaysEmpty(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	_, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "zcode"})
-	if err == nil {
-		t.Fatal("discovery succeeded without any zcode files; want the manual fallback path")
+	got, err := (Discoverer{}).Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "zcode"})
+	if err != nil || len(got.Models) != 0 || got.AllowCustom || got.CustomModelEntry != ports.CustomModelEntryNone {
+		t.Fatalf("catalog = %#v, %v; want native-default-only behavior", got, err)
 	}
 }

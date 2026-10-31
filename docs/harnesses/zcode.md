@@ -57,11 +57,11 @@ read, absence of file evidence is never treated as signed out.
   configured mode (`build`). A session can also pin the ladder directly with
   the `mode` config value (`plan`, `build`, `edit`, `yolo`, `guarded`), which
   overrides the permission mapping.
-- The Models tab reads ZCode's own surfaces: the provider runtime catalog the
-  distribution downloads under `~/.zcode/v2/runtime/provider/`
-  (`builtinModelIds` per provider rule) plus `personalModelIds` from the
-  personal provider configuration. IDs are never invented; with neither file
-  present the catalog is empty and model selection stays inside ZCode.
+- **AO model selection is disabled.** Launches use ZCode's native default;
+  explicit AO model overrides are rejected until a supported session-scoped
+  selection channel exists. AO publishes no selectable or custom model IDs,
+  including IDs cached by earlier versions. The provider-runtime and personal
+  configuration parsers remain for future integration work.
 - AO installs no hooks. ZCode supports lifecycle hooks, but project hooks stay
   untrusted until a human reviews and grants the digest with
   `zcode hooks trust grant`, and user-level hooks have no session-specific AO
