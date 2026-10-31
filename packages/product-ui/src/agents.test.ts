@@ -2,9 +2,8 @@ import { describe, expect, it } from "vitest";
 import { AGENT_OPTIONS, agentLabel, getAgentIdentity } from "./agents";
 
 describe("agent identities", () => {
-	it("registers ZCode as a selectable worker with its own identity", () => {
-		expect(AGENT_OPTIONS).toContain("zcode");
-		expect(agentLabel("zcode")).toBe("ZCode");
+	it("keeps ZCode out of selectable workers until instruction delivery is supported", () => {
+		expect(AGENT_OPTIONS).not.toContain("zcode");
 		expect(getAgentIdentity("zcode")).toMatchObject({ label: "ZCode", logoKey: "zcode" });
 	});
 

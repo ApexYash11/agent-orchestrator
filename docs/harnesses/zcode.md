@@ -1,74 +1,59 @@
-# ZCode Adapter
+# ZCode adapter: public integration deferred
 
-AO registers [ZCode](https://github.com/zai-org/ZCode) as a terminal-only
-harness. ZCode is Z.ai's coding agent for GLM models; its CLI distribution
-installs a single `zcode` command. AO does not bundle ZCode.
+ZCode is **not registered, selectable, installable or offered for authentication
+through AO**. The retained adapter, hardened auth probe and configuration parser
+are staged development work, not a qualified worker/orchestrator integration.
+Historical rows retain their harness value, logo and install-job wire identity.
 
-## Install and authenticate
+## Why registration is deferred
 
-Install the official ZCode distribution from
-[zcode.z.ai](https://zcode.z.ai/en/docs/install). It installs the CLI under
-`~/.zcode/runtime` and links `zcode` into `~/.local/bin`; AO resolves the
-binary from `PATH` first and then those locations.
+Every normal AO worker and orchestrator receives standing instructions. The
+pinned ZCode interface has no qualified private delivery channel that preserves
+the native user environment. The adapter rejects nonempty inline/file
+instructions, including restore fallback, rather than silently dropping them.
+Unreadable instruction files return an actionable error.
 
-**The TUI needs a CLI with its terminal runtime.** The desktop app's bundled
-`zcode.cjs` is headless-only (no `@zcode/tui`, and current releases ship no
-single-executable CLI for Windows), so a stock desktop install cannot run the
-terminal sessions AO supervises. Build the CLI from source until upstream
-publishes a TUI-capable standalone CLI:
+The attempted session-scoped HOME overlay was removed. At upstream revision
+`3c5b227649371507ddc4eb46ac5133afe6db1cab`,
+[file-config.adapter.ts](https://github.com/zai-org/ZCode/blob/3c5b227649371507ddc4eb46ac5133afe6db1cab/apps/zcode-cli/packages/adapters/src/config/file-config.adapter.ts)
+resolves `~/.zcode/cli/config.json` through `node:os.homedir()`. Pinning
+`ZCODE_STORAGE_DIR` does not preserve that independent lookup. Redirecting HOME
+also hides native `~/.gitconfig`, changes child-tool home resolution, and hides
+the user's existing `~/.zcode/AGENTS.md`. The adapter no longer changes HOME,
+native instructions, provider configuration or global Git configuration.
 
-```bash
-git clone https://github.com/zai-org/ZCode && cd ZCode
-pnpm install --filter @zcode/cli... --filter @zcode/tui...
-pnpm --filter @zcode/cli... run build
-# runs from apps/zcode-cli/packages/cli/dist/zcode.cjs with Node 24
-```
+## Retained behavior and compatibility
 
-Sign in with `zcode login` (choose Z.AI or BigModel; browser authorization) —
-AO's Harness settings offers this as the harness's Log in action — or connect
-a provider key in the personal provider configuration
-(`~/.zcode/v2/provider_config.json`; `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` and
-`ZCODE_DATA_BASE_DIR` relocate it). `ZAI_API_KEY`, `ZCODE_API_KEY`, and
-`GLM_API_KEY` in AO's environment also count as a key.
+- The unregistered adapter can construct an interactive command when no AO
+  instructions are supplied. Permission modes retain ZCode's documented ladder.
+  This private command-construction behavior does not enable a normal AO role.
+- Explicit AO model overrides remain rejected. Production/base/fallback discovery
+  publishes no selectable or custom model IDs, and task/settings reads suppress
+  stale cached choices. The author's provider-runtime/personal-model parser is
+  retained and independently tested.
+- The staged auth probe requires a successful provider turn and matching final
+  result; session metadata and prompt echoes do not prove authentication. Probe
+  workspaces remain beneath AO_DATA_DIR and are cleaned up. This code is not
+  offered as a public setup/login flow while registration is deferred.
+- Persisted harness data, migration history and display identity remain readable.
+- Hooks, native-conversation restore, Chat and reviewer integration are not
+  implemented. No HOME/config overlay or visible first-message instruction
+  fallback is retained.
 
-AO's readiness check verifies with one tiny plan-mode request in a throwaway
-directory, parsed from the CLI's stream-json events: a `turn.completed` event
-with `resultType: success` followed by a matching final result reports
-**authorized**, the provider's plan-exhaustion or rejection codes report
-**unauthorized**, and only a genuinely inconclusive check reports
-**unknown**. Because `zcode login` stores credentials in a store AO cannot
-read, absence of file evidence is never treated as signed out.
+## Qualification required before enabling
 
-## AO integration
+A future integration must prove a supported private instruction channel that
+preserves native user configuration, native user instructions and child-tool HOME
+behavior. Manager-level worker and orchestrator tests must show instructions
+reach the real harness, followed by live setup/authentication, first/follow-up
+prompts, role compliance, activity, usage and kill/relaunch/history qualification.
+A valid session-scoped model selection channel is separately required before AO
+can advertise model IDs.
 
-- ZCode starts in its interactive TUI; AO types the session's task after
-  startup. Headless `--prompt` runs are not used because they print one
-  turn and exit, which would end the supervised worker mid-task.
-- **Standing instructions use a private, session-scoped channel.** ZCode
-  resolves its user-default instructions file from the process HOME
-  (`<HOME>/.zcode/AGENTS.md`), and nothing else in the CLI follows that
-  HOME. AO redirects HOME to `<data>/zcode/instruction-homes/<session>` and
-  writes its standing instructions there, pinning `ZCODE_STORAGE_DIR` to the
-  real profile so login and storage are untouched. The argv carries neither
-  the instructions nor the task, and AO's role text is never typed into the
-  conversation the user watches.
-- Permission modes map onto ZCode's documented `--mode` ladder: accept-edits
-  uses `edit`, auto and bypass use `yolo`, and the default keeps ZCode's own
-  configured mode (`build`). A session can also pin the ladder directly with
-  the `mode` config value (`plan`, `build`, `edit`, `yolo`, `guarded`), which
-  overrides the permission mapping.
-- **AO model selection is disabled.** Launches use ZCode's native default;
-  explicit AO model overrides are rejected until a supported session-scoped
-  selection channel exists. AO publishes no selectable or custom model IDs,
-  including IDs cached by earlier versions. The provider-runtime and personal
-  configuration parsers remain for future integration work.
-- AO installs no hooks. ZCode supports lifecycle hooks, but project hooks stay
-  untrusted until a human reviews and grants the digest with
-  `zcode hooks trust grant`, and user-level hooks have no session-specific AO
-  channel.
-- No native session id is captured, so sessions relaunch fresh in their
-  worktree instead of restoring a previous ZCode conversation.
-
-This integration is TUI-only. It does not register ZCode for Chat, reviewer,
-interface handoff, or first-class nested-agent sessions. ZCode ships an
-`app-server` protocol entry, but AO has not qualified it as a chat driver yet.
+Hosted regression coverage for this deferral checks manager rejection before
+session/workspace/runtime state, inline/file/restore instruction guards, and a
+child-process launch boundary with temporary native-home config, Git identity
+and credential-helper settings, and existing user AGENTS.md. That fixture does
+not execute ZCode or constitute live integration qualification. The earlier real
+audit/screenshots remain historical failure evidence; they do not qualify this
+change.
