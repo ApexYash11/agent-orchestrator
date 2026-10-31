@@ -121,10 +121,24 @@ func writeFileAtomic(path string, b []byte) error {
 		_ = tmp.Close()
 		return err
 	}
+	// On disk before the rename, so a power loss cannot leave an empty file.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	// The rename on disk too, so a power loss cannot bring back the old file
+	// or none. Best effort: Windows cannot sync a directory.
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
 }
 
 const pwAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"

@@ -170,9 +170,7 @@ func (s *FixedTunnelSource) request(ctx context.Context, hostID, digest string, 
 	if err != nil {
 		return NamedTunnel{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+digest)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := fixedTunnelClient.Do(req)
+	resp, err := DoHostRequest(fixedTunnelClient, req, body, digest, s.StatePath)
 	if err != nil {
 		return NamedTunnel{}, err
 	}

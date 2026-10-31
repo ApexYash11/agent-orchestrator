@@ -30,7 +30,7 @@ func runRemoteHostAddressPublisher(ctx context.Context, bridge *controllers.Brid
 		if address == "" || hash == "" || (key == lastSent && time.Now().Before(nextAt)) {
 			return
 		}
-		err := publishRemoteHostAddress(ctx, client, controlPlaneURL, bridge.HostID, address, hash)
+		err := publishRemoteHostAddress(ctx, client, controlPlaneURL, bridge.HostID, address, hash, bridge.ConfigPath)
 		switch {
 		case errors.Is(err, errAddressRefused):
 			// No account lists this link yet: a device that just took the
@@ -84,7 +84,7 @@ func accountTunnelAddress(bridge *controllers.BridgeService) (string, string) {
 	return "", ""
 }
 
-func publishRemoteHostAddress(ctx context.Context, client *http.Client, controlPlaneURL, hostID, address, hash string) error {
+func publishRemoteHostAddress(ctx context.Context, client *http.Client, controlPlaneURL, hostID, address, hash, statePath string) error {
 	target, err := mobilebridge.ControlPlaneTarget(controlPlaneURL, "/api/cloud/v1/remote-hosts/"+url.PathEscape(hostID)+"/address")
 	if err != nil {
 		return err
@@ -94,9 +94,7 @@ func publishRemoteHostAddress(ctx context.Context, client *http.Client, controlP
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+hash)
-	req.Header.Set("Content-Type", "application/json")
-	response, err := client.Do(req)
+	response, err := mobilebridge.DoHostRequest(client, req, body, hash, statePath)
 	if err != nil {
 		return err
 	}
