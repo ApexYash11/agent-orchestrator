@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Coffee, Copy, Globe, Loader2, MonitorSmartphone, QrCode, RotateCcw, TriangleAlert } from "lucide-react";
+import { Check, Coffee, Copy, Globe, Loader2, MonitorSmartphone, QrCode, RotateCcw, Smartphone, TriangleAlert } from "lucide-react";
 import { apiClient, apiErrorMessage } from "../../lib/api-client";
 import { mobileStatusQueryKey } from "../../lib/mobile-status-key";
 import { useSettings } from "../../hooks/useSettings";
 import { useStayAwake } from "../../hooks/useStayAwake";
+import { useUiStore } from "../../stores/ui-store";
 import { aoBridge } from "../../lib/bridge";
 import { useCloudSession } from "../../lib/cloud-session";
 import { AccountHostSyncError, deleteAccountRemoteHost } from "../../lib/account-remote-hosts";
@@ -160,25 +161,27 @@ export function qrIsReady(status: PairingReadinessStatus): boolean {
 }
 
 /**
- * Why the code on screen has no public tunnel, or null when it has one (or
- * when there is no code to judge). Without the tunnel the code reaches this
- * machine from elsewhere only over Tailscale, if it carries a tailnet address.
- *
- * qrIsReady shows a LAN code while the tunnel is still starting, and the
- * phone races only what the code carries. A code scanned or photographed in
- * that window looks identical to a complete one, then fails away from home
- * with "is your phone on the same Wi-Fi?" — so the panel has to say so.
- * cloudflared being absent is stated separately (remoteAccessUnavailable), and
- * opting out of the tunnel is the user's own choice, so neither is reported.
+ * "failed" when the code on screen has no public tunnel because remote access
+ * could not start, or null. Without the tunnel the code reaches this machine
+ * from elsewhere only over Tailscale, if it carries a tailnet address, and a
+ * LAN-only code looks identical to a complete one, so the panel says so.
+ * While the tunnel is still starting nothing is said: the code refreshes by
+ * itself once it is up. cloudflared being absent is stated separately
+ * (remoteAccessUnavailable), and opting out of the tunnel is the user's own
+ * choice, so neither is reported.
  */
-export function localOnlyReason(status: PairingReadinessStatus): "starting" | "failed" | null {
+export function localOnlyReason(status: PairingReadinessStatus): "failed" | null {
 	if (!status.enabled || !status.endpoints || status.endpoints.length === 0) return null;
 	if (status.endpoints.some((e) => e.kind === "tunnel")) return null;
 	if (status.noPublicTunnel === true || status.tunnel?.supported === false) return null;
-	if (pairingIsPending(status)) return "starting";
 	if (status.tunnel?.lastError) return "failed";
 	return null;
 }
+
+/** The Settings opening the sidebar's auto-start last ran for. Settings makes a
+ * new object for every opening; kept outside the component, it survives the
+ * Mobile page unmounting when the user visits another page and comes back. */
+let pairingHandledFor: unknown = null;
 
 /** The app's registered scheme (app.json `expo.scheme`), not a universal link:
  * it works today, with no association files to host and no store listing
@@ -376,7 +379,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 	// A signed-in computer is linked, and its code carries a fixed address that
 	// survives restarts. Signed out, pairing works as it always has, with a
 	// quick tunnel whose address changes on restart.
-	const { session, configured: signInConfigured } = useCloudSession();
+	const { session, status: sessionStatus, configured: signInConfigured } = useCloudSession();
 	const { settings } = useSettings();
 	const cloudBaseUrl = settings?.cloudControlPlaneUrl ?? "";
 	const accountId = session?.user.id ?? "";
@@ -420,10 +423,16 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		return started.data;
 	};
 
+	// Opened from the sidebar's Connect mobile, the user asked to pair a phone.
+	const settingsModal = useUiStore((state) => state.settingsModal);
+	const startPairing = settingsModal?.scope === "global" && settingsModal.startPairing === true;
+
 	const query = useQuery({
 		queryKey: mobileStatusQueryKey,
 		queryFn: fetchMobileStatus,
 		enabled: active,
+		// The auto-start below acts only on a fresh read.
+		refetchOnMount: startPairing ? "always" : true,
 		// Keep refreshing through every enabled-but-not-advertisable startup
 		// state — see mobileStatusRefetchInterval.
 		refetchInterval: (q) => mobileStatusRefetchInterval(q.state.data),
@@ -642,16 +651,31 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		void captureRendererEvent("ao.renderer.mobile_bridge_toggled", { enabled: next, outcome });
 	};
 
-	const startBridge = () => {
+	const turnOn = (report: boolean) => {
 		if (busy || enabled) return;
 		clearActionErrors();
 		setAnimateQr(true);
 		setOptimisticEnabled(true);
-		enable.mutate(undefined, {
+		enable.mutate(undefined, report ? {
 			onSuccess: () => reportToggle(true, "succeeded"),
 			onError: () => reportToggle(true, "failed"),
-		});
+		} : undefined);
 	};
+	const startBridge = () => turnOn(true);
+
+	// From the sidebar, Connect Mobile turns on without a second click, once
+	// per opening, and only if a fresh read says it is off: every enable makes
+	// a new password, so a cached "off" for a running bridge would disconnect
+	// its phones. Sign-in must have loaded, since enable links a signed-in
+	// computer. Not a toggle the user made, so not reported as one. Browsing
+	// to this page from Settings turns nothing on.
+	useEffect(() => {
+		if (!startPairing || pairingHandledFor === settingsModal) return;
+		if (!active || !query.isFetchedAfterMount || query.isFetching || query.isError || busy) return;
+		if (sessionStatus === "loading" || settings === undefined) return;
+		pairingHandledFor = settingsModal;
+		if (query.data?.enabled === false) turnOn(false);
+	});
 
 	const actionError =
 		(enable.error instanceof Error && enable.error.message) ||
@@ -667,7 +691,10 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 	const turnOff = () => {
 		clearActionErrors();
 		setOptimisticEnabled(false);
-		disable.mutate();
+		disable.mutate(undefined, {
+			onSuccess: () => reportToggle(false, "succeeded"),
+			onError: () => reportToggle(false, "failed"),
+		});
 	};
 
 	// Each return is one or more direct children of the settings card: the
@@ -748,42 +775,24 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 			) : null}
 		</QrPlaceholder>
 	);
-	// Whether the code reaches this machine from elsewhere, said in a few words
-	// under the code it describes: on once the code carries the tunnel, enabling
-	// while the tunnel is still starting (the code refreshes itself when it is
-	// up). A tunnel that failed is a warning, stated in the details column.
-	const remoteAccessStarting = qrValue !== null && !remoteAccessOn && localOnly === "starting";
+	// "Remote access on" under the code once it carries the internet address.
+	// While that address is still starting nothing is said: the code already
+	// works on this network and gains the address by itself. A tunnel that
+	// failed is a warning, stated in the details column.
 	const panel = (
 		<PairingPanel
 			code={code}
 			note={
-				remoteAccessOn || remoteAccessStarting ? (
+				remoteAccessOn ? (
 					<div
 						className="flex flex-col items-center text-center text-xs leading-5 text-settings-muted"
-						data-testid={remoteAccessOn ? "mobile-remote-access-on" : "mobile-remote-access-starting"}
+						data-testid="mobile-remote-access-on"
 						role="status"
 					>
 						<p className="flex items-center gap-1.5">
-							{remoteAccessOn ? (
-								<Globe className="size-3.5 shrink-0" aria-hidden="true" />
-							) : (
-								<Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
-							)}
-							{remoteAccessOn
-								? t("mobile.remoteAccessOn", "Remote access on")
-								: t("mobile.remoteAccessEnabling", "Enabling remote access")}
+							<Globe className="size-3.5 shrink-0" aria-hidden="true" />
+							{t("mobile.remoteAccessOn", "Remote access on")}
 						</p>
-						{/* Until the tunnel is up the code carries no public address. A
-						    tailnet address still reaches this machine from elsewhere once
-						    both devices are on the tailnet, so only without one is the code
-						    limited to this network. */}
-						{!remoteAccessOn && (
-							<p className="text-caption leading-4">
-								{viaTailscale
-									? t("mobile.remoteAccessEnablingHintTailscale", "Until then, reachable from elsewhere only over Tailscale")
-									: t("mobile.remoteAccessEnablingHint", "Until then, works on this network only")}
-							</p>
-						)}
 					</div>
 				) : null
 			}
@@ -870,8 +879,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 
 				{qrValue && localOnly === "failed" && (
 					// A LAN-only code looks exactly like a full one, so say what it
-					// cannot reach. (While the tunnel is still starting, the note under
-					// the code says so instead.)
+					// cannot reach.
 					<p
 						className="mt-4 flex items-start gap-1.5 text-xs leading-5 text-settings-muted"
 						data-testid="mobile-local-only"
@@ -921,26 +929,17 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 				)}
 				{actionError && <p className="mt-3 text-xs text-error">{actionError}</p>}
 
-				{/* Bottom of the details column, level with the code's bottom edge:
-				    the off switch belongs to the connection the details describe,
-				    not to the code, and here it costs no extra row. Pulled left by its
-				    padding plus its 1px transparent border so the label starts on the
-				    column's text edge. */}
-				{enabled && (
-					<div className="mt-auto pt-4">
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							className="-ml-[calc(--spacing(2.5)+1px)] text-settings-muted hover:text-settings-label"
-							disabled={busy}
-							onClick={turnOff}
-						>
-							{t("mobile.disable", "Turn off mobile connection")}
-						</Button>
-					</div>
-				)}
 			</PairingLayout>
+
+			{/* The mobile connection's on and off, as one switch beside the code it makes. */}
+			<SettingsRow icon={Smartphone} label={t("settings.connectMobile", "Connect mobile")} data-testid="mobile-connection">
+				<Switch
+					aria-label={t("settings.connectMobile", "Connect mobile")}
+					disabled={busy}
+					checked={enabled}
+					onCheckedChange={(next) => (next ? startBridge() : turnOff())}
+				/>
+			</SettingsRow>
 
 			{/* macOS only — the daemon reports it unsupported elsewhere. Shown
 			    whether or not the bridge is on: the choice is remembered and takes
